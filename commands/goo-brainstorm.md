@@ -13,9 +13,9 @@ description: 基于 Goo-wiki 和当前项目上下文 brainstorm 候选 goals，
 
 ## 行为
 
-1. **Wiki 经验召回** — 按 AutoGoo-Plugin 配置优先级解析 Goo-wiki，检索项目页、概念页、周报和 `log.md`。
-2. **信号提取** — 提取未完成事项、反复问题、风险、近期计划、指标缺口、文档缺口、测试缺口、发布阻塞和可复用经验。
-3. **前置条件识别** — 提炼所有候选目标共同需要的资源、权限、数据、环境、指标、人工决策和安全确认。
+1. **Wiki 经验召回（collector/wiki-gatherer）** — 派发 `collector`（wiki-gatherer）Subagent 按 AutoGoo-Plugin 配置优先级解析 Goo-wiki，用 `wiki-graph-assist.py` 生成紧凑 wiki graph packet，检索项目页、概念页、周报和 `log.md`。主模型不亲自 Read/Grep 全量 wiki。
+2. **信号提取（主模型）** — 主模型基于 collector 返回的 wiki packet 提取未完成事项、反复问题、风险、近期计划、指标缺口、文档缺口、测试缺口、发布阻塞和可复用经验。
+3. **前置条件识别** — 主模型基于 collector 返回的 wiki evidence packet 提炼所有候选目标共同需要的资源、权限、数据、环境、指标、人工决策和安全确认。
 4. **多轴发散** — 至少从 5 个不同角度探索候选方向：快速交付、长期架构、风险/债务、验证/评测、文档/知识沉淀、自动化/工具化、用户体验/流程改进、低成本试探。不要只围绕同一个方案改措辞；允许保留 1-2 个高风险高收益选项，但必须标清风险和前置条件。
 5. **候选目标生成** — 生成 5-9 个初始候选 goals，再合并为 3-7 个最终候选。每个 goal 都要有依据、产物、验收标准、风险、第一步、前置要求和 ready checklist。
 6. **自我检查与修订** — 用户审阅前先自检候选集：去掉重复或只换说法的 goal；补齐没有 wiki/上下文依据的证据说明；确认每个 goal 有明确产物和验收方式；校准风险、成本、依赖和不确定性；检查候选集是否覆盖 quick win、基础设施/债务、探索验证和长期价值。自检后必须记录删改原因和最终保留理由。
@@ -23,7 +23,7 @@ description: 基于 Goo-wiki 和当前项目上下文 brainstorm 候选 goals，
 8. **Thread 归属检查** — 如果当前 thread/plan 未完成，先用 `AskUserQuestion` 复用 `id=thread_action` 模板询问新建 thread、继续当前 thread 或取消；用户未明确选择前不得覆盖当前 brainstorm。
 9. **本地落盘** — 写入当前 thread 的 `.goo/threads/<thread_id>/brainstorm.json`，同时兼容写入 `.goo/brainstorm.json`；标记为待用户审阅。
 10. **等待用户审阅** — 展示候选 goals、推荐顺序、共同前置条件、自检摘要和关键风险，让用户选择、合并、改写或要求继续 brainstorm。必须优先用 `AskUserQuestion` / 结构化选择 UI 展示候选 goal 的 ID/编号和动作选项；不得在交互控件可用时只用普通文本要求用户手打回复。
-11. **确认后归档** — 用户确认候选目标后，再将最终版本、选择依据、共同前置条件、自检摘要和关键 wiki 证据归档到 Goo-wiki 项目路径，并更新项目入口或 `log.md`；Goo-wiki 不可用时写入 `.goo/obsidian/<project-slug>/` fallback。不要在用户还可能修改候选目标时急着归档。
+11. **确认后归档（recorder）** — 用户确认候选目标后，派发 `recorder` Subagent 撰写最终版本、选择依据、共同前置条件、自检摘要和关键 wiki 证据的归档正文，写入 Goo-wiki 项目路径并更新项目入口或 `log.md`；Goo-wiki 不可用时写入 `.goo/obsidian/<project-slug>/` fallback。主模型只决定归档内容和目标路径，不亲自撰写归档正文。不要在用户还可能修改候选目标时急着归档。
 
 如果当前 thread 的 `brainstorm.json` 已存在，写入新的 brainstorm 前，先把旧文件原样复制到 `.goo/brainstorms/history/brainstorm-<timestamp>.json`。该目录是本地 JSON 历史快照，和 Goo-wiki/fallback 知识归档不同；知识归档仍写入同一任务归档根的 `brainstorm/` 子目录。
 

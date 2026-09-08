@@ -26,13 +26,13 @@ description: 研究资料归档命令，当前支持 paper 子命令，用于论
 1. **模式识别** — 如果第一个参数是 `paper`，进入论文模式；如果用户只输入论文、DOI、arXiv、OpenReview、期刊 URL 或本地 PDF，也可推断为 `paper` 模式。
 2. **AutoGoo-Plugin 配置读取** — 检查 `.goo/config.json`、`.goo/plan.json` 和 `.goo/brainstorm.json`，优先复用现有 `archive.task_archive_root`。
 3. **任务归档根确定** — 同一研究任务沿用同一个 `task_archive_root`；没有现成根时，创建 `wiki/projects/<project-slug>/tasks/<YYYY-MM-DDTHH-MM-SS-paper-<slug>>/`。论文分析文档必须进入 Goo-wiki；Goo-wiki 不可写时可临时写入 `.goo/obsidian/<project-slug>/tasks/<task-slug>/` 防丢失，但归档状态必须是 `pending_wiki_sync` 或 `failed`，不能视为最终归档。
-4. **资料收集** — 抓取公开可访问的 PDF、HTML、摘要页、元数据、BibTeX、引用、附录、补充材料和项目页；不要绕过付费墙或认证。
-5. **正文抽取** — 从 PDF/HTML 抽取全文、章节结构、图表标题、关键公式、实验表格和参考文献。
-6. **代码与数据搜索** — 主动搜索论文关联代码、项目页、模型、数据集、benchmark 和补充材料，来源包括论文正文、作者主页、GitHub/GitLab、Hugging Face、Papers with Code、OpenReview、arXiv comments、Zenodo、Figshare、OSF、Kaggle 和机构数据门户。
-7. **下载可行性检查** — 对候选代码/数据集区分官方和第三方，记录匹配证据、许可证、体积、登录/审批要求、可下载性、建议命令和失败原因。大文件默认只做可访问性检查和小文件/元数据验证；真正下载前需要确认体积、路径和风险。
+4. **资料收集（researcher）** — 派发 `researcher` Subagent 抓取公开可访问的 PDF、HTML、摘要页、元数据、BibTeX、引用、附录、补充材料和项目页；不要绕过付费墙或认证。
+5. **正文抽取（researcher）** — 由 `researcher` 从 PDF/HTML 抽取全文、章节结构、图表标题、关键公式、实验表格和参考文献。
+6. **代码与数据搜索（researcher）** — 由 `researcher` 主动搜索论文关联代码、项目页、模型、数据集、benchmark 和补充材料，来源包括论文正文、作者主页、GitHub/GitLab、Hugging Face、Papers with Code、OpenReview、arXiv comments、Zenodo、Figshare、OSF、Kaggle 和机构数据门户。
+7. **下载可行性检查（researcher）** — 由 `researcher` 对候选代码/数据集区分官方和第三方，记录匹配证据、许可证、体积、登录/审批要求、可下载性、建议命令和失败原因；返回 evidence packet（含 `download_checks[]`、`code_candidates[]`、`dataset_candidates[]`、`access_limitations[]`）。大文件默认只做可访问性检查和小文件/元数据验证；真正下载前需要确认体积、路径和风险。
 8. **产物落盘** — 小型知识产物写入 `<task_archive_root>/execution/`；PDF、HTML、代码 checkout、数据集样本和大文件放入 `.goo/artifacts/papers/<paper-slug>/` 或用户指定数据目录。
-9. **深度笔记** — 基于证据写中文论文笔记，包含问题、贡献、方法机制、实验、关键数字、局限、复现风险、相关工作定位和后续问题。
-10. **Wiki 归档** — 把 `paper-summary.md` 分析正文、`manifest.json`、`evidence-index.md`、`downloadability.md` 和关键链接归档到 Goo-wiki，并同时更新项目入口和 `log.md`。不得只留下 `.goo/artifacts/`、step log、聊天总结或 fallback；Goo-wiki 页及链接可验证后才可写 `archive.status=completed`。
+9. **深度笔记（recorder）** — 派发 `recorder` Subagent 基于 researcher 的 evidence packet 写中文论文笔记，包含问题、贡献、方法机制、实验、关键数字、局限、复现风险、相关工作定位和后续问题。主模型不亲自撰写笔记正文。
+10. **Wiki 归档（recorder）** — 派发 `recorder` 把 `paper-summary.md` 分析正文、`manifest.json`、`evidence-index.md`、`downloadability.md` 和关键链接归档到 Goo-wiki，并同时更新项目入口和 `log.md`。不得只留下 `.goo/artifacts/`、step log、聊天总结或 fallback；Goo-wiki 页及链接可验证后才可写 `archive.status=completed`。
 
 ## 输出文件
 

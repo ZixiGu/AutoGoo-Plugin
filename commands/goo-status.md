@@ -7,6 +7,8 @@ description: 显示当前 AutoGoo-Plugin 任务执行进度 — 优先读取当�
 
 以 plan.json 或 thread 为数据源，渲染简洁终端仪表盘。**少字，多看。**
 
+> **状态查看豁免**：本命令仅渲染状态，属「状态查看」主模型豁免范围，主模型可运行 `goo-status.py`，但只做「只看不做分析」——不得在本命令内做归因、根因定位、聚类或优化决策；需要分析时走 `/auto-goo:goo-usage-analyse` 或 `/auto-goo:goo-improve` 并派发 `researcher`。
+
 如果用户说“查看所有任务线 / threads / 多个 plan 状态”，运行：
 
 auto_goo_root="$(

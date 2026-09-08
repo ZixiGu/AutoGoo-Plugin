@@ -50,11 +50,12 @@ description: 启动性能评测与优化迭代 — 搜索指标、基线评测�
 ## 执行流程
 
 1. 通过交互提问确认评测范围和迭代上限（见上方）。
-2. WebSearch 搜索该领域标准评价指标
-2. 实现基线版本并评测（至少 3 次取平均）
-3. 瓶颈分析（cProfile / py-spy / tracemalloc / 大 O 推算）
-4. 优化 → 同指标评测对比
-5. 终止判断：提升 < 20% 或连续两轮 < 5% 停止
+2. **指标搜索（researcher）** — 派发 `researcher` Subagent 用 WebSearch 搜索该领域标准评价指标，返回指标 evidence packet（含指标定义、单位、基线参考、采集方法）。
+3. **基线实现（implementer）** — 派发 `implementer` Subagent 按 researcher 的指标 packet 实现基线版本。
+4. **基线评测（evaluator）** — 派发 `evaluator` Subagent 评测基线（至少 3 次取平均），返回评测结果 packet。主模型不亲自跑基准做首次测量。
+5. **瓶颈分析（researcher）** — 派发 `researcher` Subagent 做瓶颈分析（cProfile / py-spy / tracemalloc / 大 O 推算），返回瓶颈 evidence packet。
+6. **优化与对比（implementer + evaluator）** — 派发 `implementer` 实现优化，`evaluator` 用同指标评测对比，返回对比 packet。
+7. **终止判断（主模型）** — 主模型基于 evaluator 的对比 packet 做终止判断：提升 < 20% 或连续两轮 < 5% 停止。
 
 ## 示例
 

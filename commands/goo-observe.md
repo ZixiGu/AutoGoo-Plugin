@@ -5,6 +5,8 @@ description: 观察 AutoGoo-Plugin 后台 subagent、shell 日志和 Agent View 
 
 # /auto-goo:goo-observe — 后台观察
 
+> **状态查看豁免**：本命令是纯观察入口，仅渲染后台 subagent/shell/step 状态，属「状态查看」主模型豁免范围，主模型可运行 `goo-observe.py`，但只做「只看不做分析」——不得在本命令内做归因、根因定位、聚类或优化决策；需要分析时走对应分析命令并派发相应 Subagent（机械采集 `collector` / 认知研究 `researcher`）。
+
 用于执行期间快速观察三类状态：
 
 1. Claude Code Agent View 中的后台 session / shell job。

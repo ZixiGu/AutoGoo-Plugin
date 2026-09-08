@@ -60,68 +60,11 @@ description: 生成 Goo-wiki 日报/周报 — 扫描 Claude Code 和 Codex 会�
 
 1. 确定日期范围：已通过交互提问获得；无参数默认今天；"昨天"、"今天"、"本周"必须转成具体日期。
 2. 按配置优先级解析 Goo-wiki 路径：`AUTOGOO_PLUGIN_WIKI_DIR` → `.goo/config.json` → `~/.auto-goo/config.json` → `~/workspace/Goo-wiki`。
-3. 运行插件脚本提取会话摘要：
-
-```bash
-auto_goo_root="$(
-  python3 - <<'PY' 2>/dev/null || true
-import json
-from pathlib import Path
-
-home = Path.home()
-matches = []
-
-def usable(path):
-    return path.exists() and not (path / ".orphaned_at").exists()
-
-registry = home / ".claude/plugins/installed_plugins.json"
-if registry.exists():
-    data = json.loads(registry.read_text(encoding="utf-8"))
-    for key, entries in data.get("plugins", {}).items():
-        if key.split("@", 1)[0] != "autogoo-plugin":
-            continue
-        for entry in entries:
-            path = Path(entry.get("installPath", "")).expanduser()
-            if usable(path):
-                matches.append((entry.get("lastUpdated", ""), str(path)))
-
-if not matches:
-    settings = home / ".claude/settings.json"
-    if settings.exists():
-        data = json.loads(settings.read_text(encoding="utf-8"))
-        enabled = data.get("enabledPlugins", {})
-        marketplaces = data.get("extraKnownMarketplaces", {})
-        for key, is_enabled in enabled.items():
-            if not is_enabled or "@" not in key:
-                continue
-            plugin, marketplace = key.split("@", 1)
-            if plugin != "autogoo-plugin":
-                continue
-            source = marketplaces.get(marketplace, {}).get("source", {})
-            if source.get("source") != "directory":
-                continue
-            path_text = source.get("path")
-            if not path_text:
-                continue
-            path = Path(path_text).expanduser()
-            if usable(path):
-                matches.append(("settings:" + marketplace, str(path)))
-
-if matches:
-    print(sorted(matches)[-1][1])
-PY
-)"
-if [ -z "$auto_goo_root" ] || [ ! -f "$auto_goo_root/skills/auto-goo/scripts/daily-report-sessions.py" ]; then
-  echo "AutoGoo-Plugin root not configured; install autogoo-plugin or enable a local directory marketplace in ~/.claude/settings.json" >&2
-  exit 127
-fi
-python3 "$auto_goo_root/skills/auto-goo/scripts/daily-report-sessions.py" --date YYYY-MM-DD
-```
-
-4. 必要时读取关键会话 JSONL 尾部 20-50 行，只补最终状态、产物路径、提交信息和验证结果；不要逐条抄录对话。
-5. 按项目/工作流归类，合并同一目标下的连续会话。
-6. 写入或续写 `journal/daily/YYYY-MM-DD.md`。如果同日日报已存在，先读取并识别已覆盖内容，只追加新增会话，不整体覆盖。
-7. 更新 `log.md`，添加到同日段落；没有同日段落时追加 `## YYYY-MM-DD`。
+3. **会话采集（collector/session-aggregator）** — 派发 `collector`（session-aggregator）Subagent 运行 `skills/auto-goo/scripts/daily-report-sessions.py --date YYYY-MM-DD` 提取会话摘要；主模型不得内嵌 bash 直接跑该采集脚本。
+4. **会话尾部补充（collector）** — 由 `collector` 必要时读取关键会话 JSONL 尾部 20-50 行，只补最终状态、产物路径、提交信息和验证结果；不要逐条抄录对话。
+5. **归类合并（collector）** — 由 `collector` 按项目/工作流归类，合并同一目标下的连续会话，返回 session/聚类 evidence packet；主模型只消费 packet 做综合。
+6. **写日报（recorder）** — 派发 `recorder` Subagent 写入或续写 `journal/daily/YYYY-MM-DD.md`。如果同日日报已存在，先读取并识别已覆盖内容，只追加新增会话，不整体覆盖。
+7. **更新 log（recorder）** — 由 `recorder` 更新 `log.md`，添加到同日段落；没有同日段落时追加 `## YYYY-MM-DD`。
 
 ## 日报模板
 

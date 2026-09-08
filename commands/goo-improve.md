@@ -9,12 +9,10 @@ description: 启动 AutoGoo-Plugin 插件自改进流程 — 汇总近期执行�
 
 ## 执行流程
 
-1. 读取 `.goo/logs/` 中近 5 个任务的 `## 流程问题` 记录
-2. 聚类分析，识别高频问题（出现 >= 2 次）
-3. 对每个高频问题定位根因文件
-4. 生成具体修改方案
-5. 展示修改方案，并优先用 `AskUserQuestion` / 结构化选择 UI 询问用户；用户确认后执行修改
-6. 记录到 `.goo/improvements.log`
+1. **日志聚类（collector/log-analyst）+ 根因定位（主模型）** — 派发 `collector`（log-analyst）Subagent 读取 `.goo/logs/` 中近 5 个任务的 `## 流程问题` 记录，做确定性的频率统计与聚类（识别出现 >= 2 次的高频问题），返回候选线索 evidence packet。主模型基于 collector 的候选线索做根因定位并生成具体修改方案（可加 researcher 深度解读），产出含 `change_list`（每项 target/action/why/detail）的方案。主模型不亲自 Read/Grep 日志做聚类。
+2. **展示与确认（主模型）** — 主模型消费 collector 的候选线索 + 根因修改方案，展示给用户，并优先用 `AskUserQuestion` / 结构化选择 UI 询问用户；用户确认前不编辑插件文件。
+3. **应用修改（implementer）** — 用户确认“应用修改”后，派发 `implementer` Subagent 按确认后的 change_list 编辑插件文件（SKILL.md、references、settings）。主模型不亲自编辑插件文件。
+4. **记录（recorder）** — 派发 `recorder` Subagent 记录到 `.goo/improvements.log`。
 
 ## 确认提问格式
 

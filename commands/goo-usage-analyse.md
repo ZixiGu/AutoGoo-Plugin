@@ -38,74 +38,22 @@ description: 分析 Claude Code usage 与 Goo-wiki 项目知识，找出可落�
 ## 行为
 
 1. 通过交互提问确认分析范围（见上方）。
-2. **Usage 快照** — 调用 `skills/auto-goo/scripts/goo-usage.py` 获取项目、模型、时间段和 token 类型分布。默认先用 `--once --no-color`，需要趋势时再读取 `daily` 或 `monthly` 聚合。
-2. **Wiki 召回** — 按 AutoGoo-Plugin 配置优先级解析 Goo-wiki，优先用 `scripts/wiki-graph-assist.py` 检索高耗项目相关的项目页、`log.md`、日报/周报、问题页、流程规范和历史任务页。
-3. **成本归因** — 把 usage 热点和 wiki 信号对齐，识别导致 token 消耗的模式，例如反复读大文档、缺少项目入口页、plan 上下文未沉淀、subagent 输入过宽、重复排查同类问题、日报/归档缺失、模型选择不匹配、cache 命中低。
-4. **节省方案生成** — 输出按优先级排序的节省机会，每项包含依据、预计节省机制、改动位置、验证方式和风险。
-5. **本地落盘** — 写入 `.goo/goo-usage-analyse.json`，并生成 `.goo/reports/goo-usage-analyse-<timestamp>.md`。
-6. **Wiki 归档** — 把 Markdown 报告归档到 Goo-wiki 项目路径，并更新项目入口或 `log.md`；Goo-wiki 不可用时写入 `.goo/obsidian/<project-slug>/` fallback。
+2. **Usage 快照 + Wiki 召回（collector）** — 派发 `collector` Subagent（usage-collector + wiki-gatherer）：调用 `skills/auto-goo/scripts/goo-usage.py`（默认 `--once --no-color`，需要趋势时再读取 `daily` 或 `monthly` 聚合）获取项目、模型、时间段和 token 类型分布；并按 AutoGoo-Plugin 配置优先级解析 Goo-wiki，用 `scripts/wiki-graph-assist.py` 检索高耗项目相关的项目页、`log.md`、日报/周报、问题页、流程规范和历史任务页；返回 usage packet + wiki packet。主模型不亲自跑这两个采集脚本。
+3. **成本归因（collector + 主模型）** — 由 `collector` 把 usage 热点和 wiki 信号做机械对齐，识别导致 token 消耗的模式，例如反复读大文档、缺少项目入口页、plan 上下文未沉淀、subagent 输入过宽、重复排查同类问题、日报/归档缺失、模型选择不匹配、cache 命中低，返回 `cost_drivers[]` evidence packet；主模型只消费 packet 做归因决策。
+4. **节省方案生成（collector + 主模型）** — 由 `collector` 输出按优先级排序的节省机会（依据、预计节省机制、改动位置、验证方式、风险）打包；主模型消费 packet 做综合与 next_actions 决策。
+5. **本地落盘（recorder）** — 派发 `recorder` Subagent 写入 `.goo/goo-usage-analyse.json`，并生成 `.goo/reports/goo-usage-analyse-<timestamp>.md` 报告正文。
+6. **Wiki 归档（recorder）** — 派发 `recorder` 把 Markdown 报告归档到 Goo-wiki 项目路径，并更新项目入口或 `log.md`；Goo-wiki 不可用时写入 `.goo/obsidian/<project-slug>/` fallback。主模型只决定归档内容与路径，不亲自撰写正文。
 7. **不自动改业务文件** — 默认只给诊断和候选改动；只有用户明确要求“执行/修复/写入规则”时，才进入 `/auto-goo:goo-plan` 或 `/auto-goo:goo-start`。
 
-## 推荐命令
+## 采集派发（不内嵌脚本）
 
-```bash
-auto_goo_root="$(
-  python3 - <<'PY' 2>/dev/null || true
-import json
-from pathlib import Path
+本命令的 usage 快照和 wiki 召回由 `collector` Subagent 负责，主模型不得内嵌 bash 直接运行 `goo-usage.py` / `wiki-graph-assist.py`。派发 collector 时传：
 
-home = Path.home()
-matches = []
+- 分析范围（全部项目 / 指定项目 / 近 N 天）。
+- 采集脚本：`skills/auto-goo/scripts/goo-usage.py`（默认 `--once --no-color`）与 `skills/auto-goo/scripts/wiki-graph-assist.py --query "<高耗项目或关键词>"`。
+- 要求返回紧凑 evidence packet（usage packet + wiki packet），而不是大段原文。
 
-def usable(path):
-    return path.exists() and not (path / ".orphaned_at").exists()
-
-registry = home / ".claude/plugins/installed_plugins.json"
-if registry.exists():
-    data = json.loads(registry.read_text(encoding="utf-8"))
-    for key, entries in data.get("plugins", {}).items():
-        if key.split("@", 1)[0] != "autogoo-plugin":
-            continue
-        for entry in entries:
-            path = Path(entry.get("installPath", "")).expanduser()
-            if usable(path):
-                matches.append((entry.get("lastUpdated", ""), str(path)))
-
-if not matches:
-    settings = home / ".claude/settings.json"
-    if settings.exists():
-        data = json.loads(settings.read_text(encoding="utf-8"))
-        enabled = data.get("enabledPlugins", {})
-        marketplaces = data.get("extraKnownMarketplaces", {})
-        for key, is_enabled in enabled.items():
-            if not is_enabled or "@" not in key:
-                continue
-            plugin, marketplace = key.split("@", 1)
-            if plugin != "autogoo-plugin":
-                continue
-            source = marketplaces.get(marketplace, {}).get("source", {})
-            if source.get("source") != "directory":
-                continue
-            path_text = source.get("path")
-            if not path_text:
-                continue
-            path = Path(path_text).expanduser()
-            if usable(path):
-                matches.append(("settings:" + marketplace, str(path)))
-
-if matches:
-    print(sorted(matches)[-1][1])
-PY
-)"
-if [ -z "$auto_goo_root" ] || [ ! -f "$auto_goo_root/skills/auto-goo/scripts/goo-usage.py" ] || [ ! -f "$auto_goo_root/skills/auto-goo/scripts/wiki-graph-assist.py" ]; then
-  echo "AutoGoo-Plugin root not configured; install autogoo-plugin or enable a local directory marketplace in ~/.claude/settings.json" >&2
-  exit 127
-fi
-python3 "$auto_goo_root/skills/auto-goo/scripts/goo-usage.py" --once --no-color
-python3 "$auto_goo_root/skills/auto-goo/scripts/wiki-graph-assist.py" --query "<高耗项目或关键词>"
-```
-
-如果用户指定时间范围，先让 `goo-usage.py` 用对应参数生成快照；如果脚本暂不支持该范围，退化为读取最近可用的 daily/monthly 聚合，并在报告里标注限制。
+如果用户指定时间范围，collector 先让 `goo-usage.py` 用对应参数生成快照；如果脚本暂不支持该范围，退化为读取最近可用的 daily/monthly 聚合，并在报告里标注限制。
 
 ## 输出要求
 

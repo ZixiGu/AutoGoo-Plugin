@@ -2,13 +2,13 @@
 
 ## 解析流程
 
-0. **Wiki 经验召回** — 检索 Goo-wiki 中相关项目页、概念页、问题页、周报、历史任务页和 `log.md`，提取可复用经验与可链接页面
+0. **Wiki 经验召回** — 派发 researcher 检索 Goo-wiki 中相关项目页、概念页、问题页、周报、历史任务页和 `log.md` 并回传 evidence packet；主模型消费 packet 提取可复用经验与可链接页面
 1. **识别输入形态** — 普通一句话、Markdown 任务包、已有 plan、issue/PR 描述、日志片段等要区别处理
 2. **解析结构化任务** — 如果输入是 Markdown，先提取标题层级、任务清单、代码块、表格、约束、验收标准、文件路径和命令，再判断真实任务
 3. **确认目标已明确** — 判断输入是否已有明确 goal，或是否引用了 `.goo/brainstorm.json` 中的候选 goal；如果用户还不知道要做什么、要求 brainstorm、探索方向或基于 wiki 找下一步，停止 plan 流程并切换到 `/auto-goo:goo-brainstorm`
 4. **识别交付目标** — 抽取一个或多个 `goals[]`，每个 goal 都要有交付物、验收标准和优先级
 5. **判断 goal 关系** — 独立 goal 优先拆成多个 plan；共享前置步骤则保留一个 DAG 并分支；强依赖 goal 按依赖链串联；冲突或优先级不清时先问用户
-6. **上下文约束合并** — 将 wiki 里的历史决策、已验证命令、路径、指标口径、失败经验写入规划依据
+6. **上下文约束合并** — 基于 researcher evidence packet，将 wiki 里的历史决策、已验证命令、路径、指标口径、失败经验写入规划依据
 7. **对话方案固化** — 将当前对话中已确认的方案、取舍、用户偏好、约束、验收标准和未决问题写入 `context_digest`；长文本优先写入 Goo-wiki 项目路径 `wiki/projects/<project-slug>/context/` 并在 `context_artifacts` 引用，Goo-wiki 不可用时降级到 `.goo/obsidian/<project-slug>/context/`
 8. **远程资源预检** — 如果配置中存在 `servers[]`，先用 `remote-resources.py --probe` 生成 CPU/内存/磁盘/GPU 摘要并展示，再用 `AskUserQuestion` 复用 `id=remote_resource_usage` 询问本次是否使用服务器。用户确认前，不因为任务包含 GPU、长跑或远程关键词就写 remote step；用户选择本地时在 `runtime.remote_resource_decision` 记录 `use_remote=false`
 9. **逆向拆解** — 从每个 goal 倒推："要交付这个，需要先有什么？" 持续追问直到拆成原子步骤
@@ -169,9 +169,9 @@ Goals：
 - 类型：<一句话/Markdown任务包/已有plan/issue/日志/其他>
 - 若为 Markdown：<文档意图、关键小节、任务清单、约束、验收标准>
 
-Wiki 经验召回：
-- 找到的相关页面：<wikilink/path 列表>
-- 可复用经验：<命令/路径/指标/风险/命名约定>
+Wiki 经验召回（消费 researcher evidence packet）：
+- 找到的相关页面：<来自 researcher packet 的 wikilink/path 列表>
+- 可复用经验：<命令/路径/指标/风险/命名约定，来自 packet findings>
 - 对本次计划的影响：<新增约束或调整>
 
 对话方案固化：
@@ -386,7 +386,7 @@ DAG 结构总结：
 
 ## Plan-only 模式
 
-`/auto-goo:goo-plan <任务>` 只执行 Wiki 经验召回和任务解析，不派发 Subagent。
+`/auto-goo:goo-plan <任务>` 的 wiki 经验召回由 researcher 完成（派发 researcher 采集并回传 evidence packet），任务解析与 DAG 拆解留主模型综合；除 wiki 召回外不派发执行型 Subagent。
 
 输出要求：
 - 写入新的 `.goo/plan.json` 或 thread plan 前，先执行现有 plan 冲突检查；只有旧 plan 已完成，或用户明确选择新建 thread/继续当前 thread 并确认替换时，才把旧 plan 原样复制到 `.goo/plans/history/`
@@ -400,7 +400,7 @@ DAG 结构总结：
 - 每个步骤必须包含 `tier`；同一 `tier` 中的步骤应能并行执行，不能把可并行步骤写成逐个依赖的线性链
 - 每条 `depends_on` 都必须是合法依赖；仅由叙事顺序或文档顺序造成的依赖必须移除
 - 每个步骤应包含 `inputs`、`outputs`、`allowed_read_paths`、`allowed_write_paths`、`validation`、`risk_level` 和 `requires_user_confirm`，让 Subagent 能明确知道输入、输出、读写范围、验收方式和是否需要用户确认
-- 每个步骤必须包含合法 `subagent`，明确稳定 Role Agent：`researcher` / `implementer` / `optimizer` / `evaluator` / `reviewer` / `auditor` / `recorder`。缺失或不合法时执行阶段先补 plan 或创建新角色，不由主 Agent 代执行
+- 每个步骤必须包含合法 `subagent`，明确稳定 Role Agent：`researcher` / `collector` / `implementer` / `optimizer` / `evaluator` / `reviewer` / `auditor` / `recorder`。缺失或不合法时执行阶段先补 plan 或创建新角色，不由主 Agent 代执行
 - 每个步骤必须包含合法 `task_agent`，从该 Role Agent 旗下选择细分 Task Agent，例如 `document-analyst`、`feature-builder`、`benchmark-runner`、`code-reviewer`、`evidence-auditor`、`obsidian-recorder`。`task_agent` 用于选择更精确的 agent 文件和提示词，不替代 `subagent` 的调度角色
 - 每个步骤应包含 `available_skills` 数组，列出本 step 允许或建议 Subagent 使用的 skill 名称；没有额外 skill 时写 `[]`。该字段只用于上下文裁剪和派发提示，不替代 `subagent` / `task_agent`，不授予额外文件/命令权限，也不要放 agent 名称或项目 reference 路径
 - 最后一步包含默认 Wiki 归档任务，依赖所有非归档叶子步骤
@@ -455,7 +455,7 @@ DAG 结构总结：
 | `description` | 做什么，含完整上下文。必须能脱离聊天记录执行，不使用"按上面方案/参考前文"等隐含引用。需要外部包时末尾标注 `[dep: <包名>]` |
 | `depends_on` | 前置步骤 ID 列表，空数组表示无依赖 |
 | `type` | `research` / `exec` / `optimize` / `eval` / `review` / `audit` / `archive` |
-| `subagent` | 执行该步骤的稳定 Role Agent：`researcher` / `implementer` / `optimizer` / `evaluator` / `reviewer` / `auditor` / `recorder`。缺失或不合法时先补 plan 或创建新角色，不由主 Agent 降级代执行 |
+| `subagent` | 执行该步骤的稳定 Role Agent：`researcher` / `collector` / `implementer` / `optimizer` / `evaluator` / `reviewer` / `auditor` / `recorder`。缺失或不合法时先补 plan 或创建新角色，不由主 Agent 降级代执行 |
 | `task_agent` | 执行该步骤的细分 Task Agent，必须来自对应 Role Agent 旗下，例如 `codebase-scout`、`feature-builder`、`test-runner`、`code-reviewer`、`evidence-auditor`、`wiki-curator`。用于选择 agent 文件和 prompt 细节 |
 | `output` | 预期产物文件路径，用于恢复时检测是否已完成 |
 | `inputs` | 本步骤明确依赖的输入文件、上游产物、wiki/context artifact 或外部资料 |

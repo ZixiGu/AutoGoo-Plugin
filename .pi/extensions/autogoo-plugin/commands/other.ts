@@ -237,6 +237,14 @@ export async function handleGooContinue(args: string, ctx: ExtensionContext): Pr
   const resumeMsg = `恢复执行: ${runningSteps.length} 运行中, ${pendingSteps.length} 待执行, ${blockedSteps.length} 阻塞`;
   ctx.ui.notify(resumeMsg, "info");
 
+  // 立即刷新状态栏并启动周期自动刷新（有活动步骤时）
+  try {
+    const { updateStatusBar } = await import("../utils/status.js");
+    await updateStatusBar(ctx);
+  } catch (e: any) {
+    console.warn("[AutoGoo-Plugin] goo-continue updateStatusBar error:", e?.message ?? String(e));
+  }
+
   if (_pi) {
     _pi.sendUserMessage(
       `## AutoGoo-Plugin 恢复执行\n\n` +

@@ -3,6 +3,11 @@
  *
  * 5 维度优化(thread 2026-08-05-status-bar-optimize):信息密度、渲染性能、
  * 视觉(ANSI + ▰/▱)、可维护性(拆小函数 + 测试)、任务名截断(>12 字符)。
+ *
+ * 自动刷新（2026-08-24）:pi 版状态栏只在工具调用/命令/session_start 时
+ * 刷新一次，运行期间内容会过期（elapsed 不走、ETA 不变、Subagent 子进程
+ * 写回的心跳/进度看不到）。这里加周期刷新定时器：plan 存在且还有
+ * running/pending/blocked 步骤时，每 15s 重新 snapshot plan.json 并重渲染。
  */
 import { access } from "node:fs/promises";
 import { join } from "node:path";
@@ -43,6 +48,56 @@ async function getCachedPlan(cwd: string): Promise<Plan | null> {
 
 const debounceTimers = new Map<string, NodeJS.Timeout>();
 const DEBOUNCE_MS = 200;
+
+// ── 自动刷新（2026-08-24）───────────────────────────────────────────────────
+// 定时器按 cwd 管理（同一会话/项目只一个）。setStatus 是 fire-and-forget：
+// TUI 只保存最后一次写入的文本，内容过期只能靠再次调用 setStatus 覆盖，
+// 所以这里周期调用。interval 用 unref，不阻止进程退出。
+const refreshTimers = new Map<string, NodeJS.Timeout>();
+// 默认 15s；可用 AUTOGOO_STATUS_REFRESH_MS 覆盖（调试/测试用短间隔）
+const STATUS_REFRESH_INTERVAL_MS =
+  Number(process.env.AUTOGOO_STATUS_REFRESH_MS ?? 15000) || 15_000;
+
+/** 启动周期刷新（幂等：同一 cwd 已有定时器时不重复启动）。 */
+export function startStatusBarAutoRefresh(ctx: ExtensionContext): void {
+  const cwd = ctx.cwd;
+  if (refreshTimers.has(cwd)) return;
+  const timer = setInterval(() => {
+    void refreshStatusBarTick(ctx);
+  }, STATUS_REFRESH_INTERVAL_MS);
+  timer.unref?.();
+  refreshTimers.set(cwd, timer);
+}
+
+/** 停止周期刷新。 */
+export function stopStatusBarAutoRefresh(cwd: string): void {
+  const timer = refreshTimers.get(cwd);
+  if (timer) {
+    clearInterval(timer);
+    refreshTimers.delete(cwd);
+  }
+}
+
+/**
+ * 定时器回调：无 plan → 清状态栏并停止；无活动步骤(running/pending/blocked)
+ * → 渲染最后状态并停止；否则持续刷新。失败时停止，避免静默死循环。
+ */
+async function refreshStatusBarTick(ctx: ExtensionContext): Promise<void> {
+  try {
+    const snap = await snapshotPlan(ctx.cwd);
+    if (!snap) {
+      ctx.ui.setStatus(STATUS_KEY, undefined);
+      stopStatusBarAutoRefresh(ctx.cwd);
+      return;
+    }
+    ctx.ui.setStatus(STATUS_KEY, formatStatusLine(snap));
+    const hasActive = snap.running > 0 || snap.pending > 0 || snap.blocked > 0;
+    if (!hasActive) stopStatusBarAutoRefresh(ctx.cwd);
+  } catch (e) {
+    console.error("[AutoGoo-Plugin] status bar auto-refresh error:", e);
+    stopStatusBarAutoRefresh(ctx.cwd);
+  }
+}
 export function debouncedUpdateStatusBar(ctx: ExtensionContext): void {
   const key = ctx.cwd;
   const prev = debounceTimers.get(key);
@@ -222,12 +277,28 @@ export async function snapshotPlan(cwd: string): Promise<PlanSnapshot | null> {
 /** Render status bar line from a plan snapshot. Delegates to composeLine. */
 export function formatStatusLine(snap: PlanSnapshot): string { return composeLine(snap); }
 
-/** Update the Pi status bar with current plan state. */
+/**
+ * Update the Pi status bar with current plan state.
+ *
+ * 自动管理周期刷新定时器：plan 有活动步骤(running/pending/blocked)时启动
+ * 15s 自动刷新（elapsed/ETA/心跳实时更新）；无活动步骤时渲染最终状态并停止。
+ * 所有调用点（工具、命令、session_start）无需感知定时器生命周期。
+ */
 export async function updateStatusBar(ctx: ExtensionContext): Promise<void> {
   const snap = await snapshotPlan(ctx.cwd);
-  if (!snap) { ctx.ui.setStatus(STATUS_KEY, undefined); return; }
+  if (!snap) {
+    ctx.ui.setStatus(STATUS_KEY, undefined);
+    stopStatusBarAutoRefresh(ctx.cwd);
+    return;
+  }
   ctx.ui.setStatus(STATUS_KEY, formatStatusLine(snap));
+  const hasActive = snap.running > 0 || snap.pending > 0 || snap.blocked > 0;
+  if (hasActive) startStatusBarAutoRefresh(ctx);
+  else stopStatusBarAutoRefresh(ctx.cwd);
 }
 
-/** Clear the status bar. */
-export function clearStatusBar(ctx: ExtensionContext): void { ctx.ui.setStatus(STATUS_KEY, undefined); }
+/** Clear the status bar (同时停止周期刷新，防止 session 结束后定时器泄漏)。 */
+export function clearStatusBar(ctx: ExtensionContext): void {
+  stopStatusBarAutoRefresh(ctx.cwd);
+  ctx.ui.setStatus(STATUS_KEY, undefined);
+}

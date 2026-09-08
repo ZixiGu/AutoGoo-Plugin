@@ -14,7 +14,7 @@ import { DEFAULT_MEMORY_LAYER_BY_STEP_TYPE } from "../constants.js";
 const STATUS_KEY = "autogoo-plugin";
 
 export interface PlanSnapshot {
-  total: number; completed: number; running: number; pending: number; blocked: number; failed: number; staleHeartbeats: number;
+  total: number; completed: number; running: number; pending: number; blocked: number; failed: number; interrupted: number; staleHeartbeats: number;
   threadId?: string; threadTask?: string; elapsed?: string;
   currentStepName?: string; currentStepElapsed?: string;
   wikiPacketGenerated?: boolean; etaSeconds?: number;
@@ -25,6 +25,7 @@ const ANSI = {
   cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
   green: (s: string) => `\x1b[32m${s}\x1b[0m`,
   yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
+  magenta: (s: string) => `\x1b[35m${s}\x1b[0m`,
   red: (s: string) => `\x1b[31m${s}\x1b[0m`,
   bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
   dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
@@ -85,12 +86,13 @@ export function buildProgress(snap: PlanSnapshot): string {
   return snap.total > 0 && snap.completed === snap.total ? ANSI.green(bar) : bar;
 }
 
-/** 各状态计数 + 颜色：running=cyan / pending=dim / blocked=yellow / failed=red。 */
+/** 各状态计数 + 颜色：running=cyan / pending=dim / blocked=yellow / interrupted=magenta / failed=red。 */
 export function buildCounts(snap: PlanSnapshot): string {
   const p: string[] = [];
   if (snap.running > 0) p.push(ANSI.cyan(`▶${snap.running}`));
   if (snap.pending > 0) p.push(ANSI.dim(`○${snap.pending}`));
   if (snap.blocked > 0) p.push(ANSI.yellow(`⊘${snap.blocked}`));
+  if (snap.interrupted > 0) p.push(ANSI.magenta(`✂${snap.interrupted}`));
   if (snap.failed > 0) p.push(ANSI.red(`✕${snap.failed}`));
   return p.join(" ");
 }
@@ -209,7 +211,9 @@ export async function snapshotPlan(cwd: string): Promise<PlanSnapshot | null> {
   return {
     total: steps.length, completed: steps.filter((s) => s.status === "completed").length,
     running: steps.filter((s) => s.status === "running").length, pending, blocked,
-    failed: steps.filter((s) => s.status === "failed").length, staleHeartbeats: stale,
+    failed: steps.filter((s) => s.status === "failed").length,
+    interrupted: steps.filter((s) => s.status === "interrupted").length,
+    staleHeartbeats: stale,
     threadId, threadTask: info?.task, elapsed,
     currentStepName, currentStepElapsed, wikiPacketGenerated, etaSeconds, recentCompletedStep, memoryLayer,
   };

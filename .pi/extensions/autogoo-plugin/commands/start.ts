@@ -122,15 +122,16 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
     description: "更新 DAG 步骤状态、进度、心跳。Subagent 和主 Agent 都可通过此工具更新步骤状态。",
     promptSnippet: "更新 DAG 步骤状态、进度和心跳",
     promptGuidelines: [
-      "使用 auto_goo_update_step 更新步骤状态：--start 开始步骤，--heartbeat 更新进度，--complete 完成，--fail 标记失败，--pending 解除阻塞，--confirm 记录用户确认",
+      "使用 auto_goo_update_step 更新步骤状态：--start 开始步骤，--heartbeat 更新进度，--complete 完成，--fail 标记失败，--interrupt 标记 wrapper 中断，--resume 从 interrupted/failed 恢复为 running，--pending 解除阻塞，--confirm 记录用户确认",
       "heartbeat 必须带 --note 描述进展，空 heartbeat 无效",
+      "subagent wrapper 被信号杀/超时（exit 143/137）不等于任务失败：远程管线可能继续运行，用 --interrupt 标记后检查远程，确认真在运行再用 --resume 恢复",
     ],
     parameters: Type.Object({
       // C4 修复：历史 plan 用字符串 id（"s1"），新 plan 用数字，统一 Union 支持两者
       stepId: Type.Union([Type.Integer({ description: "步骤 ID" }), Type.String({ description: "步骤 ID" })]),
       action: Type.String({
         description: "操作类型",
-        enum: ["start", "heartbeat", "complete", "fail", "block", "pending", "confirm"],
+        enum: ["start", "heartbeat", "complete", "fail", "interrupt", "resume", "block", "pending", "confirm"],
       }),
       progress: Type.Optional(Type.Integer({ description: "进度 0-100" })),
       note: Type.Optional(Type.String({ description: "进展描述（heartbeat 必填）" })),
@@ -162,6 +163,16 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
         case "fail":
           args.push("--fail");
           if (params.error) { args.push("--error", params.error); }
+          break;
+        case "interrupt":
+          // wrapper 中断（信号杀/超时）但任务本体未知：远程管线可能继续运行
+          args.push("--interrupt");
+          if (params.error) { args.push("--error", params.error); }
+          break;
+        case "resume":
+          // 检查确认任务本体仍在运行后，从 interrupted/failed 恢复为 running
+          args.push("--resume");
+          if (params.note) { args.push("--note", params.note); }
           break;
         case "block":
           args.push("--block");

@@ -60,6 +60,8 @@ AutoGoo-Plugin 的权限交互由主 Agent 统一处理，后台 Subagent 不做
 
 `needs_user_approval` 不是普通失败。主 Agent 不得把它按失败重试，也不得在未获许可时直接代做步骤产物。用户批准后，只能在批准的命令类别、路径和风险范围内重派 Subagent 或由主 Agent 执行许可命令；用户拒绝后，回写 failed、deferred 或更新 plan 走替代路线。
 
+**interrupted（wrapper 中断）状态**：subagent 子进程被信号杀（exit 143/137）或超时，或心跳超时，不等于任务失败——尤其是远程步骤（`execution_target=remote` / 有 `remote_server`），远程管线独立于本地 wrapper 继续运行。调度器此时标记 `interrupted`（保留 progress、清 agent_id、不写 completed_at），而不是 `failed`。恢复流程：主 Agent 用 `auto_goo_ssh_exec` / `auto_goo_ssh_monitor` 检查远程状态后，调用 `auto_goo_update_step --resume`（确认任务本体仍在运行，恢复为 running 并继续监控，完成后 --complete）、`--interrupt` 后重派（本体已死可重启）、或 `--fail`（确认失败）。远程步骤心跳超时**不自动重试**（避免重新派发重复启动远程管线）。
+
 每个 plan step 必须显式声明 `subagent` 和 `task_agent` 字段。`type` 描述步骤性质，`subagent` 描述稳定 Role Agent，`task_agent` 描述该 role 下的细分 Task Agent。例如：
 
 ```json

@@ -208,6 +208,9 @@ def compute_plan_status(plan: dict[str, Any]) -> str:
         return "blocked"
     if any(s.get("status") == "running" for s in steps):
         return "running"
+    if any(s.get("status") == "interrupted" for s in steps):
+        # wrapper 中断但任务本体可能继续：可恢复，优先于 failed 展示
+        return "interrupted"
     if any(s.get("status") == "failed" for s in steps):
         return "failed"
     return "pending"

@@ -195,7 +195,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Update .goo/plan.json step state")
     parser.add_argument("--plan", default=".goo/plan.json", help="plan.json path")
     parser.add_argument("--step-id", required=True, help="step id to update")
-    parser.add_argument("--status", choices=["pending", "running", "completed", "failed", "blocked"], help="new status")
+    parser.add_argument("--status", choices=["pending", "running", "completed", "failed", "interrupted", "blocked"], help="new status")
     parser.add_argument("--progress", type=int, help="progress 0-100")
     parser.add_argument("--agent-id", help="agent id/name")
     parser.add_argument("--error", help="failure summary")
@@ -203,6 +203,22 @@ def main() -> int:
     parser.add_argument("--start", action="store_true", help="set started_at and heartbeat_at")
     parser.add_argument("--complete", action="store_true", help="set status=completed, progress=100, completed_at")
     parser.add_argument("--fail", action="store_true", help="set status=failed, completed_at, optional error")
+    parser.add_argument(
+        "--interrupt",
+        action="store_true",
+        help=(
+            "set status=interrupted: subagent wrapper 被信号杀/超时，任务本体状态"
+            "未知（远程管线可能继续运行）。非终态，不写 completed_at，保留 progress。"
+        ),
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "set status=running from interrupted/failed: 主 Agent 检查确认任务本体"
+            "仍在运行（如远程管线）后恢复，保留 progress，清 error/agent_id，重置心跳。"
+        ),
+    )
     parser.add_argument("--block", action="store_true", help="set status=blocked, optional approval/error summary")
     parser.add_argument(
         "--confirmed",
@@ -227,10 +243,10 @@ def main() -> int:
     args = parser.parse_args()
 
     # Mutually exclusive action flags
-    _action_flags = [args.start, args.complete, args.fail, args.block, args.confirmed]
+    _action_flags = [args.start, args.complete, args.fail, args.interrupt, args.resume, args.block, args.confirmed]
     if sum(bool(f) for f in _action_flags) > 1:
         raise SystemExit(
-            "only one of --start, --complete, --fail, --block, --confirmed may be used at a time"
+            "only one of --start, --complete, --fail, --interrupt, --resume, --block, --confirmed may be used at a time"
         )
 
     plan_path = resolve_plan_path(args.plan)
@@ -308,6 +324,29 @@ def _main_locked(plan_path: Path, args: argparse.Namespace) -> int:
         target["heartbeat_at"] = stamp
         if args.error:
             target["error"] = args.error
+
+    if args.interrupt:
+        # 非终态：不写 completed_at（任务本体可能仍在运行），保留 progress 供恢复
+        target["status"] = "interrupted"
+        target["heartbeat_at"] = stamp
+        target["agent_id"] = None
+        if args.error:
+            target["error"] = args.error
+        else:
+            target["error"] = target.get("error") or "subagent wrapper 中断，任务本体状态未知"
+
+    if args.resume:
+        # 仅从 interrupted/failed 恢复：任务本体仍在运行（如远程管线）
+        if target.get("status") not in ("interrupted", "failed"):
+            raise SystemExit(
+                f"--resume 仅适用于 interrupted/failed 步骤（当前: {target.get('status')}）"
+            )
+        target["status"] = "running"
+        target["heartbeat_at"] = stamp
+        target["started_at"] = target.get("started_at") or stamp
+        target["agent_id"] = None
+        target["error"] = None
+        target["completed_at"] = None
 
     if args.block:
         target["status"] = "blocked"

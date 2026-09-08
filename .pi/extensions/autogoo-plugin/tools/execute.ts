@@ -410,7 +410,27 @@ async function runSchedule(
         if (ok) {
           execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--complete", "--note", `Subagent exit 0（兕底标记完成）`], cwd, { timeout: 10000 });
         } else {
-          execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--fail", "--error", result.errorMessage || `subagent exit ${result.exitCode}${result.timedOut ? "（超时）" : ""}`], cwd, { timeout: 10000 });
+          // 信号杀（143=SIGTERM / 137=SIGKILL）或超时：wrapper 中断 ≠ 任务失败。
+          // 远程管线（execution_target=remote）或本地任务本体可能仍在运行，
+          // 标 interrupted 让主 Agent 检查后 resume / 重启 / 确认失败，而不是直接 failed。
+          const killedBySignal = result.exitCode === 143 || result.exitCode === 137 || result.signal === "SIGTERM" || result.signal === "SIGKILL";
+          if (result.timedOut || killedBySignal) {
+            execPython(
+              UPDATE_STEP_PY,
+              [
+                "--plan", planPath,
+                "--step-id", String(step.id),
+                "--interrupt",
+                "--error",
+                result.errorMessage ||
+                  `subagent wrapper 中断（exit ${result.exitCode}${result.timedOut ? "，超时" : "，被信号杀"}），任务本体可能继续运行，需检查后恢复`,
+              ],
+              cwd,
+              { timeout: 10000 },
+            );
+          } else {
+            execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--fail", "--error", result.errorMessage || `subagent exit ${result.exitCode}`], cwd, { timeout: 10000 });
+          }
         }
       }
       return { stepId: step.id, status: stepNow?.status, result };
@@ -502,8 +522,19 @@ async function runHeartbeatCheck(
     if (age > staleSeconds) staleSteps.push(step);
   }
 
-  // Mark stale steps as failed or retry
+  // Mark stale steps: 远程步骤 wrapper 死亡 ≠ 任务失败 → interrupted（不自动重试，
+  // 避免重复启动远程管线）；本地步骤保留原逻辑（重试/失败）。
   for (const step of staleSteps) {
+    const isRemote =
+      (step as any).execution_target === "remote" || !!((step as any).remote_server);
+    if (isRemote) {
+      step.status = "interrupted";
+      step.error = `Heartbeat timeout > ${staleSeconds}s：wrapper 中断，远程管线可能继续运行，需检查后 resume / 重启 / 确认失败`;
+      step.agent_id = null;
+      lines.push(`⚠️ #${step.id} 心跳超时（远程步骤）→ interrupted，待检查`);
+      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--interrupt", "--error", step.error], cwd, { timeout: 10000 });
+      continue;
+    }
     if (((step as any).retry_count ?? 0) < MAX_RETRIES) {
       (step as any).retry_count = ((step as any).retry_count ?? 0) + 1;
       step.status = "pending";
@@ -512,10 +543,11 @@ async function runHeartbeatCheck(
       lines.push(`🔄 #${step.id} 重试 (#${(step as any).retry_count})`);
       execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--status", "pending", "--progress", "0", "--note", `Auto-retry #${(step as any).retry_count}`], cwd, { timeout: 10000 });
     } else {
-      step.status = "failed";
+      step.status = "interrupted";
       step.error = `Heartbeat timeout > ${staleSeconds}s`;
-      lines.push(`💀 #${step.id} 心跳超时`);
-      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--fail", "--error", step.error], cwd, { timeout: 10000 });
+      step.agent_id = null;
+      lines.push(`💀 #${step.id} 心跳超时（重试耗尽）→ interrupted，待检查`);
+      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--interrupt", "--error", step.error], cwd, { timeout: 10000 });
     }
   }
 

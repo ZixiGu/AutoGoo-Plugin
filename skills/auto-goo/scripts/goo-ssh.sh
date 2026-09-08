@@ -16,11 +16,17 @@ Examples:
   goo-ssh.sh --server user@gpu-a100.local:2222 -- nvidia-smi
   goo-ssh.sh --host 192.168.1.100 --user ubuntu --port 2222
 
+Options:
+  --workdir DIR    run the command in DIR (cd DIR && ...). Default: server defaults.workdir or ~
+  --no-env         skip sourcing ~/.bashrc / ~/.profile / ~/.bash_profile before the command
+                   (default: on, so conda/cuda PATH from remote rc files is loaded)
+
 Notes:
   --server accepts a configured server index, name, host/IP, host:port,
   user@host, or user@host:port.
-  Password-based login uses sshpass when a password exists in the configured
-  secrets file. If no password is configured, the helper falls back to plain ssh
+  When a password exists in the configured secrets file, key-based auth is
+  tried first (BatchMode), and password via sshpass is used only on
+  auth/connection failure. If no password is configured, plain ssh is used
   so key-based login and manual SSH auth still work.
 EOF
 }
@@ -30,6 +36,8 @@ SERVER_SELECTOR=""
 HOST_OVERRIDE=""
 USER_OVERRIDE=""
 PORT_OVERRIDE=""
+WORKDIR=""
+ENV_LOAD=1
 DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
@@ -58,6 +66,15 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "error: --port requires PORT" >&2; exit 2; }
       PORT_OVERRIDE="$2"
       shift 2
+      ;;
+    --workdir)
+      [[ $# -ge 2 ]] || { echo "error: --workdir requires a path" >&2; exit 2; }
+      WORKDIR="$2"
+      shift 2
+      ;;
+    --no-env)
+      ENV_LOAD=0
+      shift
       ;;
     --dry-run)
       DRY_RUN=1
@@ -217,9 +234,9 @@ if not host or not user:
 secrets_path = Path(secrets_file)
 if not secrets_path.is_absolute():
     secrets_path = project_root / secrets_path
-if not secrets_path.exists() and not dry_run:
-    fail(f"secrets file not found: {secrets_path}")
 
+# secrets 文件不存在 → 视为无密码（密钥认证 / manual auth），不报错；
+# 只有走密码认证（sshpass）时才需要 secrets 里有对应条目。
 password = None
 if secrets_path.exists():
     try:
@@ -289,20 +306,73 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "ssh target: $SSH_TARGET"
   echo "ssh port:   $PORT"
   echo "secrets:    $SECRETS_PATH"
+  if [[ -n "$WORKDIR" && "$WORKDIR" != "~" ]]; then
+    echo "workdir:    $WORKDIR"
+  fi
+  [[ "$ENV_LOAD" -eq 1 ]] && echo "env load:   on (sources ~/.bashrc ~/.profile ~/.bash_profile)"
   if [[ -n "$PASSWORD" ]]; then
-    echo "auth:       password via sshpass"
+    echo "auth:       key first, fallback password via sshpass"
   else
     echo "auth:       plain ssh (key/manual auth; no password loaded)"
   fi
-  echo "command:    ssh -p $PORT $SSH_TARGET $*"
+  echo "command:    ssh -p $PORT $SSH_TARGET ${WORKDIR:+cd $WORKDIR && }$*"
   exit 0
 fi
 
+# 连接参数统一收紧：目标不可达（防火墙丢包）时 ConnectTimeout=15 保证
+# 快速失败并输出错误，而不是 TCP 层挂起数分钟无任何输出；
+# ServerAlive* 在命令长时间无输出时探测保活，避免连接被中途掐断。
+SSH_BASE_ARGS=(-o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=3)
+
+# 远程命令前缀：workdir（cd）+ 环境加载（source 远程 rc 文件）。
+# ssh 默认非登录 shell 不加载 ~/.bashrc 等，conda/cuda 的 PATH 会丢失，
+# 导致 nvidia-smi / python 找不到 —— 默认加载，--no-env 可关闭。
+REMOTE_CMD=()
+if [[ -n "$WORKDIR" && "$WORKDIR" != "~" ]]; then
+  WORKDIR_ESCAPED="${WORKDIR//\'/\'\\'\'}"
+  REMOTE_CMD+=( "cd '$WORKDIR_ESCAPED' 2>/dev/null || { echo 'workdir not found: $WORKDIR' >&2; exit 126; };" )
+fi
+if [[ "$ENV_LOAD" -eq 1 ]]; then
+  REMOTE_CMD+=( '[ -f ~/.bashrc ] && . ~/.bashrc 2>/dev/null; [ -f ~/.profile ] && . ~/.profile 2>/dev/null; [ -f ~/.bash_profile ] && . ~/.bash_profile 2>/dev/null;' )
+fi
+REMOTE_CMD+=( "$@" )
+
+# 密钥优先：有密码时先试 BatchMode 密钥认证（不弹交互提示）。
+# 仅当失败原因是认证/连接类（Permission denied 等）才 return 2 允许密码回退；
+# 认证成功但命令执行失败时原样退出（绝不重复执行远程命令）。
+run_key_first() {
+  local errf msg ec
+  errf="$(mktemp "${TMPDIR:-/tmp}/autogoo-plugin-ssh-err.XXXXXX")"
+  if ssh -o BatchMode=yes "${SSH_BASE_ARGS[@]}" -p "$PORT" "$SSH_TARGET" "${REMOTE_CMD[@]}" 2>"$errf"; then
+    rm -f "$errf"
+    exit 0
+  else
+    ec=$?
+  fi
+  msg="$(cat "$errf" 2>/dev/null || true)"
+  rm -f "$errf"
+  if grep -qiE 'Permission denied|Host key verification|Connection refused|Connection timed out|Could not resolve|No route to host|Operation timed out|Too many authentication failures|Connection reset|Network is unreachable' <<<"$msg" 2>/dev/null; then
+    return 2
+  fi
+  [[ -n "$msg" ]] && printf '%s\n' "$msg" >&2
+  exit $ec
+}
+
 if [[ -z "$PASSWORD" ]]; then
   if [[ ! -t 0 ]]; then
-    exec ssh -o BatchMode=yes -p "$PORT" "$SSH_TARGET" "$@"
+    exec ssh -o BatchMode=yes "${SSH_BASE_ARGS[@]}" -p "$PORT" "$SSH_TARGET" "${REMOTE_CMD[@]}"
   fi
-  exec ssh -p "$PORT" "$SSH_TARGET" "$@"
+  exec ssh "${SSH_BASE_ARGS[@]}" -p "$PORT" "$SSH_TARGET" "${REMOTE_CMD[@]}"
+fi
+
+# 有密码：密钥优先，认证/连接失败（rc=2）再回退 sshpass
+if run_key_first; then
+  exit 0
+else
+  rc=$?
+fi
+if [[ "$rc" -ne 2 ]]; then
+  exit "$rc"
 fi
 
 PASS_FILE="$(mktemp "${TMPDIR:-/tmp}/autogoo-plugin-ssh-pass.XXXXXX")"
@@ -326,4 +396,7 @@ if ! command -v sshpass >/dev/null 2>&1; then
   exit 127
 fi
 
-exec sshpass -f "$PASS_FILE" ssh -p "$PORT" "$SSH_TARGET" "$@"
+# StrictHostKeyChecking=accept-new：新主机密钥自动加入 known_hosts，
+# 避免 ssh 输出 "Are you sure you want to continue connecting (yes/no)?"
+# 后 sshpass 匹配不到 password 提示而长时间无响应（旧行为：无输出直到超时）。
+exec sshpass -f "$PASS_FILE" ssh -o StrictHostKeyChecking=accept-new "${SSH_BASE_ARGS[@]}" -p "$PORT" "$SSH_TARGET" "${REMOTE_CMD[@]}"

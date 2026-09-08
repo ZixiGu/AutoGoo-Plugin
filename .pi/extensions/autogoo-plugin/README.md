@@ -62,7 +62,7 @@ pi
 | `goo-improve` | AutoGoo-Plugin 自改进审查 |
 | `goo-benchmark` | 启动性能评测与优化迭代 |
 
-## 自定义工具（13 个）
+## 自定义工具（17 个）
 
 LLM 在执行 DAG 时可调用的工具：
 
@@ -77,6 +77,10 @@ LLM 在执行 DAG 时可调用的工具：
 | `auto_goo_shell` | 安全执行 shell 命令 |
 | `auto_goo_ask_user` | 结构化用户交互（替代 AskUserQuestion） |
 | `auto_goo_ssh_exec` | SSH 远程执行命令 |
+| `auto_goo_ssh_monitor` | SSH 跟随监视（训练进度/日志/GPU，窗口流式） |
+| `auto_goo_ssh_monitor_bg` | SSH 后台监视（不阻塞，可并行做其他任务） |
+| `auto_goo_ssh_monitor_poll` | 查询后台监视状态与累积输出 |
+| `auto_goo_ssh_monitor_stop` | 终止后台监视 |
 | `auto_goo_ssh_status` | 检查远程服务器连通性和资源 |
 | `auto_goo_worktree_create` | 创建 Git worktree 执行隔离 |
 | `auto_goo_worktree_merge` | 合并 worktree 改动回主分支 |

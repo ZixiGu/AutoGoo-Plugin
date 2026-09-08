@@ -13,7 +13,7 @@
 
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { execBash } from "../utils/exec.js";
+import { execAsync } from "../utils/exec.js";
 import {
   REPO_ROOT,
   loadProjectConfig,
@@ -66,13 +66,12 @@ interface ResolvedServer {
  * 用户额外提供的 host/port/user 与配置冲突/缺失 → 询问是否更新原配置。
  * 返回解析后的 server + 过程说明行；用户拒绝时返回 cancelled。
  */
-async function resolveServer(
+export async function resolveServer(
   cwd: string,
   selector: string,
   provided: { host?: string; port?: number; user?: string },
   ctx: any,
-): Promise<ResolvedServer> {
-  const lines: string[] = [];
+): Promise<ResolvedServer> {  const lines: string[] = [];
   const config = await loadProjectConfig(cwd);
   const servers = getServers(config);
   const existing = servers.find(
@@ -96,13 +95,38 @@ async function resolveServer(
       };
     }
 
-    // 收集缺失字段（host / port / user 必填；type 可选）
-    let host = provided.host || (await ctx.ui.input(`未找到服务器 "${selector}"。请输入其主机/IP 以新增配置：`, ""));
-    let port = provided.port || Number(await ctx.ui.input(`请输入 ${selector} 的 SSH 端口：`, "22"));
-    let user = provided.user || (await ctx.ui.input(`请输入 ${selector} 的 SSH 用户名：`, ""));
-    host = (host || "").trim();
-    user = (user || "").trim();
-    if (!host || !port || !user) {
+    // 收集缺失字段：单次输入 user@host[:port]（已有字段自动合并，port 默认 22）。
+    // 旧实现三个独立 input 框（host/port/user）在 TUI 里容易跳过导致"信息不完整"。
+    let host = (provided.host || "").trim();
+    let port = provided.port ?? 0;
+    let user = (provided.user || "").trim();
+    if (!host || !user || !port) {
+      let combined = "";
+      try {
+        combined = (
+          (await ctx.ui.input(
+            `未找到服务器 "${selector}"。可用服务器: ${servers.map((s) => s.name).join(", ") || "无"}\n` +
+              `请输入连接串新增配置（格式 user@host[:port]，port 默认 22）：`,
+            "",
+          )) ?? ""
+        ).trim();
+      } catch {
+        /* ui 交互被中止（如 Esc） */
+      }
+      const m = combined.match(/^(?:(\S+)@)?([^:\s]+)(?::(\d+))?$/);
+      if (!m) {
+        return {
+          server: null as any,
+          lines,
+          cancelled:
+            `连接串格式不正确（应为 user@host[:port]）："${combined || "(空)"}"。未新增。可用服务器: ${servers.map((s) => s.name).join(", ") || "无"}`,
+        };
+      }
+      user = user || m[1] || "";
+      host = host || m[2];
+      port = port || Number(m[3] || 22);
+    }
+    if (!host || !user || !port) {
       return {
         server: null as any,
         lines,
@@ -213,7 +237,7 @@ export function registerSshTools(pi: ExtensionAPI): void {
       port: Type.Optional(Type.Integer({ description: "SSH 端口（与配置不一致或缺省时询问是否更新配置）" })),
       user: Type.Optional(Type.String({ description: "SSH 用户名（与配置不一致或缺省时询问是否更新配置）" })),
     }),
-    async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, ctx: any) {
+    async execute(_toolCallId: string, params: any, signal: any, onUpdate: any, ctx: any) {
       const cwd = ctx.cwd;
       const sshScript = join(REPO_ROOT, "skills/auto-goo/scripts/goo-ssh.sh");
 
@@ -244,15 +268,45 @@ export function registerSshTools(pi: ExtensionAPI): void {
       // 绝不拼进命令行（ps / shell history 可见）。
       const workdir = params.workdir || server.defaults?.workdir || "~";
 
-      // Execute via goo-ssh.sh
-      const result = execBash(sshScript, [
-        "--config", join(cwd, ".goo/config.json"),
-        "--server", server.name,
-        "--", params.command,
-      ], cwd, { timeout: params.timeout ?? 300000 });
+      const timeoutMs = params.timeout ?? 300000;
+      onUpdate?.({
+        content: [{
+          type: "text",
+          text: `🔌 连接 ${server.name} (${server.host || server.ip}:${server.port}) 执行远程命令（超时 ${Math.round(timeoutMs / 1000)}s）...`,
+        }],
+      });
 
-      const output = result.stdout || result.stderr || "(no output)";
-      const truncated = output.length > 5000 ? output.slice(0, 5000) + `\n\n... (${output.length - 5000} more bytes)` : output;
+      // 异步执行（不阻塞事件循环），输出增量流式转发到 TUI，AbortSignal 可中止。
+      // 密码仍只经 goo-ssh.sh 的 sshpass -f 临时文件传递，绝不进命令行。
+      const result = await execAsync(
+        sshScript,
+        [
+          "--config", join(cwd, ".goo/config.json"),
+          "--server", server.name,
+          "--workdir", workdir,
+          "--", params.command,
+        ],
+        cwd,
+        {
+          timeout: timeoutMs,
+          signal,
+          onStdout: (chunk) => onUpdate?.({ content: [{ type: "text", text: chunk }] }),
+          onStderr: (chunk) => onUpdate?.({ content: [{ type: "text", text: chunk }] }),
+        },
+      );
+
+      // 错误原因必须可见：非零退出/超时/中止都带诊断，绝不静默返回 "(no output)"。
+      let body: string;
+      if (result.exitCode === 0) {
+        body = result.stdout || "(no output)";
+      } else if (result.stderr.trim()) {
+        body = (result.stdout || "") + (result.stdout ? "\n" : "") + result.stderr;
+      } else {
+        body = result.stdout || `(exit code ${result.exitCode}, no output)`;
+      }
+      if (result.timedOut) body += `\n⚠️ 命令超过 ${Math.round(timeoutMs / 1000)}s 未完成，已终止。`;
+      if (result.aborted) body += `\n⚠️ 执行已被中止。`;
+      const truncated = body.length > 5000 ? body.slice(0, 5000) + `\n\n... (${body.length - 5000} more bytes)` : body;
 
       return {
         content: [{ type: "text", text: [prefixLines.join("\n"), truncated].filter(Boolean).join("\n") }],
@@ -260,7 +314,10 @@ export function registerSshTools(pi: ExtensionAPI): void {
           server: server.name,
           host: server.host || server.ip,
           exitCode: result.exitCode,
-          outputLength: output.length,
+          outputLength: result.stdout.length,
+          timedOut: result.timedOut,
+          aborted: result.aborted,
+          truncated: result.truncated,
         },
       };
     },
@@ -278,7 +335,7 @@ export function registerSshTools(pi: ExtensionAPI): void {
       port: Type.Optional(Type.Integer({ description: "SSH 端口（缺失时询问是否新增配置）" })),
       user: Type.Optional(Type.String({ description: "SSH 用户名（缺失时询问是否新增配置）" })),
     }),
-    async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, ctx: any) {
+    async execute(_toolCallId: string, params: any, signal: any, _onUpdate: any, ctx: any) {
       const cwd = ctx.cwd;
       const sshScript = join(REPO_ROOT, "skills/auto-goo/scripts/goo-ssh.sh");
       if (!existsSync(sshScript)) {
@@ -328,12 +385,13 @@ export function registerSshTools(pi: ExtensionAPI): void {
         lines.push(`  类型: ${server.type}`);
         lines.push(`  用途: ${server.purpose}`);
 
-        // Quick connectivity check（用 goo-ssh.sh，密码走 secrets 临时文件）
-        const pingResult = execBash(
+        // Quick connectivity check（用 goo-ssh.sh，密码走 secrets 临时文件；
+        // 异步执行 + ConnectTimeout=15，目标不可达时快速失败并有诊断输出）
+        const pingResult = await execAsync(
           sshScript,
           ["--config", join(cwd, ".goo/config.json"), "--server", server.name, "--", "echo OK"],
           cwd,
-          { timeout: 15000 },
+          { timeout: 15000, signal },
         );
 
         if (pingResult.exitCode !== 0) {
@@ -354,11 +412,11 @@ export function registerSshTools(pi: ExtensionAPI): void {
           (server.type === "gpu"
             ? `echo '---GPU---'; nvidia-smi --query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total --format=csv,noheader 2>/dev/null || echo 'nvidia-smi not found'`
             : "");
-        const infoResult = execBash(
+        const infoResult = await execAsync(
           sshScript,
           ["--config", join(cwd, ".goo/config.json"), "--server", server.name, "--", infoCmd],
           cwd,
-          { timeout: 20000 },
+          { timeout: 20000, signal },
         );
 
         if (infoResult.exitCode === 0) {
@@ -388,4 +446,150 @@ export function registerSshTools(pi: ExtensionAPI): void {
       };
     },
   });
+
+  // Tool: auto_goo_ssh_monitor
+  pi.registerTool({
+    name: "auto_goo_ssh_monitor",
+    label: "SSH Monitor (Follow)",
+    description: `在远程服务器上执行命令并持续观察指定时长（跟随模式）：输出实时流式返回，观察窗口结束（duration_seconds，默认 30s，最大 3600s）时自动终止远程命令并返回该时段完整输出。用于监视训练进度、日志尾部、GPU 占用等持续输出场景。`,
+    promptSnippet: "监视远程服务器上的持续输出（训练进度/日志/GPU）",
+    promptGuidelines: [
+      "用 auto_goo_ssh_monitor 监视持续输出的远程命令（如 tail -f 日志、训练指标、watch 等），duration_seconds 控制观察窗口（默认 30，最大 3600）。",
+      "窗口结束自动终止远程命令并返回该时段全部输出；timeout 124（窗口到期）归一化为正常结束。",
+      "随时可用 Esc 中断；timeout_seconds 可显式设置整体执行上限（默认 窗口+30s）。",
+      "单次快照用 auto_goo_ssh_exec；超长任务建议先在远程 tmux/nohup 托管，再周期快照。",
+    ],
+    parameters: Type.Object({
+      server: Type.String({ description: "服务器名称/别名（来自 config.json servers[].name）" }),
+      command: Type.String({ description: "远程命令（可含管道/重定向/引号，经 base64 编码后远程执行）" }),
+      duration_seconds: Type.Optional(Type.Integer({ description: "观察窗口秒数（默认 30，范围 1-3600）" })),
+      timeout_seconds: Type.Optional(Type.Integer({ description: "整体执行上限秒数（含连接/认证，不能小于窗口，默认 窗口+30）" })),
+      workdir: Type.Optional(Type.String({ description: "远程工作目录（可选，默认服务器 defaults.workdir 或 ~）" })),
+      host: Type.Optional(Type.String({ description: "服务器主机/IP（与配置不一致或缺省时询问是否更新配置）" })),
+      port: Type.Optional(Type.Integer({ description: "SSH 端口（与配置不一致或缺省时询问是否更新配置）" })),
+      user: Type.Optional(Type.String({ description: "SSH 用户名（与配置不一致或缺省时询问是否更新配置）" })),
+    }),
+    async execute(_toolCallId: string, params: any, signal: any, onUpdate: any, ctx: any) {
+      const cwd = ctx.cwd;
+      const sshScript = join(REPO_ROOT, "skills/auto-goo/scripts/goo-ssh.sh");
+      if (!existsSync(sshScript)) {
+        return {
+          content: [{ type: "text", text: `goo-ssh.sh 未找到: ${sshScript}` }],
+          details: { error: "script_not_found" },
+        };
+      }
+
+      const resolved = await resolveServer(
+        cwd,
+        params.server,
+        { host: params.host, port: params.port, user: params.user },
+        ctx,
+      );
+      if (resolved.cancelled || !resolved.server) {
+        return {
+          content: [{ type: "text", text: [resolved.cancelled, ...resolved.lines].filter(Boolean).join("\n") }],
+          details: { error: "server_not_resolved" },
+        };
+      }
+      const server = resolved.server;
+      const prefixLines = resolved.lines;
+
+      // 观察窗口归一化（1-3600s）
+      const duration = Math.min(3600, Math.max(1, Math.round(params.duration_seconds ?? 30)));
+
+      // 命令经 base64 编码后由远程 bash 解码执行：任意引号/管道/重定向都安全，
+      // 不会在 ssh 参数拼接阶段被破坏。窗口终止两条路径：
+      //   1) 远程有 timeout 命令 → timeout ${duration}s（124=窗口到期，归一化为 0）
+      //   2) 无 timeout（如精简容器/BSD）→ 后台运行 + sleep 到期 kill（143=SIGTERM，归一化为 0）
+      // 保证窗口必然到达、命令必然被终止，不会无限跑下去。
+      const b64 = Buffer.from(params.command, "utf-8").toString("base64");
+      const remoteCmd = buildMonitorRemoteCmd(params.command, duration);
+
+      const durationMs = duration * 1000;
+      const monitorWd = params.workdir || server.defaults?.workdir || "~";
+
+      // 本地工具超时：显式 timeout_seconds（不能小于窗口）或默认 窗口+30s 余量
+      const localTimeoutMs =
+        params.timeout_seconds
+          ? Math.max(Math.round(params.timeout_seconds) * 1000, durationMs)
+          : durationMs + 30000;
+      onUpdate?.({
+        content: [{ type: "text", text: `📡 监视 ${server.name} (${server.host || server.ip}) 输出，窗口 ${duration}s（整体上限 ${Math.round(localTimeoutMs / 1000)}s，期间显示 Working 属正常，输出实时累积，Esc 可中断；超长监视建议 auto_goo_ssh_monitor_bg 后台模式）...` }],
+      });
+
+      // 输出实时累积转发（pi 的 updateResult 是替换语义：只传增量会显示最后一段碎片，
+      // 传累积尾部才能看到完整输出），截断尾部防渲染压力
+      let liveOut = "";
+      const pushLive = (text: string) => {
+        liveOut = (liveOut + text).slice(-4000);
+        onUpdate?.({ content: [{ type: "text", text: liveOut }] });
+      };
+      const result = await execAsync(
+        sshScript,
+        [
+          "--config", join(cwd, ".goo/config.json"),
+          "--server", server.name,
+          "--workdir", monitorWd,
+          "--", remoteCmd,
+        ],
+        cwd,
+        {
+          timeout: localTimeoutMs,
+          signal,
+          onStdout: (chunk) => pushLive(chunk),
+          onStderr: (chunk) => pushLive(chunk),
+        },
+      );
+
+      const out = result.stdout;
+      const err = result.stderr;
+      const lineCount = out ? out.split("\n").filter(Boolean).length : 0;
+      let body =
+        `📡 监视窗口结束（${duration}s）：exit=${result.exitCode}，收集 ${lineCount} 行 / ${out.length} 字符\n` +
+        (out || "(无输出)");
+      if (err.trim()) body += `\n\n--- stderr ---\n${err}`;
+      if (result.timedOut) body += `\n⚠️ 本地执行超时（整体上限 ${Math.round(localTimeoutMs / 1000)}s），已终止。`;
+      if (result.aborted) body += `\n⚠️ 监视已被中止。`;
+      if (result.truncated) body += `\n⚠️ 输出超过上限被截断。`;
+      const truncated =
+        body.length > 8000 ? body.slice(0, 8000) + `\n\n... (${body.length - 8000} more bytes)` : body;
+
+      return {
+        content: [{ type: "text", text: [prefixLines.join("\n"), truncated].filter(Boolean).join("\n") }],
+        details: {
+          server: server.name,
+          host: server.host || server.ip,
+          durationSeconds: duration,
+          exitCode: result.exitCode,
+          durationReached: !result.aborted && !result.timedOut && !result.truncated,
+          outputLines: lineCount,
+          outputLength: out.length,
+        },
+      };
+    },
+  });
+}
+
+/**
+ * 构造远程监视命令：命令经 base64 编码后由远程 bash 解码执行（任意引号/管道/重定向安全），
+ * 观察窗口（duration 秒）到期必然终止：
+ *   1) 远程有 timeout → timeout ${duration}s（124=窗口到期，归一化 0）
+ *   2) 无 timeout → 后台运行 + sleep 到期 kill（143=SIGTERM，归一化 0）
+ * 前台 auto_goo_ssh_monitor 与后台 auto_goo_ssh_monitor_bg 共用。
+ */
+export function buildMonitorRemoteCmd(command: string, duration: number): string {
+  const b64 = Buffer.from(command, "utf-8").toString("base64");
+  return (
+    `if command -v timeout >/dev/null 2>&1; then ` +
+    `printf '%s' '${b64}' | base64 -d | timeout ${duration}s bash; ec=$?; [ "$ec" -eq 124 ] && ec=0; exit $ec; ` +
+    `else ` +
+    `printf '%s' '${b64}' | base64 -d > /tmp/agm.$$.sh; ` +
+    `bash /tmp/agm.$$.sh & bg=$!; ` +
+    `( sleep ${duration}; kill $bg 2>/dev/null ) & killer=$!; ` +
+    `wait $bg; ec=$?; ` +
+    `kill $killer 2>/dev/null; wait $killer 2>/dev/null; ` +
+    `rm -f /tmp/agm.$$.sh; ` +
+    `[ "$ec" -eq 143 ] && ec=0; exit $ec; ` +
+    `fi`
+  );
 }

@@ -51,6 +51,7 @@ import {
 // Tools
 import { registerExecuteTool } from "./tools/execute.js";
 import { registerSshTools } from "./tools/ssh.js";
+import { registerMonitorBgTools } from "./tools/monitor-bg.js";
 import { registerWorktreeTools } from "./tools/worktree.js";
 
 // Utils
@@ -220,6 +221,12 @@ export default function (pi: ExtensionAPI) {
   // 子进程模式跳过：Subagent 不应执行远程服务器操作。
   if (!isSubagent) {
     registerSshTools(pi);
+  }
+
+  // ── Register background monitor tools ─────────────────────────────────────
+  // 后台监视（bg/poll/stop）与 ssh 工具同生命周期：仅主进程注册。
+  if (!isSubagent) {
+    registerMonitorBgTools(pi);
   }
 
   // ── Register worktree isolation tools ─────────────────────────────────────

@@ -20,7 +20,7 @@ def test_versions_are_consistent() -> None:
     assert re.search(r"^version:\s*0\.5\.1$", skill, re.MULTILINE)
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "当前版本：**v0.5.1**" in readme
-    assert "13 个自定义工具" in readme
+    assert "17 个自定义工具" in readme
 
 
 def test_pi_relative_imports_exist() -> None:

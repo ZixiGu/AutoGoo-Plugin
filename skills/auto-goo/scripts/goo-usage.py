@@ -8,6 +8,7 @@ Controls: ←→ / 1-4 switch tabs, q quit
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import select
@@ -324,7 +325,9 @@ def parse_args() -> argparse.Namespace:
                    help="Add model price per 1M tokens")
     p.add_argument("--include-synthetic", action="store_true",
                    help="Include <synthetic> log rows")
-    p.add_argument("--once", action="store_true", help="Print once and exit")
+    p.add_argument("--once", action="store_true",
+                   help="Print once, then open the interactive selection UI (q to exit); "
+                        "without a TTY prints once and exits")
     p.add_argument("--interval", type=float, default=30.0, help="Refresh interval (seconds)")
     p.add_argument("--tab", choices=TABS, default="overview",
                    help="Initial tab (default: overview)")
@@ -349,23 +352,80 @@ def parse_args() -> argparse.Namespace:
 
 # ── Keyboard Input ───────────────────────────────────────────────────────────
 
-def read_key(timeout: float = 0.1) -> str | None:
+# 会话级 raw 模式：read_key(keep_raw=True) 首次进入 cbreak 后保持，避免
+# 每次调用后恢复 canonical 造成微秒级间隙把按键卡进行缓冲（等换行才送达）。
+_RAW_STATE: dict = {"fd": None, "old": None, "active": False}
+
+
+def _enter_raw(fd: int) -> None:
+    if _RAW_STATE["active"]:
+        return
+    _RAW_STATE["old"] = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+    _RAW_STATE["fd"] = fd
+    _RAW_STATE["active"] = True
+
+
+def restore_raw() -> None:
+    """退出时恢复终端原始属性（与 keep_raw=True 配对使用）。"""
+    if _RAW_STATE["active"] and _RAW_STATE["fd"] is not None and _RAW_STATE["old"] is not None:
+        try:
+            termios.tcsetattr(_RAW_STATE["fd"], termios.TCSADRAIN, _RAW_STATE["old"])
+        except (termios.error, OSError):
+            pass
+        _RAW_STATE["active"] = False
+
+
+def read_key(timeout: float = 0.1, keep_raw: bool = False) -> str | None:
     if not sys.stdin.isatty():
         return None
     try:
         fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
+        if not _RAW_STATE["active"]:
+            _enter_raw(fd)
         try:
-            tty.setcbreak(fd)
             if select.select([sys.stdin], [], [], timeout)[0]:
                 ch = os.read(fd, 1)
                 if ch == b'\x1b':
-                    if select.select([sys.stdin], [], [], 0.02)[0]:
-                        seq = os.read(fd, 2)
-                        if seq == b'[C':
-                            return 'right'
-                        elif seq == b'[D':
-                            return 'left'
+                    # 逐字节读后续序列（方向键/PgUp/PgDn/Home/End/SGR 滚轮）。
+                    # 每读一字节即检查是否已构成完整已知序列，一旦完整立即 break：
+                    # 不会吞掉紧随其后的按键（如快速连按后接 q），也不会等满超时。
+                    seq = b''
+                    while len(seq) < 16:
+                        if not select.select([sys.stdin], [], [], 0.05)[0]:
+                            break
+                        seq += os.read(fd, 1)
+                        if seq.startswith(b'[<') and seq[-1:] in (b'M', b'm'):
+                            break  # SGR 鼠标序列完成
+                        if seq in (b'[A', b'[B', b'[C', b'[D', b'[H', b'[F', b'[5~', b'[6~'):
+                            break  # 方向键/PgUp/PgDn/Home/End 完成
+                    if seq.startswith(b'[<') and seq[-1:] in (b'M', b'm'):
+                        m = _re.match(rb'^\[<(\d+);(\d+);(\d+)([Mm])$', seq)
+                        if m:
+                            btn = int(m.group(1))
+                            if btn == 64:
+                                return 'wheel_up'
+                            if btn == 65:
+                                return 'wheel_down'
+                            return None
+                    if seq == b'[A':
+                        return 'up'
+                    elif seq == b'[B':
+                        return 'down'
+                    elif seq == b'[C':
+                        return 'right'
+                    elif seq == b'[D':
+                        return 'left'
+                    elif seq == b'[H':
+                        return 'home'
+                    elif seq == b'[F':
+                        return 'end'
+                    elif seq == b'[5~':
+                        return 'page_up'
+                    elif seq == b'[6~':
+                        return 'page_down'
+                elif ch in (b'j', b'k'):
+                    return 'down' if ch == b'j' else 'up'
                 elif ch in (b'1', b'2', b'3', b'4'):
                     return ch.decode()
                 elif ch == b'\t':
@@ -376,8 +436,13 @@ def read_key(timeout: float = 0.1) -> str | None:
                     return 'bracket_left'
                 elif ch == b']':
                     return 'bracket_right'
+                elif ch == b'h':
+                    return 'bracket_left'
+                elif ch == b'l':
+                    return 'bracket_right'
         finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            if not keep_raw:
+                restore_raw()
     except (termios.error, OSError):
         pass
     return None
@@ -464,47 +529,105 @@ def resolve_user_turn(parent_uuid: str | None, nodes: dict[str, dict[str, object
     return {}
 
 
-def iter_records(input_dir: Path, since: str | None, until: str | None):
-    for path in sorted(input_dir.glob("**/*.jsonl")):
-        nodes: dict[str, dict[str, object]] = {}
-        with path.open(encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                uuid = obj.get("uuid")
-                if uuid:
-                    nodes[str(uuid)] = {
-                        "uuid": str(uuid),
-                        "parentUuid": obj.get("parentUuid") or "",
-                        "type": obj.get("type") or "",
-                        "timestamp": obj.get("timestamp") or "",
-                        "prompt": message_text(obj.get("message") or {}),
-                    }
-                message = obj.get("message") or {}
-                usage = message.get("usage") or {}
-                if not usage:
-                    continue
-                timestamp = str(obj.get("timestamp", ""))
-                if since and timestamp < since:
-                    continue
-                if until and timestamp > until:
-                    continue
-                user_turn = resolve_user_turn(obj.get("parentUuid"), nodes)
-                yield {
-                    "timestamp": timestamp,
-                    "sessionId": str(obj.get("sessionId", "")),
-                    "cwd": str(obj.get("cwd", "")),
-                    "model": str(message.get("model", "")),
-                    "input_tokens": _safe_int(usage.get("input_tokens")),
-                    "output_tokens": _safe_int(usage.get("output_tokens")),
-                    "cache_creation_input_tokens": _safe_int(usage.get("cache_creation_input_tokens")),
-                    "cache_read_input_tokens": _safe_int(usage.get("cache_read_input_tokens")),
-                    "turnId": str(user_turn.get("uuid", obj.get("parentUuid", ""))),
+def _parse_claude_file(path: Path, since: str | None, until: str | None) -> list[dict[str, object]]:
+    """解析单个 Claude Code session JSONL 文件 → 该文件的行。
+    nodes 为文件内引用表，线程内独立，可安全并行。"""
+    out: list[dict[str, object]] = []
+    nodes: dict[str, dict[str, object]] = {}
+    with path.open(encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            uuid = obj.get("uuid")
+            if uuid:
+                nodes[str(uuid)] = {
+                    "uuid": str(uuid),
+                    "parentUuid": obj.get("parentUuid") or "",
+                    "type": obj.get("type") or "",
+                    "timestamp": obj.get("timestamp") or "",
                 }
+            message = obj.get("message") or {}
+            usage = message.get("usage") or {}
+            if not usage:
+                continue
+            timestamp = str(obj.get("timestamp", ""))
+            if since and timestamp < since:
+                continue
+            if until and timestamp > until:
+                continue
+            user_turn = resolve_user_turn(obj.get("parentUuid"), nodes)
+            out.append({
+                "timestamp": timestamp,
+                "sessionId": str(obj.get("sessionId", "")),
+                "cwd": str(obj.get("cwd", "")),
+                "model": str(message.get("model", "")),
+                "input_tokens": _safe_int(usage.get("input_tokens")),
+                "output_tokens": _safe_int(usage.get("output_tokens")),
+                "cache_creation_input_tokens": _safe_int(usage.get("cache_creation_input_tokens")),
+                "cache_read_input_tokens": _safe_int(usage.get("cache_read_input_tokens")),
+                "turnId": str(user_turn.get("uuid", obj.get("parentUuid", ""))),
+            })
+    return out
 
 
+def iter_records(input_dir: Path, since: str | None, until: str | None):
+    # 顺序解析（实测线程池因 GIL 反而更慢）；首帧慢由磁盘缓存解决
+    for path in sorted(input_dir.glob("**/*.jsonl")):
+        yield from _parse_claude_file(path, since, until)
+
+
+def _parse_codex_file(jsonl: Path, since: str | None, until: str | None,
+                      thread_info: dict[str, tuple[str, str]]) -> list[dict[str, object]]:
+    """解析单个 Codex rollout JSONL 文件。thread_info 只读共享，安全。"""
+    out: list[dict[str, object]] = []
+    session_id = None
+    cwd = ""
+    model_name = "unknown"
+    with jsonl.open(encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("type") == "session_meta":
+                session_id = obj["payload"].get("session_id", "")
+                _tinfo = thread_info.get(session_id or "", ("", "unknown"))
+                cwd = _tinfo[0]
+                model_name = _tinfo[1]
+                continue
+            if obj.get("type") != "event_msg":
+                continue
+            if obj["payload"].get("type") != "token_count":
+                continue
+            info = obj["payload"].get("info") or {}
+            ltu = info.get("last_token_usage") or {}
+            if not ltu:
+                continue
+            timestamp = obj.get("timestamp", "")
+            if since and timestamp < since:
+                continue
+            if until and timestamp > until:
+                continue
+            inp = _safe_int(ltu.get("input_tokens"))
+            out_t = _safe_int(ltu.get("output_tokens"))
+            cached = _safe_int(ltu.get("cached_input_tokens"))
+            reasoning = _safe_int(ltu.get("reasoning_output_tokens"))
+            pass  # cwd already set from thread_info
+            out.append({
+                "timestamp": timestamp,
+                "sessionId": f"codex:{session_id}" if session_id else "",
+                "cwd": cwd,
+                "model": model_name or "unknown",
+                "input_tokens": inp,
+                "output_tokens": out_t + reasoning,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": cached,
+                "turnId": timestamp,
+                "source": "codex",
+            })
+    return out
 
 
 def iter_codex_records(sessions_dir: Path, since: str | None, until: str | None):
@@ -522,101 +645,62 @@ def iter_codex_records(sessions_dir: Path, since: str | None, until: str | None)
             _conn.close()
         except Exception:
             pass
+    files = sorted(sessions_dir.rglob("rollout-*.jsonl"))
+    # 顺序解析（GIL 下线程池更慢，见 iter_records 注释）
+    for jsonl in files:
+        yield from _parse_codex_file(jsonl, since, until, thread_info)
 
-    for jsonl in sorted(sessions_dir.rglob("rollout-*.jsonl")):
-        session_id = None
-        cwd = ""
-        model_name = "unknown"
-        with jsonl.open(encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("type") == "session_meta":
-                    session_id = obj["payload"].get("session_id", "")
-                    _tinfo = thread_info.get(session_id or "", ("", "unknown"))
-                    cwd = _tinfo[0]
-                    model_name = _tinfo[1]
-                    continue
-                if obj.get("type") != "event_msg":
-                    continue
-                if obj["payload"].get("type") != "token_count":
-                    continue
-                info = obj["payload"].get("info") or {}
-                ltu = info.get("last_token_usage") or {}
-                if not ltu:
-                    continue
-                timestamp = obj.get("timestamp", "")
-                if since and timestamp < since:
-                    continue
-                if until and timestamp > until:
-                    continue
-                inp = _safe_int(ltu.get("input_tokens"))
-                out = _safe_int(ltu.get("output_tokens"))
-                cached = _safe_int(ltu.get("cached_input_tokens"))
-                reasoning = _safe_int(ltu.get("reasoning_output_tokens"))
-                pass  # cwd already set from thread_info
-                yield {
-                    "timestamp": timestamp,
-                    "sessionId": f"codex:{session_id}" if session_id else "",
-                    "cwd": cwd,
-                    "model": model_name or "unknown",
-                    "input_tokens": inp,
-                    "output_tokens": out + reasoning,
-                    "cache_creation_input_tokens": 0,
-                    "cache_read_input_tokens": cached,
-                    "turnId": timestamp,
-                    "source": "codex",
-                }
+
+def _parse_pi_file(sess_file: Path, since: str | None, until: str | None) -> list[dict[str, object]]:
+    """解析单个 Pi Coding Agent session JSONL 文件。文件内状态独立，可并行。"""
+    out: list[dict[str, object]] = []
+    header = None
+    with sess_file.open(encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("type") == "session":
+                header = obj
+                continue
+            if obj.get("type") != "message":
+                continue
+            msg = obj.get("message") or {}
+            if msg.get("role") != "assistant":
+                continue
+            usage = msg.get("usage") or {}
+            if not usage:
+                continue
+            timestamp = str(obj.get("timestamp", ""))
+            if since and timestamp < since:
+                continue
+            if until and timestamp > until:
+                continue
+            sid = (header or {}).get("id", "") or sess_file.stem
+            out.append({
+                "timestamp": timestamp,
+                "sessionId": sid,
+                "cwd": (header or {}).get("cwd", ""),
+                "model": str(msg.get("model", "")),
+                "input_tokens": _safe_int(usage.get("input")),
+                "output_tokens": _safe_int(usage.get("output")),
+                "cache_creation_input_tokens": _safe_int(usage.get("cacheWrite")),
+                "cache_read_input_tokens": _safe_int(usage.get("cacheRead")),
+                "turnId": timestamp,
+                "source": "pi",
+            })
+    return out
 
 
 def iter_pi_records(pi_dir: Path, since: str | None, until: str | None):
     """Read Pi Coding Agent session JSONL files and yield normalized usage rows."""
     if not pi_dir.exists():
         return
-    for proj_dir in sorted(pi_dir.iterdir()):
-        if not proj_dir.is_dir():
-            continue
-        for sess_file in sorted(proj_dir.glob("*.jsonl")):
-            with sess_file.open(encoding="utf-8", errors="ignore") as f:
-                header = None
-                for line in f:
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    # Capture session header for cwd
-                    if obj.get("type") == "session":
-                        header = obj
-                        continue
-                    if obj.get("type") != "message":
-                        continue
-                    msg = obj.get("message") or {}
-                    if msg.get("role") != "assistant":
-                        continue
-                    usage = msg.get("usage") or {}
-                    if not usage:
-                        continue
-                    timestamp = str(obj.get("timestamp", ""))
-                    if since and timestamp < since:
-                        continue
-                    if until and timestamp > until:
-                        continue
-                    # Use session header id (file-level session) or filename as fallback
-                    sid = (header or {}).get("id", "") or sess_file.stem
-                    yield {
-                        "timestamp": timestamp,
-                        "sessionId": sid,
-                        "cwd": (header or {}).get("cwd", ""),
-                        "model": str(msg.get("model", "")),
-                        "input_tokens": _safe_int(usage.get("input")),
-                        "output_tokens": _safe_int(usage.get("output")),
-                        "cache_creation_input_tokens": _safe_int(usage.get("cacheWrite")),
-                        "cache_read_input_tokens": _safe_int(usage.get("cacheRead")),
-                        "turnId": timestamp,
-                        "source": "pi",
-                    }
+    files = [f for d in sorted(pi_dir.iterdir()) if d.is_dir() for f in sorted(d.glob("*.jsonl"))]
+    # 顺序解析（GIL 下线程池更慢，见 iter_records 注释）
+    for sess_file in files:
+        yield from _parse_pi_file(sess_file, since, until)
 
 
 def load_records(input_dir: Path, since: str | None, until: str | None,
@@ -755,13 +839,102 @@ def project_label(cwd: str) -> str:
 
 # ── Data Aggregation ─────────────────────────────────────────────────────────
 
+# collect() 结果内存缓存：滚动/切 tab 每帧都调用 collect（--once 会话内数据不变，
+# 整会话缓存避免每帧重读磁盘缓存；live 模式 TTL=interval 每次刷新重读）。
+_COLLECT_CACHE: dict[tuple, tuple[float, list, str, str]] = {}
+
+
+# ── 磁盘缓存：usage 源文件数百个 JSONL，首帧/刷新全量解析约 2s。
+# 按「源文件列表 + mtime」指纹把解析结果（未过滤窗口）落盘，文件没变则下次直接读。
+# 首次解析后：启动、live 刷新、滚动全部毫秒级。
+_DISK_CACHE_DIR = Path.home() / ".auto-goo" / "cache"
+_DISK_CACHE_ROWS = _DISK_CACHE_DIR / "goo-usage-rows.jsonl"
+_DISK_CACHE_META = _DISK_CACHE_DIR / "goo-usage-meta.json"
+_DISK_CACHE_VERSION = 1
+
+
+def _source_files(args: argparse.Namespace) -> list[Path]:
+    """当前启用的全部 usage 源文件（claude/codex/pi）。"""
+    files: list[Path] = []
+    use_claude, codex_dir, pi_dir = source_flags(args)
+    if use_claude:
+        files.extend(args.input_dir.glob("**/*.jsonl"))
+    if codex_dir and codex_dir.exists():
+        files.extend(codex_dir.rglob("rollout-*.jsonl"))
+    if pi_dir and pi_dir.exists():
+        files.extend(f for d in pi_dir.iterdir() if d.is_dir() for f in d.glob("*.jsonl"))
+    return files
+
+
+def _fingerprint(files: list[Path]) -> str:
+    h = hashlib.sha256()
+    for p in sorted(files, key=lambda x: str(x)):
+        try:
+            st = p.stat()
+            h.update(f"{p}\0{st.st_mtime_ns}\0{st.st_size}\0".encode())
+        except OSError:
+            pass
+    return h.hexdigest()
+
+
+def _load_all_rows(args: argparse.Namespace) -> list[dict[str, object]]:
+    """全量行读取（不做窗口过滤），带磁盘缓存。任何缓存环节失败都退回直接解析。"""
+    try:
+        files = _source_files(args)
+        fp = _fingerprint(files)
+        if _DISK_CACHE_META.exists() and _DISK_CACHE_ROWS.exists():
+            try:
+                meta = json.loads(_DISK_CACHE_META.read_text(encoding="utf-8"))
+                if meta.get("version") == _DISK_CACHE_VERSION and meta.get("fingerprint") == fp:
+                    rows: list[dict[str, object]] = []
+                    with _DISK_CACHE_ROWS.open(encoding="utf-8") as f:
+                        for line in f:
+                            rows.append(json.loads(line))
+                    return rows
+            except Exception:
+                pass
+        use_claude, codex_dir, pi_dir = source_flags(args)
+        rows = load_records(args.input_dir, None, None, args.include_synthetic,
+                            use_claude=use_claude, codex_dir=codex_dir, pi_dir=pi_dir)
+        try:
+            _DISK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            with _DISK_CACHE_ROWS.open("w", encoding="utf-8") as f:
+                for r in rows:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            _DISK_CACHE_META.write_text(
+                json.dumps({"version": _DISK_CACHE_VERSION, "fingerprint": fp, "count": len(rows)}),
+                encoding="utf-8")
+        except Exception:
+            pass
+        return rows
+    except Exception:
+        use_claude, codex_dir, pi_dir = source_flags(args)
+        return load_records(args.input_dir, None, None, args.include_synthetic,
+                            use_claude=use_claude, codex_dir=codex_dir, pi_dir=pi_dir)
+
+
 def collect(args: argparse.Namespace, tz: timezone | ZoneInfo) -> tuple[list[dict[str, object]], str, str]:
     since_dt, until_dt = window_bounds(args, tz)
     since = iso_bound(since_dt)
     until = iso_bound(until_dt)
     use_claude, codex_dir, pi_dir = source_flags(args)
-    rows = load_records(args.input_dir, since, until, args.include_synthetic,
-                        use_claude=use_claude, codex_dir=codex_dir, pi_dir=pi_dir)
+    # realtime 视图 until=now 每秒变化；key 截到分钟级避免滚动/切 tab 每帧 miss
+    key = (str(args.input_dir), since[:16], until[:16], args.include_synthetic,
+           use_claude, str(codex_dir), str(pi_dir))
+    # --once 会话内数据不变 → 整会话缓存（滚动/切 tab 永不重扫）；
+    # live 模式 TTL=interval：每次定时刷新重新采集，刷新间滚动即时。
+    ttl = float("inf") if getattr(args, "once", False) else max(30.0, getattr(args, "interval", 30.0))
+    now = time.monotonic()
+    hit = _COLLECT_CACHE.get(key)
+    if hit and now - hit[0] < ttl:
+        return hit[1], hit[2], hit[3]
+    # 磁盘缓存行未过滤窗口：在内存按 since/until 过滤（行数小，毫秒级）
+    rows = _load_all_rows(args)
+    if since:
+        rows = [r for r in rows if str(r.get("timestamp", "")) >= since]
+    if until:
+        rows = [r for r in rows if str(r.get("timestamp", "")) <= until]
+    _COLLECT_CACHE[key] = (now, rows, since, until)
     return rows, since, until
 
 
@@ -1026,6 +1199,26 @@ def render_projects(args: argparse.Namespace, pricing: dict[str, dict[str, float
     return 0
 
 
+def render_token_breakdown(input_t: int, output_t: int, cache_w: int, cache_r: int,
+                           indent: str = "      ") -> int:
+    """Render the concrete input / output / cache-write / cache-read breakdown.
+    Shared by the Models tab and the History per-model breakdown so their
+    formats stay identical. Returns the model token total.
+    """
+    model_total = max(1, input_t + output_t + cache_w + cache_r)
+    max_t = max(input_t, output_t, cache_w, cache_r, 1)
+    print(f"    Usage Breakdown  (input / output / cache-write / cache-read):")
+    for label, val, col in (
+        ("Input",       input_t,  GREEN),
+        ("Output",      output_t, CYAN),
+        ("Cache Write", cache_w,  YELLOW),
+        ("Cache Read",  cache_r,  MAGENTA),
+    ):
+        print(f"      {label:<12} {fmt_col(c(fmt_int_full(val), col), 13, '>')} tok  "
+              f"{c(f'({fmt_pct(val, model_total)})', col)}  {hbar(val, max_t, width=16)}")
+    return model_total
+
+
 def render_models(args: argparse.Namespace, pricing: dict[str, dict[str, float]],
                   tz: timezone | ZoneInfo) -> int:
     rows, since, until = collect(args, tz)
@@ -1056,17 +1249,15 @@ def render_models(args: argparse.Namespace, pricing: dict[str, dict[str, float]]
         eff = m["tokens"] / max(1, m["messages"])
         print(f"    Messages:   {fmt_int_full(m['messages']):>12}  │  Efficiency: {c(f'{eff:,.0f}', CYAN)} tok/msg")
 
-        input_t = m.get("input_tokens", 0) + m.get("cache_create", 0)
+        input_t = m.get("input_tokens", 0)
         output_t = m.get("output_tokens", 0)
-        total_m = max(1, input_t + output_t)
-        io_ratio = output_t / max(1, input_t) * 100
-        print(f"    I/O Ratio:  {c(f'{io_ratio:.1f}%', BLUE)} output  "
-              f"{hbar(output_t, total_m, width=20)}")
+        cache_w = m.get("cache_create", 0)   # cache write / prompt-cache creation
+        cache_r = m.get("cache_read", 0)     # cache read / cache hits
+        render_token_breakdown(input_t, output_t, cache_w, cache_r)
 
-        cache_t = m.get("cache_read", 0)
-        cache_rate = cache_t / max(1, input_t + cache_t)
+        cache_rate = cache_r / max(1, input_t + cache_w + cache_r)
         print(f"    Cache Hit:  {c(f'{cache_rate * 100:.1f}%', MAGENTA if cache_rate > 0.3 else YELLOW)}  "
-              f"({c(fmt_int_full(cache_t), MAGENTA)} cached tokens)")
+              f"of input-side tokens served from cache")
 
         if pricing and m["cost"] > 0:
             cost_per_msg = m["cost"] / max(1, m["messages"])
@@ -1108,7 +1299,7 @@ def render_history(args: argparse.Namespace, pricing: dict[str, dict[str, float]
             period_parts.append(cbold(f"[{label}]", WHITE))
         else:
             period_parts.append(c(f"{label}", MUTED))
-    print("  Period: " + "  ".join(period_parts) + c("    —  [ / ] switch", MUTED))
+    print("  Period: " + "  ".join(period_parts) + c("    —  [ ] h/l switch", MUTED))
     print()
 
     period_label = HISTORY_PERIOD_LABELS[period]
@@ -1145,6 +1336,61 @@ def render_history(args: argparse.Namespace, pricing: dict[str, dict[str, float]
         print(f"  {c(day, WHITE)}  {fmt_col(c(fmt_int_full(tokens), GREEN), 12, '>')} {bar_str} {fmt_int_full(messages):>6} msgs{cost_str}")
 
     print()
+
+    # ── Per-model breakdown for the period ──
+    by_model: dict[str, int] = {}
+    by_model_cost: dict[str, float] = {}
+    by_model_msgs: dict[str, set[str]] = defaultdict(set)
+    by_model_io: dict[str, dict[str, int]] = defaultdict(lambda: {
+        "input": 0, "output": 0, "cache_w": 0, "cache_r": 0,
+    })
+    for row in all_rows:
+        model = str(row.get("model") or "unknown")
+        by_model[model] = by_model.get(model, 0) + token_total(row)
+        by_model_cost[model] = by_model_cost.get(model, 0.0) + row_cost(row, pricing)
+        tid = str(row.get("turnId") or "")
+        if tid:
+            by_model_msgs[model].add(tid)
+        io = by_model_io[model]
+        io["input"]   += int(row.get("input_tokens") or 0)
+        io["output"]  += int(row.get("output_tokens") or 0)
+        io["cache_w"] += int(row.get("cache_creation_input_tokens") or 0)
+        io["cache_r"] += int(row.get("cache_read_input_tokens") or 0)
+    if by_model:
+        # Compact table: one row per model keeps many models readable. Full
+        # in/out/cache detail lives in the Models tab (render_token_breakdown),
+        # and overall Total Cost is shown in the summary block above.
+        print(cbold("  ◆  Model Breakdown", WHITE))
+        total_model_tokens = sum(by_model.values()) or 1
+        model_w = max(12, min(max((len(m) for m in by_model), default=12), 17))
+        cols = [
+            ("Model",  model_w, "<"),
+            ("Tokens", 8, ">"),
+            ("%",      6, ">"),
+            ("Input",  6, ">"),
+            ("Output", 7, ">"),
+            ("CacheW", 6, ">"),
+            ("CacheR", 8, ">"),
+            ("Msgs",   6, ">"),
+        ]
+        def fmt_row(values) -> str:
+            return "  " + " ".join(fmt_col(v, w, a) for v, (_, w, a) in zip(values, cols))
+        print(fmt_row([c(h, MUTED) for h, _, _ in cols]))
+        for model in sorted(by_model, key=lambda x: by_model[x], reverse=True):
+            tok = by_model[model]
+            io = by_model_io[model]
+            msgs = len(by_model_msgs[model])
+            print(fmt_row([
+                c(model[:model_w].ljust(model_w), model_color(model)),
+                c(fmt_int(tok), GREEN),
+                c(fmt_pct(tok, total_model_tokens), WHITE),
+                c(fmt_int(io["input"]), CYAN),
+                c(fmt_int(io["output"]), BLUE),
+                c(fmt_int(io["cache_w"]), YELLOW),
+                c(fmt_int(io["cache_r"]), MAGENTA),
+                c(fmt_int_full(msgs), MUTED),
+            ]))
+        print()
 
     # ── Trend arrow (7d/30d only) ──
     if period != "all" and len(daily) >= 4:
@@ -1398,6 +1644,135 @@ def run_serve(args, pricing, tz):
     return 0
 
 
+def _nav_key(key: str | None, current_tab: str, history_period: str) -> tuple[str, str]:
+    """Map a pressed key to the (tab, period) to switch to. No-op keys return current."""
+    if key in ("left",):
+        idx = TABS.index(current_tab)
+        return TABS[(idx - 1) % len(TABS)], history_period
+    if key in ("right", "tab"):
+        idx = TABS.index(current_tab)
+        return TABS[(idx + 1) % len(TABS)], history_period
+    if key in ("1", "2", "3", "4"):
+        return TABS[int(key) - 1], history_period
+    if key == "bracket_left":
+        idx = HISTORY_PERIODS.index(history_period)
+        return current_tab, HISTORY_PERIODS[(idx - 1) % len(HISTORY_PERIODS)]
+    if key == "bracket_right":
+        idx = HISTORY_PERIODS.index(history_period)
+        return current_tab, HISTORY_PERIODS[(idx + 1) % len(HISTORY_PERIODS)]
+    return current_tab, history_period
+
+
+def _render_windowed(args, pricing, tz, current_tab, history_period, height: int, scroll: int, window: bool):
+    """渲染当前 tab，但只输出可见视口（height 行）。非 TTY/窗口关闭时原样输出。
+    返回 (rc, total_lines) 供调用方夹取滚动偏移。"""
+    if not window:
+        rc = render(args, tab=current_tab, pricing=pricing, tz=tz, history_period=history_period)
+        return rc, 0
+    import contextlib as _ctx, io as _io
+    buf = _io.StringIO()
+    with _ctx.redirect_stdout(buf):
+        rc = render(args, tab=current_tab, pricing=pricing, tz=tz, history_period=history_period)
+    lines = buf.getvalue().split("\n")
+    while lines and lines[-1] == "":
+        lines.pop()
+    total = len(lines)
+    max_scroll = max(0, total - height)
+    scroll = min(scroll, max_scroll)
+    if total <= height:
+        print("\n".join(lines))
+        return rc, total
+    # 内容占 height-1 行，末行显示滚动条与提示
+    print("\n".join(lines[scroll:scroll + height - 1]))
+    bar_w = max(6, height - 2)
+    pos = scroll / max(1, max_scroll)
+    filled = max(1, round(pos * bar_w))
+    bar = "█" * filled + "░" * (bar_w - filled)
+    print(f"{DIM}  {scroll + 1}-{min(scroll + height - 1, total)}/{total}  [{bar}]  ↑/↓ k/j PgUp/PgDn wheel Home/End{RESET}")
+    return rc, total
+
+
+def run_interactive(args, pricing, tz, current_tab: str, history_period: str, live: bool, interval: float) -> int:
+    """Interactive tab-selection UI. Only 'q' (or Ctrl+C) exits.
+
+    live=True  -> default dashboard: auto-refresh on interval.
+    live=False -> --once: render once, wait for keys to switch tabs, 'q' to quit
+                  (no timed refresh).
+    """
+    is_tty = sys.stdout.isatty() and sys.stdin.isatty()
+    # 每 tab 独立滚动偏移（Models 等长内容可滚动查看）
+    scroll: dict[str, int] = {t: 0 for t in TABS}
+    if is_tty:
+        import shutil as _sh
+        # 视口高度（留 1 行给滚动条），最小 10
+        height = max(10, _sh.get_terminal_size(fallback=(80, 24)).lines - 1)
+        # Enter alternate screen buffer (like vim/htop) — keeps shell clean.
+        # 用 \033[2J 全清 + \033[H 回位：\033[J 只清光标到屏尾，在 tmux/ConPTY/
+        # SSH 包装层或上一帧溢出滚动后，切到较短帧会残留上一次窗口的内容。
+        # ?1000h + ?1006h 启用鼠标/SGR 滚轮上报。
+        print("\033[?1049h\033[?25l\033[?1000h\033[?1006h\033[2J\033[H", end="", flush=True)
+    else:
+        height = 100000
+    try:
+        while True:
+            if is_tty:
+                print("\033[2J\033[H", end="", flush=True)  # 全清 + home（健壮全帧重绘）
+            rc, total = _render_windowed(args, pricing, tz, current_tab, history_period,
+                                         height, scroll[current_tab], is_tty)
+            sys.stdout.flush()
+            if rc:
+                return rc
+            scroll[current_tab] = min(scroll[current_tab], max(0, total - height))
+
+            if live:
+                deadline = time.monotonic() + max(1.0, interval)
+                key = None
+                while time.monotonic() < deadline:
+                    k = read_key(timeout=0.3, keep_raw=True)
+                    if k is not None:
+                        key = k
+                        break
+                if key is None:
+                    continue  # timed refresh tick: just re-render
+            else:
+                # --once: block until a key is pressed (no timed refresh), 'q' quits
+                key = None
+                while key is None:
+                    key = read_key(timeout=0.3, keep_raw=True)
+
+            if key == "quit":
+                return 0
+            # 滚动键（作用于当前 tab 的视口）
+            max_scroll = max(0, total - height)
+            if key in ("up",):
+                scroll[current_tab] = max(0, scroll[current_tab] - 1)
+                continue
+            if key in ("down",):
+                scroll[current_tab] = min(max_scroll, scroll[current_tab] + 1)
+                continue
+            if key in ("page_up",):
+                scroll[current_tab] = max(0, scroll[current_tab] - 10)
+                continue
+            if key in ("page_down",):
+                scroll[current_tab] = min(max_scroll, scroll[current_tab] + 10)
+                continue
+            if key in ("home",):
+                scroll[current_tab] = 0
+                continue
+            if key in ("end",):
+                scroll[current_tab] = max_scroll
+                continue
+            current_tab, history_period = _nav_key(key, current_tab, history_period)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        if is_tty:
+            restore_raw()
+            # 关鼠标上报，退出 alternate screen buffer，恢复光标
+            print("\033[?1006l\033[?1000l\033[?25h\033[?1049l", end="", flush=True)
+    return 0
+
+
 def main() -> int:
     args = parse_args()
 
@@ -1414,54 +1789,16 @@ def main() -> int:
         return 0
 
     if args.once:
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            # --once also enters the interactive selection UI; only 'q' exits
+            return run_interactive(args, pricing, tz, args.tab, "7d",
+                                   live=False, interval=args.interval)
+        # Non-interactive (e.g. extension subprocess): one-shot snapshot, exit now
         return render(args, pricing=pricing, tz=tz)
 
-    current_tab = args.tab
-    history_period = "7d"
-
-    is_tty = sys.stdout.isatty()
-    if is_tty:
-        # Enter alternate screen buffer (like vim/htop) — keeps shell clean
-        print("\033[?1049h\033[?25l", end="", flush=True)
-    try:
-        while True:
-            if is_tty:
-                print("\033[H\033[J", end="")  # home + clear to end
-            rc = render(args, tab=current_tab, pricing=pricing, tz=tz, history_period=history_period)
-            sys.stdout.flush()
-            if rc:
-                return rc
-
-            deadline = time.monotonic() + max(1.0, args.interval)
-            while time.monotonic() < deadline:
-                key = read_key(timeout=0.3)
-                if key == "quit":
-                    return 0
-                elif key in ("left",):
-                    idx = TABS.index(current_tab)
-                    current_tab = TABS[(idx - 1) % len(TABS)]
-                    break
-                elif key in ("right", "tab"):
-                    idx = TABS.index(current_tab)
-                    current_tab = TABS[(idx + 1) % len(TABS)]
-                    break
-                elif key in ("1", "2", "3", "4"):
-                    current_tab = TABS[int(key) - 1]
-                    break
-                elif key == "bracket_left":
-                    idx = HISTORY_PERIODS.index(history_period)
-                    history_period = HISTORY_PERIODS[(idx - 1) % len(HISTORY_PERIODS)]
-                    break
-                elif key == "bracket_right":
-                    idx = HISTORY_PERIODS.index(history_period)
-                    history_period = HISTORY_PERIODS[(idx + 1) % len(HISTORY_PERIODS)]
-                    break
-    except KeyboardInterrupt:
-        return 0
-    finally:
-        if is_tty:
-            # Exit alternate screen buffer, restore cursor
-            print("\033[?25h\033[?1049l", end="", flush=True)
+    # Default live dashboard with auto-refresh
+    return run_interactive(args, pricing, tz, args.tab, "7d",
+                           live=True, interval=args.interval)
 
 
 if __name__ == "__main__":

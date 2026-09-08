@@ -1017,6 +1017,8 @@ code {
   <div class="flow-scroll" aria-label="子代理角色与任务画像映射">
     <div class="subagent-board">
       <div class="role-column searchable">
+        <h4>collector</h4>
+        <p>数据采集：运行确定性采集脚本、机械聚合、产出紧凑 evidence packet。</p>
         <h4>researcher</h4>
         <p>负责上下文召回、代码库扫描、资料核验。</p>
         <span class="task-chip"><strong>codebase-scout</strong><span>读取仓库结构和相关文件</span></span>
@@ -1050,7 +1052,7 @@ code {
       <table class="workflow-table">
         <thead><tr><th>概念</th><th>来源</th><th>在计划中的含义</th></tr></thead>
         <tbody>
-          <tr class="searchable"><td><code>subagent</code></td><td><code>agents/roles/&lt;role&gt;.md</code></td><td>稳定角色，如 researcher、implementer、recorder。</td></tr>
+          <tr class="searchable"><td><code>subagent</code></td><td><code>agents/roles/&lt;role&gt;.md</code></td><td>稳定角色，如 researcher、collector、implementer、recorder。</td></tr>
           <tr class="searchable"><td><code>task_agent</code></td><td><code>agents/tasks/&lt;department&gt;/&lt;task&gt;.md</code></td><td>角色下的细分任务画像，如 codebase-scout。</td></tr>
           <tr class="searchable"><td><code>available_skills</code></td><td>本地 skill allowlist</td><td>只限制可用技能，不替代 task_agent。</td></tr>
         </tbody>

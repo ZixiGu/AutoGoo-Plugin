@@ -16,7 +16,7 @@ AutoGoo-Plugin 的"并行"在单个 thread 内是 **task-level 并行**（多个
 
 主 Agent 必须负责：
 
-1. 召回 Goo-wiki 和项目指引，形成可执行约束。
+1. 派发 researcher 召回 Goo-wiki 和项目指引，消费其 evidence packet，形成可执行约束。
 2. 拆解 DAG、识别依赖、划定每个 Subagent 的读写边界。
 3. 为每个 Subagent 构造最小必要上下文，而不是传递完整会话历史。
 4. 在派发前检查当前 step 是否能仅凭 plan/Markdown/wiki 摘要执行；如果不能，先更新 plan 或写入 Goo-wiki 项目路径 `context/`，Goo-wiki 不可用时写 `.goo/obsidian/<project-slug>/context/`。
@@ -31,7 +31,21 @@ Subagent 只对被分配的步骤负责，不能改写整体计划、扩大任�
 
 `goo-start` / `goo-continue` 执行阶段必须派发 Subagent：`research`、`exec`、`optimize`、`eval`、`review`、`audit`、`archive` 等步骤由对应 Subagent 执行。主 Agent 负责编排、上下文裁剪、派发、状态修复、产物审核和必要返工，不直接代做步骤产物。
 
-**Subagent 缺失处理**：当 plan step 的 `subagent` 字段缺失或不属于合法角色（`researcher`/`implementer`/`optimizer`/`evaluator`/`reviewer`/`auditor`/`recorder`）时，暂停派发并先修正 `.goo/plan.json` 或创建新的合法 Subagent 角色；不得由主 Agent 降级代执行该步骤。
+**Subagent 缺失处理**：当 plan step 的 `subagent` 字段缺失或不属于合法角色（`researcher`/`collector`/`implementer`/`optimizer`/`evaluator`/`reviewer`/`auditor`/`recorder`）时，暂停派发并先修正 `.goo/plan.json` 或创建新的合法 Subagent 角色；不得由主 Agent 降级代执行该步骤。
+
+### 脚本职责归属（谁该跑哪个脚本）
+
+`skills/auto-goo/scripts/` 下的脚本按职责归属到角色，避免主模型亲自跑数据采集脚本做第一手分析：
+
+| 脚本 | 归属 | 说明 |
+|---|---|---|
+| `goo-usage.py` / `wiki-graph-assist.py` / `remote-resources.py` / `daily-report-sessions.py` | **collector 采集工具** | 主模型不亲自运行采集做分析；由 collector 运行并把结果回传 evidence packet |
+| `goo-status.py` / `goo-observe.py` / `thread-state.py` | **主模型状态查看豁免** | 仅渲染状态/观察，不做归因、根因、聚类等分析决策 |
+| `brainstorm-validate.py` / `check-plugin.sh` / `packet-validate.py` | **evaluator 校验工具** | 由 evaluator 运行做结构/一致性校验 |
+| `goo-publish.py` | 只读发布（展示层） | 不修改 plan/brainstorm/业务文件 |
+| `goo-ssh.sh` | 远程敏感操作 | 需用户显式确认，主模型不擅自执行 |
+
+Evidence-Packet 协议：分析型 Subagent（researcher / evaluator / auditor）回传的 packet 至少应含 `purpose`、`findings[]`（每项 `claim`/`evidence_path`/`confidence`）、`change_list[]`（每项 `target`/`action`/`why`/`detail`），紧凑供主模型直接综合，避免回传全文。
 
 ## 权限分层
 

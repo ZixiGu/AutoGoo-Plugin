@@ -107,7 +107,7 @@ Recorder 和归档步骤应优先写入 `archive.project_dir`，Goo-wiki 不可�
 
 项目级初始化使用 Goo-wiki 时，AutoGoo-Plugin 还会询问用户是否在项目根目录 `CLAUDE.md` 中追加或更新由 `AUTOGOO-PLUGIN-WIKI-ARCHIVE` marker 包裹的归档原则段落。该段落要求：
 
-- 规划前先从 Goo-wiki 召回相关项目经验、概念页、周报和 `log.md`
+- 规划前先派发 `collector`（wiki-gatherer）从 Goo-wiki 召回相关项目经验、概念页、周报和 `log.md`，并消费其 evidence packet
 - `goo-plan` 的 `.goo/plan.json` 最后保留 `归档到 Goo-wiki` 步骤
 - 执行后归档目标、计划、证据、产物路径、验证结果、决策、问题处理和可复用经验
 - 模型摘要只作阅读入口；同时保存 `execution/record.md` 详细事实记录和 `execution/evidence-index.md` 来源覆盖表，小型安全文本证据原样保留，大型/二进制产物记录路径、大小和可取得时的校验值

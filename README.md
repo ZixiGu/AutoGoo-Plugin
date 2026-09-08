@@ -7,6 +7,8 @@
 
 AutoGoo-Plugin 是一个同时兼容 Claude Code 和 Codex 的智能体编排插件，用来把开放式任务拆成可执行计划、并行调用 subagent、记录运行状态，并把结果同步到 Goo-wiki / Obsidian。
 
+**编排者-only 架构**：主模型只做顶层管理调度与高认知综合（brainstorm 候选生成、plan/DAG 拆解、调度验收、用户交互、归档编排），读取/解析/计算原始材料的分析（wiki/usage/日志/代码结构）与具体执行（实现/测试/审查/归档撰写）全部由 Subagent 完成并回传紧凑 evidence packet，主模型不亲自跑数据采集脚本或读全量原始文件。
+
 ![AutoGoo-Plugin workflow](docs/assets/autogoo-plugin-workflow.svg)
 
 ## 适合什么场景

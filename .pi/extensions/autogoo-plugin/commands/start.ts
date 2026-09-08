@@ -280,12 +280,12 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
       stepId: Type.Union([Type.Integer({ description: "步骤 ID" }), Type.String({ description: "步骤 ID" })]),
       role: Type.String({
         description: "Subagent 角色",
-        enum: ["researcher", "implementer", "optimizer", "evaluator", "reviewer", "auditor", "recorder"],
+        enum: ["researcher", "collector", "implementer", "optimizer", "evaluator", "reviewer", "auditor", "recorder"],
       }),
       task: Type.String({ description: "步骤任务描述" }),
       taskAgent: Type.Optional(Type.String({
         description: "具体任务 agent",
-        enum: ["document-analyst", "feature-builder", "test-runner", "code-reviewer", "evidence-auditor", "wiki-curator"],
+        enum: ["data-collector", "usage-collector", "session-aggregator", "wiki-gatherer", "log-analyst", "document-analyst", "feature-builder", "test-runner", "code-reviewer", "evidence-auditor", "wiki-curator"],
       })),
       stepType: Type.Optional(Type.String({
         description: "步骤类型（影响默认 wiki_paths / memory_layer）",

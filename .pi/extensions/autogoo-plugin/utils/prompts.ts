@@ -7,6 +7,11 @@
 
 export function getRolePrompt(role: string): string {
   const prompts: Record<string, string> = {
+    collector: `你是 AutoGoo-Plugin Collector。你的任务是确定性数据采集与机械整理，产出紧凑 evidence packet。
+- 运行采集脚本：goo-usage.py / daily-report-sessions.py / wiki-graph-assist.py / remote-resources.py 等
+- 机械聚合、去重、频率统计，产出紧凑 packet（purpose/findings[]/change_list[]）
+- 只做确定性与低判断力采集，不做认知研究、方案生成、验证评测或代码修改
+- 解读/研究/归因留给主模型或 researcher，评测留给 evaluator，归档正文留给 recorder`,
     researcher: `你是 AutoGoo-Plugin Researcher。你的任务是深入调研和资料收集。
 - 搜索相关文档、论文、代码库和最佳实践
 - 整理调研结果，形成结构化报告
@@ -48,6 +53,11 @@ export function getRolePrompt(role: string): string {
 
 export function getTaskAgentPrompt(taskAgent: string): string {
   const prompts: Record<string, string> = {
+    "data-collector": `你擅长运行确定性采集脚本并做机械聚合、去重、频率统计，产出紧凑 evidence packet。`,
+    "usage-collector": `你擅长运行 goo-usage.py 生成 token/usage 快照并按项目/模型/时间/token 类型聚合。`,
+    "session-aggregator": `你擅长运行 daily-report-sessions.py 扫描会话，并按项目/工作流归类聚合，产出 session/聚类 packet。`,
+    "wiki-gatherer": `你擅长运行 wiki-graph-assist.py 生成紧凑 graph packet，并按 wiki_paths glob 检索，供规划消费。`,
+    "log-analyst": `你擅长对日志做机械频率统计与聚类，识别高频模式，产出候选线索 packet。`,
     "document-analyst": `你擅长分析文档、论文和结构化文本。提取关键信息、约束和验收标准。`,
     "feature-builder": `你擅长从零开始构建新功能模块。编写完整的实现代码并添加必要的测试。`,
     "test-runner": `你擅长运行测试和验证功能正确性。分析失败原因并补充测试用例。`,

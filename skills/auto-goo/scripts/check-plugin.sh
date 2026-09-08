@@ -43,7 +43,7 @@ for manifest in ".codex-plugin/plugin.json" ".pi/extensions/autogoo-plugin/packa
   fi
 done
 
-for agent in researcher implementer optimizer evaluator reviewer auditor recorder; do
+for agent in researcher collector implementer optimizer evaluator reviewer auditor recorder; do
   [[ -f "$ROOT/agents/$agent.md" ]] || fail "Claude Agent 未注册: agents/$agent.md"
 done
 [[ -f "$ROOT/hooks/hooks.json" ]] && pass "Claude SessionStart hook 存在" || fail "hooks/hooks.json 缺失"
@@ -264,12 +264,17 @@ done
 echo ""
 echo "── 5. Agent 文件 ──"
 
-ROLE_AGENTS=("researcher" "implementer" "optimizer" "evaluator" "reviewer" "auditor" "recorder")
+ROLE_AGENTS=("researcher" "collector" "implementer" "optimizer" "evaluator" "reviewer" "auditor" "recorder")
 TASK_AGENTS=(
   "tasks/research/codebase-scout"
   "tasks/research/document-analyst"
   "tasks/research/domain-researcher"
   "tasks/research/requirement-analyst"
+  "tasks/collection/data-collector"
+  "tasks/collection/usage-collector"
+  "tasks/collection/session-aggregator"
+  "tasks/collection/wiki-gatherer"
+  "tasks/collection/log-analyst"
   "tasks/implementation/feature-builder"
   "tasks/implementation/bug-fixer"
   "tasks/implementation/refactorer"

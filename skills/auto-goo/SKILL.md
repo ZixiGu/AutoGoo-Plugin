@@ -48,7 +48,7 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 
 规则：
 1. Subagent prompt 必须显式列出本 step 实际需要的 wiki 路径子集(`wiki_paths` glob)，不允许传"读全部 wiki"。
-2. 主 Agent 派发前必须用 `skills/auto-goo/scripts/wiki-graph-assist.py` 生成紧凑 graph packet，而不是让 Subagent 自己读全 vault。
+2. `skills/auto-goo/scripts/wiki-graph-assist.py` 是 collector（wiki-gatherer）的打包/采集工具：wiki 召回时由 collector 运行它生成紧凑 graph packet 并回传，主模型只消费 packet（主模型可仅用于「验证/状态查看」，不作为第一手分析）。
 3. 单次 Read/Grep 调用受字符预算(默认 < 20k 字符)和超时(默认 < 30s)双重约束；超出时优先用 glob+head 而非 Read 全文。
 4. 跨 step 的 wiki 引用通过 `[[Wikilink]]` 表达，Subagent 按需点开；不需要的 wiki 页面不进入上下文。
 5. 长期运行 step 必须用渐进披露：先读入口页 → 读相关 lessons → 读 task 页 → 必要时读 raw；不跳级全量。
@@ -61,11 +61,11 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 - **L0 — 原始记录**：`.goo/logs/` 下的 step log、原始命令输出、未脱敏的 transcript。**不进入 Subagent 默认上下文**。
 - **L1 — 原子事实**：从 step 产物中提炼的关键决策、指标、命令、错误码；放在 step 报告的 "关键决策" 段。
 - **L2 — 场景知识**：任务页、lessons、references，跨任务可复用的判断和方法。**Subagent 默认读取的层级**。
-- **L3 — 项目画像**：项目入口 `<project-slug>.md`、`wiki/projects/<slug>/lessons/` 高频经验、CLAUDE.md 的项目约定。**主 Agent 启动时读取，Subagent 按 loadout 决定是否读**。
+- **L3 — 项目画像**：项目入口 `<project-slug>.md`、`wiki/projects/<slug>/lessons/` 高频经验、CLAUDE.md 的项目约定。**主 Agent 启动时读取（作为方向感），Subagent 按 loadout 决定是否读**。
 
 规则：
 1. 归档笔记的 YAML frontmatter 必须含 `memory_layer: L0|L1|L2|L3` 字段，便于检索时按层级过滤。
-2. 检索策略：主 Agent 启动先读 L3 项目入口 → 读 L2 相关任务页/lessons → 必要时回退 L1 step 决策；**Subagent 默认只看 L2，除非 plan 显式要求 L1**。
+2. 检索策略：主 Agent 启动先读 L3 项目入口作为方向感；L2 相关任务页/lessons 的召回由 collector（wiki-gatherer）采集并回传 evidence packet，主模型不亲自 grep/glob 全量 wiki；具体事实必要时回退 L1 step 决策；**Subagent 默认只看 L2，除非 plan 显式要求 L1**。
 3. L0 原始日志只用于 trace/audit，经 recorder 提炼为 L1/L2 后才进入 wiki。
 4. 项目入口 `<project-slug>.md` 显式标注自身为 L3，作为 wiki 的最高抽象层。
 5. Recorder 在归档时必须判断并填写 `memory_layer`，不得留空。
@@ -97,7 +97,7 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 
 **用户交互契约**：任何需要用户选择、确认、重试、跳过、合并、改写或授权的步骤，必须优先调用结构化选择 UI（Claude Code 用 `AskUserQuestion`，Codex 用 `request_user_input`），让平台渲染可用方向键移动、Enter 确认的选择控件；不得在工具可用时用普通文本要求用户手打 `1/2`、ID 或命令参数。每个问题至少给 2 个显式选项，推荐项放第一项并标注 Recommended；多候选问题必须把候选 ID/编号放进选项说明。只有结构化选择 UI 不可用、调用失败或按钮没有渲染时，才允许降级为纯文本编号列表，并明确这是 fallback。**Codex 注意**：`request_user_input` 仅在 Plan mode 可用，Default mode 用纯文本 fallback。用户未明确选择前，不得用推荐项静默继续。
 
-**远程服务器机制**：`goo-init` 收集到远程服务器非敏感参数后，最终脚本调用必须追加 `--server 'name=<别名>,host=<ssh-host-or-ip>,user=<user>,port=<port>,type=<cpu|gpu>,purpose=<用途>,workdir=<远程工作目录>,setup=<命令1;命令2>,data_dir=<远程数据目录>,artifacts_dir=<远程产物目录>'`，可重复传多台，后四项可省略；`name` 是给模型、plan 和 `remote_server` 使用的稳定名称，`host` 是 SSH 连接地址，`ip` 仅作为兼容字段可选。密码不得进入聊天、命令行、plan、日志或 prompt，只能由用户填入 chmod 600 的 secrets 文件。`servers[].defaults` 可保存非敏感默认环境约定：`workdir`、`setup_commands[]`、`paths.data_dir`、`paths.artifacts_dir`；不得保存 token、API key、私钥、密码或带凭据的 export 命令。后续 `goo-plan` / `goo-start` / `goo-continue` 如果发现项目或用户配置里有 `servers[]`，必须先运行 `skills/auto-goo/scripts/remote-resources.py --probe` 获取 CPU/内存/磁盘/GPU 摘要，展示给用户后用 `AskUserQuestion`（Claude Code）/ `request_user_input`（Codex）复用 `id=remote_resource_usage` 模板确认本次是否使用服务器；探测失败只说明不可用原因，不自动转远程。用户确认使用远程后，才写入或执行 `execution_target="remote"`、`remote_server` 和 `remote_reason`；远程 step 的 `allowed_read_paths`、`allowed_write_paths`、`inputs`、`outputs` 和 `validation` 必须优先引用该服务器的 `defaults.workdir`、`defaults.setup_commands` 和 `defaults.paths`，缺失时再让用户确认。用户选择本地或未明确确认时保持 `execution_target="local"`。`remote_server` 优先写 `servers[].name`，不要让模型记 IP。远程 step 必须 `requires_user_confirm=true`，并通过 `skills/auto-goo/scripts/goo-ssh.sh --config <config> --server <remote_server> -- <remote command>` 执行，不默认使用第一台服务器。`auto_goo_ssh_exec` / `auto_goo_ssh_status` 遇到用户提供的服务器在配置中缺失时，会主动询问是否新增配置（收集 host/port/user/type 后写入 `.goo/config.json`）；提供的 `host`/`port`/`user` 与配置不一致或缺失时，会询问是否更新原配置。密码仍只存 secrets.json，新增流程不在对话中收集密码。
+**远程服务器机制**：`goo-init` 收集到远程服务器非敏感参数后，最终脚本调用必须追加 `--server 'name=<别名>,host=<ssh-host-or-ip>,user=<user>,port=<port>,type=<cpu|gpu>,purpose=<用途>,workdir=<远程工作目录>,setup=<命令1;命令2>,data_dir=<远程数据目录>,artifacts_dir=<远程产物目录>'`，可重复传多台，后四项可省略；`name` 是给模型、plan 和 `remote_server` 使用的稳定名称，`host` 是 SSH 连接地址，`ip` 仅作为兼容字段可选。密码不得进入聊天、命令行、plan、日志或 prompt，只能由用户填入 chmod 600 的 secrets 文件。`servers[].defaults` 可保存非敏感默认环境约定：`workdir`、`setup_commands[]`、`paths.data_dir`、`paths.artifacts_dir`；不得保存 token、API key、私钥、密码或带凭据的 export 命令。后续 `goo-plan` / `goo-start` / `goo-continue` 如果发现项目或用户配置里有 `servers[]`，必须先派发 collector 运行 `skills/auto-goo/scripts/remote-resources.py --probe` 获取 CPU/内存/磁盘/GPU 摘要并回传 packet（主模型不亲自跑探测脚本，只消费 packet），展示给用户后用 `AskUserQuestion`（Claude Code）/ `request_user_input`（Codex）复用 `id=remote_resource_usage` 模板确认本次是否使用服务器；探测失败只说明不可用原因，不自动转远程。用户确认使用远程后，才写入或执行 `execution_target="remote"`、`remote_server` 和 `remote_reason`；远程 step 的 `allowed_read_paths`、`allowed_write_paths`、`inputs`、`outputs` 和 `validation` 必须优先引用该服务器的 `defaults.workdir`、`defaults.setup_commands` 和 `defaults.paths`，缺失时再让用户确认。用户选择本地或未明确确认时保持 `execution_target="local"`。`remote_server` 优先写 `servers[].name`，不要让模型记 IP。远程 step 必须 `requires_user_confirm=true`，并通过 `skills/auto-goo/scripts/goo-ssh.sh --config <config> --server <remote_server> -- <remote command>` 执行，不默认使用第一台服务器。`auto_goo_ssh_exec` / `auto_goo_ssh_status` 遇到用户提供的服务器在配置中缺失时，会主动询问是否新增配置（收集 host/port/user/type 后写入 `.goo/config.json`）；提供的 `host`/`port`/`user` 与配置不一致或缺失时，会询问是否更新原配置。密码仍只存 secrets.json，新增流程不在对话中收集密码。纯密钥认证的服务器可不建 secrets 文件（无密码时走 BatchMode 密钥认证）。`auto_goo_ssh_monitor`（前台跟随）阻塞窗口内流式输出；需要同时做其他任务时用 `auto_goo_ssh_monitor_bg` 后台启动（立即返回 monitor_id，输出写 `.goo/artifacts/monitor/<id>.log`），`auto_goo_ssh_monitor_poll` 随时查询累积输出与状态，`auto_goo_ssh_monitor_stop` 终止。
 
 **结构化交互固定结构**：需要 Enter-select 交互时必须按 `skills/auto-goo/references/interaction-templates.md` 中的 JSON 模板组织并实际调用 `AskUserQuestion`（Claude Code）/ `request_user_input`（Codex），不得只把结构写成自然语言题目或自由改写选项。**Codex 注意**：`request_user_input` 参数格式与 `AskUserQuestion` 略有不同（见 `interaction-templates.md` 的 Codex 映射表），但模板 ID 和选项语义保持一致。字段固定为 `header`、`id`、`question`、`options[].label`、`options[].description`；推荐项放第一项，label 必须包含 `(Recommended)`。系统自动提供的 Other 只用于自定义输入，不算显式选项。凡能固定的问题必须复用模板；涉及路径、IP、端口、用户名、goal ID、分支目录、用户修改要求等输入时，模板必须提供默认选项并说明 Other 输入如何落盘、校验或继续追问。
 
@@ -130,14 +130,9 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 
 召回步骤：
 1. 按配置优先级解析 wiki 路径；不存在则记录 fallback，继续使用 `.goo/obsidian/` 本地归档。
-2. 根据用户任务提取项目名、领域词、文件名、命令、数据路径、指标名等关键词。
-3. 在 Goo-wiki 中优先查找：
-   - `wiki/projects/` 下相关项目页和任务页
-   - `wiki/concepts/` 下相关概念、指标、流程规范
-   - `journal/weekly/` 下近期周报中的项目状态、风险、下一步
-   - `log.md` 中最近活动记录
-4. 提炼 `wiki_context`：已有约束、可复用命令、已验证路径、历史坑点、指标口径、命名规范、相关 wikilink。
-5. 规划时必须显式利用这些上下文；如果没有找到相关知识，也要记录 `wiki_context.found=false`，避免假装有历史依据。
+2. 主模型派发 collector（wiki-gatherer）采集 wiki evidence packet：collector 根据用户任务提取项目名、领域词、文件名、命令、数据路径、指标名等关键词，在 Goo-wiki 中优先查找 `wiki/projects/` 相关项目页和任务页、`wiki/concepts/` 相关概念/指标/流程规范、`journal/weekly/` 近期周报中的项目状态/风险/下一步、`log.md` 最近活动记录，并按 delegation-policy §4 Evidence-Packet 协议回传结构化 packet（findings + evidence_path + confidence）。
+3. 主模型基于 collector packet 提炼 `wiki_context`：已有约束、可复用命令、已验证路径、历史坑点、指标口径、命名规范、相关 wikilink。主模型只消费 packet 并按需点开单个证据路径，不亲自 Read/Grep 全量 wiki。
+4. 规划时必须显式利用这些上下文；如果没有找到相关知识，也要记录 `wiki_context.found=false`，避免假装有历史依据。
 
 不要把 wiki 当成最后才写的报告；它是任务启动时的项目记忆，也是任务结束后的经验沉淀层。
 
@@ -147,10 +142,10 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 
 行为：
 1. 解析 AutoGoo-Plugin 配置和 Goo-wiki 路径。
-2. 检索 `wiki/projects/`、`journal/weekly/`、`wiki/concepts/` 和 `log.md`。
-3. 提取未完成事项、反复问题、风险、近期计划、指标缺口、文档缺口、测试缺口、发布阻塞和可复用经验。
-4. 提炼共同前置条件 `global_prerequisites`，例如数据路径、账号权限、远程资源、评价指标、用户取舍和安全确认。
-5. 多轴发散候选方向：至少覆盖快速交付、长期架构、风险/债务、验证/评测、文档/知识沉淀、自动化/工具化、用户体验/流程改进、低成本试探中的 5 类；先生成 5-9 个初始候选，再合并为 3-7 个最终候选，每个包含 `id`、`name`、`why`、`expected_output`、`acceptance_criteria`、`evidence`、`risk`、`prerequisites`、`readiness_checklist`、`first_step`、`priority_hint`。
+2. 派发 collector（wiki-gatherer）采集 wiki/信号 evidence packet：检索 `wiki/projects/`、`journal/weekly/`、`wiki/concepts/` 和 `log.md`，按 delegation-policy §4 Evidence-Packet 协议回传结构化 packet。
+3. 主模型基于 collector packet 提取未完成事项、反复问题、风险、近期计划、指标缺口、文档缺口、测试缺口、发布阻塞和可复用经验（只消费 packet，不自己 Read/Grep 全量 wiki）。
+4. 主模型基于 packet 提炼共同前置条件 `global_prerequisites`，例如数据路径、账号权限、远程资源、评价指标、用户取舍和安全确认。
+5. 多轴发散候选方向（主模型高认知综合）：至少覆盖快速交付、长期架构、风险/债务、验证/评测、文档/知识沉淀、自动化/工具化、用户体验/流程改进、低成本试探中的 5 类；先生成 5-9 个初始候选，再合并为 3-7 个最终候选，每个包含 `id`、`name`、`why`、`expected_output`、`acceptance_criteria`、`evidence`、`risk`、`prerequisites`、`readiness_checklist`、`first_step`、`priority_hint`。
 6. 用户审阅前先做自我检查：去重合并、补证据缺口说明、校准风险/成本/依赖、确认每个 goal 有产物和验收方式，并在 `.goo/brainstorm.json.self_check` 记录覆盖角度、删改原因、证据缺口、风险校准和推荐排序依据。
 7. 写入 `.goo/brainstorm.json`，状态为 `pending_decision`。如果旧 `.goo/brainstorm.json` 已存在，先原样复制到 `.goo/brainstorms/history/brainstorm-<timestamp>.json`。
 8. 向用户展示推荐顺序、共同前置条件、自检摘要和每个候选 goal 的 ready checklist，等待用户选择、合并、改写或要求继续 brainstorm；用户确认前只保留本地 `.goo/brainstorm.json` 草案，不写 Goo-wiki/fallback 最终归档。
@@ -159,7 +154,7 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 边界：
 - 不写 `.goo/plan.json`。
 - 不生成执行 DAG。
-- 不派发 Subagent 执行。
+- 除 collector 召回采集外，不派发执行型 Subagent。
 - 不修改业务文件；用户确认前只允许写 `.goo/brainstorm.json`，不要写 Goo-wiki/fallback 归档笔记。
 - 不运行实现、评测、训练、安装、远程或删除命令。
 - 用户明确一个或多个 goals 后，再调用 `/auto-goo:goo-plan <明确目标>`。
@@ -345,7 +340,7 @@ Markdown 任务输入的完整解析规则也在 `references/task-parsing.md`：
 
 **Subagent 上下文隔离**：每个 Subagent 默认只拿当前 step、必要项目约束、相关 wiki_context 摘要、上游产物路径、允许读写边界和回写要求。Subagent 之间通过当前 thread 的 `plan.json`、`logs/`、`artifacts/` 和产物路径交接，不共享完整会话历史或彼此的推理草稿。
 
-**Subagent 显式分工**：每个 step 必须包含 `subagent` 和 `task_agent` 字段。`subagent` 只允许稳定 Role Agent：`researcher`、`implementer`、`optimizer`、`evaluator`、`reviewer`、`auditor`、`recorder`；`task_agent` 必须从对应 role 的 `agents/tasks/` 目录下选择，例如 `document-analyst`、`feature-builder`、`test-runner`、`code-reviewer`、`evidence-auditor`、`wiki-curator`。调度时先按 `subagent` 选择 role prompt，再按 `task_agent` 叠加细分任务 prompt。若缺失或不合法，先补 plan 或创建新角色/任务画像，不由主 Agent 代执行。
+**Subagent 显式分工**：每个 step 必须包含 `subagent` 和 `task_agent` 字段。`subagent` 只允许稳定 Role Agent：`researcher`、`collector`、`implementer`、`optimizer`、`evaluator`、`reviewer`、`auditor`、`recorder`；`task_agent` 必须从对应 role 的 `agents/tasks/` 目录下选择，例如 `document-analyst`、`data-collector`、`usage-collector`、`feature-builder`、`test-runner`、`code-reviewer`、`evidence-auditor`、`wiki-curator`。调度时先按 `subagent` 选择 role prompt，再按 `task_agent` 叠加细分任务 prompt。**角色分工原则**：`collector` 负责确定性数据采集与机械整理（usage/会话/wiki graph/远程探测/日志频率 → packet）；`researcher` 收窄为认知性研究（学术论文/代码库架构/领域多来源调研）；两者都不做主 Agent 亲自读原文，解读交给主模型综合，归档正文交给 recorder。若缺失或不合法，先补 plan 或创建新角色/任务画像，不由主 Agent 代执行。
 
 **权限分层**：AutoGoo-Plugin 不让后台 Subagent 做平凡权限交互。普通读写和低风险命令必须在 plan 的 `allowed_read_paths`、`allowed_write_paths`、`validation`、`requires_user_confirm=false` 与项目命令 allowlist 中提前声明，Subagent 在边界内直接执行。可预见的安装依赖、网络下载、远程执行、长跑任务、端口监听、批量数据改写、跨机器同步或高成本操作，规划阶段必须标记 `requires_user_confirm=true`，由主 Agent 在派发前一次性说明作用域、命令类别、产物位置和风险并取得确认。执行中遇到 `PermissionDenied`、sandbox blocked、approval required、路径越界或命令不在允许范围时，Subagent 不得自行弹窗、不得静默跳过、不得要求主 Agent 直接代做；必须写日志并回写当前 step 为 `blocked`/`needs_user_approval`，说明所需命令、原因、读写路径、风险和建议处理。主 Agent 聚合这些阻塞项后在前台向用户申请许可；用户批准后只在批准范围内重派 Subagent 或执行许可命令，用户拒绝后再标记 failed 或调整 plan。
 
@@ -501,9 +496,9 @@ Goo-wiki vault 检测：默认检查 `~/workspace/Goo-wiki/CLAUDE.md`。路径�
 执行入口：
 1. 解析日期：无参数默认今天；"昨天"、"今天"、"本周"转换为具体日期范围。
 2. 按 AutoGoo-Plugin 配置优先级解析 Goo-wiki 路径。
-3. 解析 AutoGoo-Plugin 根目录后运行 `skills/auto-goo/scripts/daily-report-sessions.py --date YYYY-MM-DD` 提取 Claude Code 与 Codex 会话摘要。
-4. 必要时读取关键会话尾部补充最终状态，不逐条抄录聊天。
-5. 写入或续写 `<wiki_dir>/journal/daily/YYYY-MM-DD.md`，并更新 `<wiki_dir>/log.md`。
+3. 派发 collector（session-aggregator）采集会话摘要：collector 解析 AutoGoo-Plugin 根目录后运行 `skills/auto-goo/scripts/daily-report-sessions.py --date YYYY-MM-DD` 提取 Claude Code 与 Codex 会话摘要，必要时读取关键会话尾部补充最终状态，回传 evidence packet（不逐条抄录聊天）。
+4. 主模型基于 collector packet 综合日报/周报要点，再派发 recorder 撰写正文。
+5. recorder 写入或续写 `<wiki_dir>/journal/daily/YYYY-MM-DD.md`，并更新 `<wiki_dir>/log.md`。
 
 完整模板、续写规则和敏感信息规则见 `commands/goo-daily-report.md`。
 
@@ -596,7 +591,8 @@ Phase 4 归档完成后，在任务日志末尾追加 `## 流程问题` 反思�
 - **`skills/auto-goo/scripts/goo-ssh.sh`** — 连接已配置的远程服务器；有密码时从 `secrets.json` 读取并用 `sshpass`，无密码时走普通 `ssh`。调用前先解析 AutoGoo-Plugin 根目录
 
 ### Agents
-- **`../../agents/roles/researcher.md`** — 调研 Role Agent（查资料、读文档、整理约束和方案选项）
+- **`../../agents/roles/researcher.md`** — 调研 Role Agent（学术论文/代码库/领域认知研究、查资料、读文档、整理约束和方案选项）
+- **`../../agents/roles/collector.md`** — 数据采集 Role Agent（运行确定性采集脚本、机械聚合、产出紧凑 evidence packet）
 - **`../../agents/roles/implementer.md`** — 执行 Role Agent（实现功能或修复）
 - **`../../agents/roles/optimizer.md`** — 优化 Role Agent（性能测量、瓶颈分析、局部优化）
 - **`../../agents/roles/evaluator.md`** — 评测 Role Agent（运行测试、benchmark、数据质量检查）

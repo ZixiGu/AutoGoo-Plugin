@@ -9,9 +9,9 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { TEMPLATE_CONTEXT_SYNC_CONFIRM, TEMPLATE_WORKTREE } from "../constants.js";
 import { loadPlan, savePlan, getCurrentThreadId, archiveOldPlan, type Plan, type Step } from "../utils/plan.js";
-import { UPDATE_STEP_PY, GOO_STATUS_PY, projectPlanPath } from "../utils/paths.js";
+import { UPDATE_STEP_PY, GOO_STATUS_PY, projectPlanPath, loadProjectConfig, writeExecutionModelConfig } from "../utils/paths.js";
 import { execPython } from "../utils/exec.js";
-import { runSubagent } from "../utils/subagent.js";
+import { runSubagent, resolveSubagentModel, resolveOrPromptSubagentModel } from "../utils/subagent.js";
 import { getRolePrompt, getTaskAgentPrompt } from "../utils/prompts.js";
 import { uiSelect, uiInput } from "../utils/ui.js";
 import { updateStatusBar } from "../utils/status.js";
@@ -355,11 +355,27 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
       // 保活心跳（P2/P16，共享 heartbeatTick）：
       // - 不传 --progress：避免把 Subagent 已更新的 progress 覆盖回 0
       // - 写前 loadPlan 检查 step.status === 'running'，非 running 直接跳过
+      // config.execution.subagent_model / subagent_provider：显式指定 Subagent 模型；
+      // 未设置时用结构化 UI 询问用户是否配置（resolveOrPromptSubagentModel），
+      // 配置写入 .goo/config.json；用户取消或仍解析不到则 blocked，绝不静默用 pi 全局默认。
+      const execCfg = (await loadProjectConfig(cwd).catch(() => null))?.execution || {};
+      const subModel = await resolveOrPromptSubagentModel(
+        { provider: execCfg.subagent_provider, model: execCfg.subagent_model },
+        ctx?.model ? { provider: ctx.model.provider, id: ctx.model.id } : null,
+        ctx,
+        (provider, model) => writeExecutionModelConfig(cwd, provider, model),
+      );
+      if (!subModel.provider || !subModel.model) {
+        ctx.ui.notify("已取消本次 Subagent 派发（未配置 subagent 模型）", "warning");
+        return { content: [{ type: "text", text: "blocked: Subagent 模型未配置或用户取消，未派发本 step；请配置 execution.subagent_provider+subagent_model 后重试" }] };
+      }
       const subagentResult = await runSubagent({
         systemPrompt: [rolePrompt, taskPrompt].filter(Boolean).join("\n"),
         task: prompt,
         cwd,
         signal: _signal,
+        provider: subModel.provider,
+        model: subModel.model,
         onTick: () => void heartbeatTick(cwd, planPath, params.stepId, agentId),
         // pi 流式观察（2026-08-14）：Subagent 子进程 JSON 流 → 工具 onUpdate → TUI 实时显示
         onMessage: (message: any) => {

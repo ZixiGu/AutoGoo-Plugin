@@ -70,7 +70,9 @@
   "execution": {
     "max_concurrent": 6,
     "heartbeat_seconds": 30,
-    "stale_after_seconds": 120
+    "stale_after_seconds": 120,
+    "subagent_model": "",
+    "subagent_provider": ""
   },
   "planning": {
     "recall_wiki": true,

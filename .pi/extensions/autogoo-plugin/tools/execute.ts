@@ -15,7 +15,7 @@
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execPython, execShell } from "../utils/exec.js";
-import { runSubagent } from "../utils/subagent.js";
+import { runSubagent, resolveSubagentModel, resolveOrPromptSubagentModel } from "../utils/subagent.js";
 import { getRolePrompt, getTaskAgentPrompt } from "../utils/prompts.js";
 import { updateStatusBar, formatStatusLine, snapshotPlan } from "../utils/status.js";
 import {
@@ -37,6 +37,8 @@ import {
   UPDATE_STEP_PY,
   GOO_STATUS_PY,
   projectPlanPath,
+  loadProjectConfig,
+  writeExecutionModelConfig,
 } from "../utils/paths.js";
 import { existsSync } from "node:fs";
 
@@ -344,6 +346,22 @@ async function runSchedule(
   // ★ 并发子进程派发（pi 子进程模式，2026-08-10 迁移；替代 sendUserMessage + terminate）：
   //   隔离上下文 / 可靠投递 / 并行 / usage 统计。阻塞直到本批全部完成，
   //   期间 onTick 每 ~20s 保活心跳防止 STALE 误杀。
+  // config.execution.subagent_model / subagent_provider：显式指定 Subagent 模型；
+  // 未设置时用结构化 UI 询问用户是否配置（resolveOrPromptSubagentModel），
+  // 配置写入 .goo/config.json；用户取消或仍解析不到则 blocked，绝不静默用 pi 全局默认。
+  const execCfg = (await loadProjectConfig(cwd).catch(() => null))?.execution || {};
+  const subModel = await resolveOrPromptSubagentModel(
+    { provider: execCfg.subagent_provider, model: execCfg.subagent_model },
+    ctx?.model ? { provider: ctx.model.provider, id: ctx.model.id } : null,
+    ctx ?? null,
+    (provider, model) => writeExecutionModelConfig(cwd, provider, model),
+  );
+  if (!subModel.provider || !subModel.model) {
+    return {
+      content: [{ type: "text", text: `blocked: Subagent 模型未配置或用户取消（config.execution.subagent_* 未设置），拒绝静默回退 pi 全局默认；请配置 execution.subagent_provider+subagent_model 后重试` }],
+      details: { blocked: true, reason: "Subagent 模型未配置", pendingSteps: [] as string[] },
+    };
+  }
   const subagentResults = await Promise.all(
     toDispatch.map(async (step: any) => {
       const agentId = agentIds.get(String(step.id)) ?? `agent-${step.id}-${Date.now()}`;
@@ -375,6 +393,8 @@ async function runSchedule(
         }),
         cwd,
         signal, // P12：透传用户中断信号，防止子进程成孤儿
+        provider: subModel.provider,
+        model: subModel.model,
         onTick: () => void heartbeatTick(cwd, planPath, step.id, agentId),
         // pi 流式观察（2026-08-14）：把 Subagent 子进程的 JSON 流消息
         // （assistant 文本 / tool call / tool result）桥接到工具 onUpdate，

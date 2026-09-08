@@ -205,7 +205,9 @@ Recorder 和归档步骤应优先写入 `archive.project_dir`，Goo-wiki 不可�
   "execution": {
     "max_concurrent": 6,
     "heartbeat_seconds": 30,
-    "stale_after_seconds": 120
+    "stale_after_seconds": 120,
+    "subagent_model": "",
+    "subagent_provider": ""
   },
   "planning": {
     "recall_wiki": true,
@@ -235,6 +237,20 @@ Recorder 和归档步骤应优先写入 `archive.project_dir`，Goo-wiki 不可�
   ]
 }
 ```
+
+### 执行配置（`execution`）
+
+| 字段 | 说明 |
+|---|---|
+| `max_concurrent` | 并发 Subagent 槽位数（默认 6） |
+| `heartbeat_seconds` | Subagent 心跳间隔秒数（默认 30） |
+| `stale_after_seconds` | 超过此秒数无心跳判定为 stale（默认 120） |
+| `subagent_model` | **Subagent 子进程显式模型**（默认空=直接用主 agent 的模型，见下方实测结论）。必须与 `subagent_provider` 成对设置——模型 id 常跨多个已认证 provider（如 `deepseek-v4-flash` 同时存在于 deepseek/opencode-go/opencode/yj 等），单独传 `--model` 会报 `Model ambiguous across providers`。 |
+| `subagent_provider` | **Subagent 子进程显式 provider**（默认空=直接用主 agent 的 provider）。与 `subagent_model` 配对，必须同时设置。 |
+
+> 派发实现：`runSubagent`（`.pi/extensions/autogoo-plugin/utils/subagent.ts`）只在显式传入时才追加 `--provider` / `--model`；`auto_goo_dispatch` 与 `auto_goo_execute`（runSchedule）已读取 `config.execution.subagent_model` / `subagent_provider` 并透传。
+
+**默认值实测结论**（2026-08-18）：空/不设时 Subagent **直接用主 agent 的模型（动态解析，不固定到某个具体型号）**——`resolveSubagentModel` 依序取 `config.execution.subagent_*` → `ctx.model`（会话真实模型，主 agent 用哪个就跟随哪个）→ `PI_*` 环境变量，把结果显式转成 `--provider`/`--model` flag 传给子进程（pi 忽略环境变量、只认 flag，不传 flag 会按 `defaultProvider`(=yj) 误解析为 `deepseek-v4-pro`，与主会话不一致）。**全缺 / 未配置时触发用户交互**：派发 encounter 到未配置的 Subagent 模型时，`auto_goo_dispatch` / `auto_goo_execute` 会用结构化 UI 询问是否配置（用主 agent 当前模型写入 config / 手动输入 provider+model / 不配置自动跟随本进程不再问 / 取消本次派发）；用户选「不配置」后本进程自动跟随主 agent 模型，不再逐 step 弹窗；用户取消则 step 保持 blocked，绝不静默回退 pi 全局默认。显式配置优先于 ctx.model 与 env。
 
 `goo-init` 支持指定业务项目目录结构。项目级初始化必须先用 `AskUserQuestion` 复用 `id=project_workspace_create` 询问是否创建；默认不创建。用户选择创建后，再复用 `id=project_workspace_layout` 询问模板或自定义目录，才传 `--project-layout` 或 `--project-dirs`。AutoGoo-Plugin 自身状态目录固定在项目 `.goo/`，不要把它改成项目代码/数据目录。业务目录可以包含 `references/` 与 `references/papers/`，用于参考资料、论文、规范、paper PDF、arXiv/DOI 元数据和阅读材料；这些资料属于项目业务上下文，不属于 AutoGoo-Plugin 运行态 `.goo/`。
 

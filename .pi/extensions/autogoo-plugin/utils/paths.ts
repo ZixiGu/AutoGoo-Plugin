@@ -6,7 +6,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { readFile, access } from "node:fs/promises";
+import { readFile, access, writeFile } from "node:fs/promises";
 import { resolve, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -88,6 +88,34 @@ export function projectGooDir(cwd: string): string {
 
 export function projectConfigPath(cwd: string): string {
   return join(cwd, ".goo/config.json");
+}
+
+/**
+ * 把 Subagent 模型配置写入项目 config（execution.subagent_provider/subagent_model）。
+ * 仅由用户确认后调用（见 resolveOrPromptSubagentModel）。
+ */
+export async function writeExecutionModelConfig(
+  cwd: string,
+  provider: string,
+  model: string,
+): Promise<boolean> {
+  const p = projectConfigPath(cwd);
+  try {
+    let config: Record<string, unknown> = {};
+    try {
+      config = JSON.parse(readFileSync(p, "utf-8"));
+    } catch {
+      config = {};
+    }
+    const execution = (config.execution as Record<string, unknown>) || (config.execution = {});
+    execution.subagent_provider = provider;
+    execution.subagent_model = model;
+    await writeFile(p, JSON.stringify(config, null, 2) + "\n", "utf-8");
+    return true;
+  } catch (e) {
+    console.warn(`[AutoGoo-Plugin] 写入 subagent 模型配置失败: ${(e as Error)?.message ?? String(e)}`);
+    return false;
+  }
 }
 
 export function projectPlanPath(cwd: string): string {
@@ -185,6 +213,10 @@ export interface AutogooPluginConfig {
     max_concurrent?: number;
     heartbeat_seconds?: number;
     stale_after_seconds?: number;
+    /** Subagent 子进程显式模型（默认使用主 agent 的 PI_MODEL；无 PI_MODEL 时回退 pi 全局）。例如 "deepseek-v4-flash" */
+    subagent_model?: string;
+    /** Subagent 子进程显式 provider（默认使用主 agent 的 PI_PROVIDER；无时回退 pi 全局）。与 subagent_model 配对 */
+    subagent_provider?: string;
   };
   planning?: {
     recall_wiki?: boolean;

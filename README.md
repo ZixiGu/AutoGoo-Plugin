@@ -56,31 +56,43 @@ codex plugin add autogoo-plugin@personal
 
 ### Pi Coding Agent
 
-Pi Coding Agent 使用本地扩展方式安装，需要手动配置 `.pi/settings.json`。
+仓库根 `package.json` 带有 `pi` manifest（`pi.extensions` 指向 `.pi/extensions/autogoo-plugin/index.ts`），因此用 `pi install` 直接安装即可。
 
-**方法一：直接编辑配置文件**
+**方法一：一条命令安装（其他用户 / GitHub 源）**
 
-在项目的 `.pi/settings.json` 中添加扩展路径：
-
-```json
-{
-  "extensions": ["/path/to/AutoGoo-Plugin/.pi/extensions/autogoo-plugin/index.ts"]
-}
-```
-
-**方法二：使用 pi CLI（如果支持）**
+全局安装（写入用户级 `~/.pi/agent/settings.json`，所有项目可用）：
 
 ```bash
-# 进入项目目录
-cd /path/to/your/project
-
-# 链接 AutoGoo-Plugin 扩展
-pi extension add /path/to/AutoGoo-Plugin/.pi/extensions/autogoo-plugin
+pi install git:github.com/ZixiGu/AutoGoo-Plugin
 ```
 
-**方法三：全局配置**
+仅当前项目安装（写入项目级 `.pi/settings.json`）：
 
-在用户级 `~/.pi/settings.json` 中添加，所有项目可用：
+```bash
+cd /path/to/your/project
+pi install -l git:github.com/ZixiGu/AutoGoo-Plugin
+```
+
+> 首次启动 pi 时会提示信任项目本地扩展。更新到最新版本：`pi update --extension git:github.com/ZixiGu/AutoGoo-Plugin`。
+
+**方法二：本地 checkout 安装（开发用）**
+
+```bash
+cd /path/to/your/project
+pi install /path/to/AutoGoo-Plugin        # 仓库根即 pi 包
+```
+
+**方法三：手动编辑配置文件**
+
+在项目 `.pi/settings.json` 或用户级 `~/.pi/agent/settings.json` 中添加：
+
+```json
+{
+  "packages": ["git:github.com/ZixiGu/AutoGoo-Plugin"]
+}
+```
+
+或直接引用扩展入口文件：
 
 ```json
 {
@@ -88,7 +100,7 @@ pi extension add /path/to/AutoGoo-Plugin/.pi/extensions/autogoo-plugin
 }
 ```
 
-> Pi 扩展版本：**v0.5.1**。使用 Pi 原生 API（`ctx.ui`、自定义工具、事件系统）。
+> Pi 扩展版本：**v0.5.1**。使用 Pi 原生 API（`ctx.ui`、自定义工具、事件系统）。卸载：`pi remove git:github.com/ZixiGu/AutoGoo-Plugin`。
 
 ## 在 Claude Code 中使用
 

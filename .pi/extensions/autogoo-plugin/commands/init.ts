@@ -13,6 +13,7 @@ import {
   TEMPLATE_PROJECT_WORKSPACE_CREATE,
   TEMPLATE_PROJECT_WORKSPACE_LAYOUT,
   TEMPLATE_PROJECT_WORKSPACE_CLAUDE_MD,
+  TEMPLATE_USER_GOO_MD_POINTER,
   TEMPLATE_SERVER_TYPE,
   TEMPLATE_SERVER_PORT,
   TEMPLATE_SERVER_USER,
@@ -27,6 +28,7 @@ import {
   RESOLVE_ROOT_SH,
   userConfigPath,
   userConfigDir,
+  userGooMdPath,
   projectConfigPath,
   projectGooDir,
   projectPlanPath,
@@ -53,6 +55,7 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
   let removeServers: string[] = [];
   let clearServers = false;
   let updateClaudeMd: boolean | null = parsed.updateClaudeMd;
+  let userPointer: boolean | null = parsed.userPointer;
   let createWorkspace = parsed.createWorkspace;
 
   // ── Step 1: Config scope ──────────────────────────────────────────────────
@@ -80,16 +83,24 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
     }
   }
 
-  // ── Step 3: Project-level specific questions ──────────────────────────────
+  // ── Step 3: User-level pointer ────────────────────────────────────────────
+  // User scope always writes ~/.auto-goo/goo.md; this only decides whether the
+  // user-level agent files (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md) get the marker pointer.
+  if (scope === "user" && userPointer === null) {
+    const choice = await uiSelect(ctx, TEMPLATE_USER_GOO_MD_POINTER.header, TEMPLATE_USER_GOO_MD_POINTER.options);
+    userPointer = choice === "yes";
+  }
+
+  // ── Step 4: Project-level specific questions ──────────────────────────────
   if (scope === "project") {
-    // 3a: Create workspace directories?
+    // 4a: Create workspace directories?
     if (createWorkspace === null) {
       const choice = await uiSelect(ctx, TEMPLATE_PROJECT_WORKSPACE_CREATE.header, TEMPLATE_PROJECT_WORKSPACE_CREATE.options);
       createWorkspace = choice === "yes";
     }
 
     if (createWorkspace) {
-      // 3b: Choose layout
+      // 4b: Choose layout
       if (!projectLayout && projectDirs.length === 0) {
         const choice = await uiSelect(ctx, TEMPLATE_PROJECT_WORKSPACE_LAYOUT.header, TEMPLATE_PROJECT_WORKSPACE_LAYOUT.options);
         if (choice && choice !== "__custom__") {
@@ -104,26 +115,26 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
         }
       }
 
-      // 3c: Create directories
+      // 4c: Create directories
       for (const dir of projectDirs) {
         await mkdir(join(cwd, dir), { recursive: true });
       }
       ctx.ui.notify(`已创建 ${projectDirs.length} 个业务目录。`, "info");
 
-      // 3d: Organize existing files?
+      // 4d: Organize existing files?
       const organize = await uiSelect(ctx, TEMPLATE_PROJECT_WORKSPACE_ORGANIZE_EXISTING.header, TEMPLATE_PROJECT_WORKSPACE_ORGANIZE_EXISTING.options);
       if (organize === "yes") {
         await handleOrganizeExisting(cwd, projectDirs, ctx);
       }
 
-      // 3e: Update CLAUDE.md with dir conventions?
+      // 4e: Update goo.md with dir conventions?
       if (updateClaudeMd === null) {
         const choice = await uiSelect(ctx, TEMPLATE_PROJECT_WORKSPACE_CLAUDE_MD.header, TEMPLATE_PROJECT_WORKSPACE_CLAUDE_MD.options);
         updateClaudeMd = choice === "yes";
       }
     }
 
-    // 3f: Remote servers?
+    // 4f: Remote servers?
     const needServers = await uiConfirm(ctx, "远程服务器", "是否需要配置远程服务器？");
     if (needServers) {
       const configPath = scope === "user" ? userConfigPath() : projectConfigPath(cwd);
@@ -183,7 +194,7 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
       }
     }
 
-    // 3g: Write Goo-wiki archive principles to CLAUDE.md?
+    // 4g: Write Goo-wiki archive principles to goo.md?
     if (wikiDir && existsSync(wikiDir)) {
       const archiveInClaude = await uiConfirm(ctx, "归档原则", "是否将 Goo-wiki 归档原则写入项目 CLAUDE.md / AGENTS.md？");
       if (archiveInClaude && updateClaudeMd === null) {
@@ -191,17 +202,17 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
       }
     }
 
-    // 3h: SessionStart hooks recommendation (not auto-writing)
+    // 4h: SessionStart hooks recommendation (not auto-writing)
     ctx.ui.notify("💡 推荐在 .claude/settings.json 中配置 SessionStart hooks", "info");
     ctx.ui.notify("   不会自动覆盖该文件，如需配置请手动编辑。", "info");
 
-    // 3i: Project slug (default: directory name)
+    // 4i: Project slug (default: directory name)
     if (!projectSlug) {
       projectSlug = cwd.split("/").pop() || "project";
     }
   }
 
-  // ── Step 4: Invoke goo-init.sh ────────────────────────────────────────────
+  // ── Step 5: Invoke goo-init.sh ────────────────────────────────────────────
   const autoGooRoot = REPO_ROOT;
   const scriptPath = join(autoGooRoot, "skills/auto-goo/scripts/goo-init.sh");
 
@@ -221,7 +232,21 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
   if (projectDirs.length > 0) {
     scriptArgs.push("--project-dirs", projectDirs.join(","));
   }
-  if (updateClaudeMd) {
+  if (scope === "user") {
+    // User scope always generates ~/.auto-goo/goo.md unless --skip-claude-md is
+    // passed explicitly; never send --skip-claude-md just because updateClaudeMd
+    // is unset (null), or the user-level goo.md would be silently dropped.
+    if (updateClaudeMd === false) {
+      scriptArgs.push("--skip-claude-md");
+    } else if (updateClaudeMd === true) {
+      scriptArgs.push("--update-claude-md");
+    }
+    if (userPointer === true) {
+      scriptArgs.push("--write-user-pointer");
+    } else if (userPointer === false) {
+      scriptArgs.push("--skip-user-pointer");
+    }
+  } else if (updateClaudeMd) {
     scriptArgs.push("--update-claude-md");
   } else {
     scriptArgs.push("--skip-claude-md");
@@ -246,12 +271,21 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
     return;
   }
 
-  const gooMdExists = scope === "project" && existsSync(join(cwd, "goo.md"));
-  const target = scope === "user" ? "~/.auto-goo/config.json" : ".goo/config.json";
+  const isUser = scope === "user";
+  const gooMdExists = isUser ? existsSync(userGooMdPath()) : existsSync(join(cwd, "goo.md"));
+  const target = isUser ? "~/.auto-goo/config.json" : ".goo/config.json";
   const wikiInfo = wikiDir ? `（wiki: ${wikiDir}）` : "";
+  // Only claim the pointer was written when goo.md itself was generated (not --skip-claude-md).
+  const gooMdInfo = gooMdExists
+    ? isUser
+      ? "，用户级 goo.md 已生成（~/.auto-goo/goo.md）"
+      : "，项目级 goo.md 已生成（<项目根>/goo.md）"
+    : "";
+  const pointerInfo = gooMdExists && isUser && userPointer !== false
+    ? "，用户级指针已更新（~/.claude/CLAUDE.md、~/.codex/AGENTS.md）"
+    : "";
   ctx.ui.notify(
-    `✅ AutoGoo-Plugin 初始化完成！配置已写入 ${target} ${wikiInfo}` +
-    (gooMdExists ? "，goo.md 已生成" : ""),
+    `✅ AutoGoo-Plugin 初始化完成！配置已写入 ${target} ${wikiInfo}${gooMdInfo}${pointerInfo}`,
     "info"
   );
 }
@@ -422,6 +456,7 @@ function parseArgs(args: string): {
   projectDirs: string[];
   projectSlug: string | null;
   updateClaudeMd: boolean | null;
+  userPointer: boolean | null;
   createWorkspace: boolean | null;
 } {
   const tokens = args.split(/\s+/).filter(Boolean);
@@ -431,6 +466,7 @@ function parseArgs(args: string): {
   let projectDirs: string[] = [];
   let projectSlug: string | null = null;
   let updateClaudeMd: boolean | null = null;
+  let userPointer: boolean | null = null;
   let createWorkspace: boolean | null = null;
 
   for (let i = 0; i < tokens.length; i++) {
@@ -443,11 +479,13 @@ function parseArgs(args: string): {
     else if (t === "--project-slug" && i + 1 < tokens.length) projectSlug = tokens[++i];
     else if (t === "--update-claude-md") updateClaudeMd = true;
     else if (t === "--skip-claude-md") updateClaudeMd = false;
+    else if (t === "--write-user-pointer") userPointer = true;
+    else if (t === "--skip-user-pointer") userPointer = false;
     else if (t === "--create-workspace") createWorkspace = true;
     else if (t === "--no-create-workspace") createWorkspace = false;
   }
 
-  return { scope, wikiDir, projectLayout, projectDirs, projectSlug, updateClaudeMd, createWorkspace };
+  return { scope, wikiDir, projectLayout, projectDirs, projectSlug, updateClaudeMd, userPointer, createWorkspace };
 }
 
 

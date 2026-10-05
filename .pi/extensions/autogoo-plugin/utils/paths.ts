@@ -162,6 +162,11 @@ export function userConfigDir(): string {
   return join(process.env.HOME || "~", ".auto-goo");
 }
 
+/** User-level conventions source: `$HOME/.auto-goo/goo.md`. */
+export function userGooMdPath(): string {
+  return join(process.env.HOME || "~", ".auto-goo/goo.md");
+}
+
 // ── Config loading ──────────────────────────────────────────────────────────
 
 export interface ServerEntry {

@@ -29,6 +29,15 @@ def main() -> int:
     unfinished = [step for step in steps if isinstance(step, dict) and step.get("status") not in {"completed", "failed"}]
     if unfinished:
         print(f"AutoGoo: unfinished plan detected ({len(unfinished)}/{len(steps)} steps); use /auto-goo:goo-continue")
+
+    project_goo = cwd / "goo.md"
+    user_goo = Path.home() / ".auto-goo" / "goo.md"
+    if project_goo.is_file():
+        print(f"AutoGoo: goo.md=project ({project_goo})")
+    elif user_goo.is_file():
+        print(f"AutoGoo: goo.md=user ({user_goo})")
+    else:
+        print("AutoGoo: goo.md=missing (run /auto-goo:goo-init --user)")
     return 0
 
 

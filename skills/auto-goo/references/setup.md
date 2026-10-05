@@ -14,12 +14,12 @@ Goo-wiki 是归档笔记的目标 Obsidian vault。插件在运行时通过文�
 
 该命令支持用户级和项目级配置：
 
-- `/auto-goo:goo-init --user` → `~/.auto-goo/config.json`
-- `/auto-goo:goo-init --project` → `.goo/config.json`；自动创建或复用 Goo-wiki 与 `wiki/projects/<project-slug>/` 项目归档根目录，并询问是否更新项目 `CLAUDE.md` 的归档原则段落
+- `/auto-goo:goo-init --user` → `~/.auto-goo/config.json`，并总是生成约定单源 `~/.auto-goo/goo.md`（除非 `--skip-claude-md`），默认写用户级指针 `~/.claude/CLAUDE.md`、`~/.codex/AGENTS.md`
+- `/auto-goo:goo-init --project` → `.goo/config.json`；自动创建或复用 Goo-wiki 与 `wiki/projects/<project-slug>/` 项目归档根目录，仅在项目有专属内容或显式 `--update-claude-md` 时生成项目级 `goo.md` 与项目指针，否则沿用 `~/.auto-goo/goo.md`
 
-初始化采用主 Agent 交互模式：主 Agent 先通过 `AskUserQuestion` / 结构化选择 UI 确认作用域、wiki 路径、是否创建业务项目目录、创建后是否写入 `CLAUDE.md`、覆盖风险和项目 `CLAUDE.md` 更新意愿，让 Claude Code 渲染可用方向键移动、Enter 确认的选择控件，再调用脚本落盘。每个交互问题必须展示可选项；不得在 `AskUserQuestion` 可用时用普通文本要求用户手打 `1/2` 或命令参数。结构化选择 UI / AskUserQuestion 不可用、调用失败或没有渲染出按钮时，才允许降级为明确标注 fallback 的纯文本列表选项，继续收集用户选择。
+初始化采用主 Agent 交互模式：主 Agent 先通过 `AskUserQuestion` / 结构化选择 UI 确认作用域、wiki 路径、是否创建业务项目目录、创建后是否写入 `goo.md`、覆盖风险和 `goo.md`/指针更新意愿，让 Claude Code 渲染可用方向键移动、Enter 确认的选择控件，再调用脚本落盘。每个交互问题必须展示可选项；不得在 `AskUserQuestion` 可用时用普通文本要求用户手打 `1/2` 或命令参数。结构化选择 UI / AskUserQuestion 不可用、调用失败或没有渲染出按钮时，才允许降级为明确标注 fallback 的纯文本列表选项，继续收集用户选择。
 
-业务项目目录结构也属于主 Agent 交互，不允许只依赖脚本里的 Bash prompt。项目级初始化必须复用 `references/interaction-templates.md` 中的固定模板：`id=project_workspace_create` 询问是否创建，`id=project_workspace_layout` 询问模板或自定义目录，创建后用 `id=project_workspace_claude_md` 询问是否写入项目 `CLAUDE.md`。用户未明确选择前不得创建业务目录；选择自定义目录时，主 Agent 必须复述并确认 Other 输入后再传给 `--project-dirs`。
+业务项目目录结构也属于主 Agent 交互，不允许只依赖脚本里的 Bash prompt。项目级初始化必须复用 `references/interaction-templates.md` 中的固定模板：`id=project_workspace_create` 询问是否创建，`id=project_workspace_layout` 询问模板或自定义目录，创建后用 `id=project_workspace_claude_md` 询问是否把目录约定写入项目级 `goo.md`（项目指针 `CLAUDE.md`/`AGENTS.md` 仅保留 marker 指针）。用户未明确选择前不得创建业务目录；选择自定义目录时，主 Agent 必须复述并确认 Other 输入后再传给 `--project-dirs`。
 
 业务目录创建后，如果项目根目录已经有内容，主 Agent 必须只读扫描并排除 `.goo/`、`.git/`、`.claude/`、已创建业务目录、secrets、锁文件和隐藏配置。发现可归类到 `src/`、`data/`、`docs/`、`scripts/`、`configs/`、`tests/` 等业务路径的现有内容时，必须先复用 `id=project_workspace_organize_existing` 模板询问是否生成整理方案；默认不整理。用户选择生成方案后，只展示移动建议，不直接移动；清单必须包含源路径、目标路径、归类理由、冲突/覆盖风险和跳过项。随后必须复用 `id=project_workspace_apply_organization` 模板二次确认，只有用户选择执行后才允许按清单移动；遇到目标已存在、敏感文件、不确定归类或批量大文件时停止并重新确认。脚本默认只创建目录，不自动整理已有内容。
 
@@ -63,11 +63,20 @@ Goo-wiki 是归档笔记的目标 Obsidian vault。插件在运行时通过文�
 
 **路径解析优先级**：
 
+wiki 路径：
+
 1. 环境变量 `AUTOGOO_PLUGIN_WIKI_DIR`
 2. 当前项目 `.goo/config.json` 中的 `wiki_dir`
 3. 用户级 `~/.auto-goo/config.json` 中的 `wiki_dir`
 4. 默认路径 `~/workspace/Goo-wiki`
 5. fallback 归档目录 `.goo/obsidian/`
+
+goo.md 约定路径（与 wiki 路径解析彼此独立，不要混用）：
+
+1. 项目级 `<项目根>/goo.md`（存在时优先）
+2. 用户级 `~/.auto-goo/goo.md`（默认单源）
+
+指针文件只指向上述有效 `goo.md`；项目级缺失时指针声明回退用户级。
 
 **默认检测路径**：
 
@@ -96,16 +105,31 @@ Goo-wiki 是归档笔记的目标 Obsidian vault。插件在运行时通过文�
 
 Recorder 和归档步骤应优先写入 `archive.project_dir`，Goo-wiki 不可用时再写入 `archive.fallback_project_dir`。
 
-## 项目 CLAUDE.md 归档原则
+## 用户级 goo.md 与优先级
 
-项目级初始化如果创建了业务项目目录结构，AutoGoo-Plugin 必须继续用 `AskUserQuestion` 复用 `id=project_workspace_claude_md` 模板，询问是否在项目根目录 `CLAUDE.md` 中写入目录约定。用户同意时，`AUTOGOO-PLUGIN-WIKI-ARCHIVE` marker 段会包含 `## 项目目录约定`，记录：
+AutoGoo-Plugin 把完整项目约定正文单源化到 `goo.md`，`CLAUDE.md` / `AGENTS.md` 只保留 marker 指针：
+
+| 层级 | goo.md 路径 | 指针文件 | 生成条件 |
+| --- | --- | --- | --- |
+| 用户级 | `~/.auto-goo/goo.md` | `~/.claude/CLAUDE.md`、`~/.codex/AGENTS.md` | `--user` 时总是生成，除非 `--skip-claude-md`；指针默认写，由 `--write-user-pointer` / `--skip-user-pointer` 控制（互斥） |
+| 项目级 | `<项目根>/goo.md` | `<项目根>/CLAUDE.md`、`<项目根>/AGENTS.md` | 有项目专属内容（`project_workspace` 目录约定或 `servers`）或显式 `--update-claude-md` 时生成；否则沿用用户级并提示 |
+
+- **优先级**：项目级 `<项目根>/goo.md` > 用户级 `~/.auto-goo/goo.md`；项目级缺失时回退用户级。该优先级不同于 config 的项目级 > 用户级逻辑，两者各自独立。
+- **marker 幂等**：正文用 `AUTOGOO-PLUGIN-WIKI-ARCHIVE-BEGIN/END`，指针用 `AUTOGOO-PLUGIN-POINTER-BEGIN/END`；重复初始化先收敛已有块和悬挂 marker，再只写入/替换 marker 段，不改段外内容。
+- **相关参数**：`--write-user-pointer` / `--skip-user-pointer` 控制用户级指针（互斥，同时传入 `exit 2`）；`--agent claude|codex|both` 选择指针目标（默认 `both`，非法值 `exit 2`）；`--skip-claude-md` 与 `--update-claude-md` 互斥。
+- **`--skip-claude-md` 覆盖范围**：同时跳过用户级 `~/.auto-goo/goo.md`、项目级 `<根>/goo.md` 和两类指针（用户级与项目级都生效）；只想跳过用户级指针时用 `--skip-user-pointer`。
+- **三条 CLAUDE.md 区分**：`$wiki_dir/CLAUDE.md` 是 Goo-wiki vault 自身说明；`~/.claude/CLAUDE.md` 是用户级 agent 指针；`<项目根>/CLAUDE.md` 是项目级 agent 指针。
+
+## goo.md 归档原则与 agent 指针
+
+项目级初始化如果创建了业务项目目录结构，AutoGoo-Plugin 必须继续用 `AskUserQuestion` 复用 `id=project_workspace_claude_md` 模板，询问是否把目录约定写入项目级 `goo.md`（内容写入 `AUTOGOO-PLUGIN-WIKI-ARCHIVE` marker 段，项目指针 `CLAUDE.md`/`AGENTS.md` 只保留 marker 指针）。用户同意时，该 marker 段会包含 `## 项目目录约定`，记录：
 
 - `project_workspace.layout` 和目录清单
 - `src/`、`data/raw/`、`data/processed/`、`references/`、`references/papers/`、`docs/`、`configs/`、`outputs/` 等目录语义
 - 原始数据只读、处理数据和输出目录分离、`.goo/` 只存 AutoGoo-Plugin 状态的边界
 - 后续 plan 的 `allowed_read_paths` / `allowed_write_paths` 应优先落在业务目录或明确的 `.goo/` 状态目录中
 
-项目级初始化使用 Goo-wiki 时，AutoGoo-Plugin 还会询问用户是否在项目根目录 `CLAUDE.md` 中追加或更新由 `AUTOGOO-PLUGIN-WIKI-ARCHIVE` marker 包裹的归档原则段落。该段落要求：
+项目级初始化使用 Goo-wiki 时，AutoGoo-Plugin 还会询问用户是否把由 `AUTOGOO-PLUGIN-WIKI-ARCHIVE` marker 包裹的归档原则段落写入项目级 `<项目根>/goo.md`（项目指针只保留 marker 指针）。该段落要求：
 
 - 规划前先派发 `collector`（wiki-gatherer）从 Goo-wiki 召回相关项目经验、概念页、周报和 `log.md`，并消费其 evidence packet
 - `goo-plan` 的 `.goo/plan.json` 最后保留 `归档到 Goo-wiki` 步骤
@@ -120,7 +144,7 @@ Recorder 和归档步骤应优先写入 `archive.project_dir`，Goo-wiki 不可�
 - 归档内容必须服务下一次任务复用，而不是只做事后报告
 - 论文分析和代码分析产生的独立 Markdown 分析文档必须实际进入 Goo-wiki，并更新项目入口与 `log.md`；fallback 只作临时防丢失，状态保持 `pending_wiki_sync`/`failed`
 
-该更新是幂等的，只替换 AutoGoo-Plugin marker 内的内容，不覆盖项目已有指引。配置远程服务器时，项目级 init 默认更新 `CLAUDE.md` 中的服务器概要和安全约束；远程 `workdir`、`setup_commands`、数据目录和产物目录细节仍只写 `.goo/config.json`。非交互场景没有远程服务器时默认不写，需传 `--update-claude-md` 明确写入目录约定和归档原则；需要跳过所有 `CLAUDE.md` 更新时传 `--skip-claude-md`。
+该更新是幂等的，只替换 AutoGoo-Plugin marker 内的内容，不覆盖已有指引。配置远程服务器时，项目级 init 默认把服务器概要和安全约束写入项目级 `goo.md` 的 marker 段；远程 `workdir`、`setup_commands`、数据目录和产物目录细节仍只写 `.goo/config.json`。非交互场景没有远程服务器时默认不生成项目级 `goo.md`，需传 `--update-claude-md` 明确写入目录约定和归档原则；需要跳过所有 `goo.md` / 指针更新（用户级和项目级）时传 `--skip-claude-md`。
 
 如果项目配置了远程服务器，AutoGoo-Plugin marker 块还会写入：
 
@@ -266,7 +290,7 @@ bash "$auto_goo_root/skills/auto-goo/scripts/goo-init.sh" --project \
 - `data`: `src`, `scripts`, `notebooks`, `references`, `references/papers`, `data/raw`, `data/interim`, `data/processed`, `data/external`, `reports`, `docs`, `tests`
 - `docs`: `docs`, `docs/adr`, `docs/assets`, `references`, `references/papers`, `scripts`, `src`, `tests`
 
-也可以用 `--project-dirs src,data/raw,docs,references/papers` 传入自定义目录；脚本会写入 `.goo/config.json.project_workspace` 并创建对应目录。默认 `project_workspace.layout="none"`，不创建业务目录，避免污染已有项目。业务目录创建后，如根目录已有可归类内容，必须先用 `id=project_workspace_organize_existing` 询问是否生成整理方案，再用 `id=project_workspace_apply_organization` 二次确认是否执行移动；默认不移动任何已有内容。之后必须继续复用 `id=project_workspace_claude_md` 询问是否把目录约定写入项目 `CLAUDE.md`。
+也可以用 `--project-dirs src,data/raw,docs,references/papers` 传入自定义目录；脚本会写入 `.goo/config.json.project_workspace` 并创建对应目录。默认 `project_workspace.layout="none"`，不创建业务目录，避免污染已有项目。业务目录创建后，如根目录已有可归类内容，必须先用 `id=project_workspace_organize_existing` 询问是否生成整理方案，再用 `id=project_workspace_apply_organization` 二次确认是否执行移动；默认不移动任何已有内容。之后必须继续复用 `id=project_workspace_claude_md` 询问是否把目录约定写入项目级 `goo.md`（项目指针 `CLAUDE.md`/`AGENTS.md` 仅保留 marker 指针）。
 
 ### 远程服务器配置
 
@@ -279,7 +303,7 @@ bash "$auto_goo_root/skills/auto-goo/scripts/goo-init.sh" --project \
 
 secrets 文件权限为 `chmod 600`，项目级 secrets 文件自动加入 `.gitignore`。
 
-config 中记录 `servers[].{name, host, ip?, port, user, type, purpose, defaults?, secrets_file}`，不存储密码。`name` 是给模型、plan 和 `remote_server` 使用的稳定名称；`host` 是 SSH 连接地址，可以是 DNS 名、SSH config Host 或 IP；`ip` 仅作为兼容字段可选。使用服务器时，从 `secrets_file` 读取密码。`port` 默认 22，`type` 为 `cpu` 或 `gpu`，默认 `cpu`。`purpose` 为服务器用途说明，用于 CLAUDE.md 中告知何时使用该服务器。
+config 中记录 `servers[].{name, host, ip?, port, user, type, purpose, defaults?, secrets_file}`，不存储密码。`name` 是给模型、plan 和 `remote_server` 使用的稳定名称；`host` 是 SSH 连接地址，可以是 DNS 名、SSH config Host 或 IP；`ip` 仅作为兼容字段可选。使用服务器时，从 `secrets_file` 读取密码。`port` 默认 22，`type` 为 `cpu` 或 `gpu`，默认 `cpu`。`purpose` 为服务器用途说明，用于 `goo.md` 的服务器段落中告知何时使用该服务器。
 
 `servers[].defaults` 用于记录远程机器上的非敏感默认环境约定：
 

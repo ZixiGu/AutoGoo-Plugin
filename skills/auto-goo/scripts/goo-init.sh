@@ -8,7 +8,7 @@ Usage:
   goo-init.sh [--user|--project] [--wiki-dir PATH] [--project-layout NAME] [--project-dirs LIST] [--project-slug SLUG] [--server SPEC] [--yes] [--force] [--agent claude|codex|both] [--update-claude-md] [--skip-claude-md]
 
 Options:
-  --user            Write user-level config to ~/.auto-goo/config.json
+  --user            Write user-level config + conventions to ~/.auto-goo/ (config.json + goo.md)
   --project         Write project-level config to .goo/config.json
   --wiki-dir PATH   Set Goo-wiki directory (default: ~/workspace/Goo-wiki)
   --project-layout NAME
@@ -30,9 +30,13 @@ Options:
   --yes             Use defaults for unanswered prompts
   --force           Overwrite existing config without asking
   --update-claude-md
-                    Update project goo.md + CLAUDE.md/AGENTS.md pointers without asking
-  --agent TARGET     Write pointer to claude, codex (AGENTS.md), or both (default: ask)
-  --skip-claude-md  Do not update goo.md + CLAUDE.md/AGENTS.md when Goo-wiki is available
+                    Update goo.md + CLAUDE.md/AGENTS.md pointers without asking
+  --skip-claude-md  Do not update goo.md + CLAUDE.md/AGENTS.md pointers
+  --write-user-pointer
+                    Write user-level pointer to ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md
+  --skip-user-pointer
+                    Do not write user-level pointer (overrides the --user default)
+  --agent TARGET     Write pointer to claude, codex (AGENTS.md), or both (default: both)
   -h, --help        Show this help
 EOF
 }
@@ -52,6 +56,9 @@ YES=0
 FORCE=0
 UPDATE_CLAUDE_MD=0
 SKIP_CLAUDE_MD=0
+AGENT_TARGET=""
+USER_POINTER=""
+USER_POINTER_SEEN=0
 SERVER_SPECS=()
 REMOVE_SERVERS=()
 CLEAR_SERVERS=0
@@ -137,11 +144,29 @@ while [[ $# -gt 0 ]]; do
       SKIP_CLAUDE_MD=1
       shift
       ;;
+    --write-user-pointer)
+      USER_POINTER="yes"
+      USER_POINTER_SEEN=$((USER_POINTER_SEEN + 1))
+      shift
+      ;;
+    --skip-user-pointer)
+      USER_POINTER="no"
+      USER_POINTER_SEEN=$((USER_POINTER_SEEN + 1))
+      shift
+      ;;
     --agent)
       if [[ $# -lt 2 ]]; then
         echo "error: --agent requires claude|codex|both" >&2
         exit 2
       fi
+      case "$2" in
+        claude|codex|both)
+          ;;
+        *)
+          echo "error: --agent must be one of: claude, codex, both (got: $2)" >&2
+          exit 2
+          ;;
+      esac
       AGENT_TARGET="$2"
       shift 2
       ;;
@@ -159,6 +184,11 @@ done
 
 if [[ "$UPDATE_CLAUDE_MD" -eq 1 && "$SKIP_CLAUDE_MD" -eq 1 ]]; then
   echo "error: --update-claude-md and --skip-claude-md cannot be used together" >&2
+  exit 2
+fi
+
+if [[ "$USER_POINTER_SEEN" -gt 1 ]]; then
+  echo "error: --write-user-pointer and --skip-user-pointer cannot be used together" >&2
   exit 2
 fi
 
@@ -698,6 +728,7 @@ fi
 
 SERVERS_JSON="[]"
 CONFIG_WRITE_SKIPPED=0
+SKIP_CONVENTIONS=0
 
 # Load existing servers as the base for management (add/remove/replace/clear)
 if [[ -f "$CONFIG_FILE" ]]; then
@@ -916,17 +947,17 @@ if [[ -f "$CONFIG_FILE" && "$FORCE" -ne 1 ]]; then
   if ! confirm "Overwrite $CONFIG_FILE?" "n"; then
     CONFIG_WRITE_SKIPPED=1
     echo "Skipped config write. Existing config kept."
-    if [[ "$SCOPE" != "project" || "$SKIP_CLAUDE_MD" -eq 1 ]]; then
-      exit 0
-    fi
-    if [[ "$UPDATE_CLAUDE_MD" -ne 1 && ("$YES" -eq 1 || ! -t 0) ]]; then
+    # Do NOT exit here: convention writing (phase B) must still run for --user scope.
+    if [[ "$SKIP_CLAUDE_MD" -eq 1 ]]; then
+      SKIP_CONVENTIONS=1
+    elif [[ "$SCOPE" == "project" && "$UPDATE_CLAUDE_MD" -ne 1 && ("$YES" -eq 1 || ! -t 0) ]]; then
+      SKIP_CONVENTIONS=1
       echo "Project goo.md was not updated; rerun with --update-claude-md to add configuration."
-      exit 0
     fi
   fi
 fi
 
-if [[ "$SCOPE" == "project" && "$WIKI_READY" -eq 1 ]]; then
+if [[ "$CONFIG_WRITE_SKIPPED" -eq 0 && "$SCOPE" == "project" && "$WIKI_READY" -eq 1 ]]; then
   mkdir -p "$WIKI_DIR_EXPANDED/$PROJECT_ARCHIVE_DIR"
   echo "  archive root: $WIKI_DIR_EXPANDED/$PROJECT_ARCHIVE_DIR"
   if [[ -n "$GIT_REMOTE_URL" ]]; then
@@ -1119,9 +1150,19 @@ else
   echo "Kept $CONFIG_FILE"
 fi
 
-if [[ "$SCOPE" == "project" && "$SKIP_CLAUDE_MD" -ne 1 ]]; then
+# ---------------------------------------------------------------------------
+# Phase B: convention writing (goo.md body + agent pointers)
+# This phase must run before any early exit so that --user scope is reachable.
+# ---------------------------------------------------------------------------
+USER_POINTER_EFFECTIVE="$USER_POINTER"
+
+if [[ "$SKIP_CLAUDE_MD" -eq 1 ]]; then
+  echo "Skipped goo.md/pointer update (--skip-claude-md)"
+elif [[ "$SKIP_CONVENTIONS" -eq 1 ]]; then
+  : # reason already reported while handling the existing config
+else
   SHOULD_UPDATE_CLAUDE_MD=0
-  AGENT_TARGET="both"
+  AGENT_TARGET="${AGENT_TARGET:-both}"
   PROJECT_LAYOUT_DIR_COUNT="$(python3 - "$PROJECT_LAYOUT_DIRS_JSON" <<'PY'
 import json
 import sys
@@ -1129,85 +1170,217 @@ import sys
 print(len(json.loads(sys.argv[1])))
 PY
 )"
-  if [[ "$UPDATE_CLAUDE_MD" -eq 1 ]]; then
+  PROJECT_GOO_GENERATED=0
+
+  if [[ "$SCOPE" == "user" ]]; then
+    # User-level conventions are always generated (unless --skip-claude-md).
     SHOULD_UPDATE_CLAUDE_MD=1
-    if [[ "$PROJECT_LAYOUT_DIR_COUNT" -gt 0 ]]; then
-      WRITE_PROJECT_WORKSPACE_CLAUDE=1
+    if [[ -z "$USER_POINTER_EFFECTIVE" ]]; then
+      if [[ "$YES" -ne 1 && -t 0 ]]; then
+        if confirm "是否写用户级指针到 ~/.claude/CLAUDE.md 和 ~/.codex/AGENTS.md？" "y"; then
+          USER_POINTER_EFFECTIVE="yes"
+        else
+          USER_POINTER_EFFECTIVE="no"
+        fi
+      else
+        USER_POINTER_EFFECTIVE="yes"
+      fi
     fi
-  elif [[ "$YES" -eq 1 || ! -t 0 ]]; then
-    if [[ "$SERVERS_JSON" != "[]" ]]; then
+  else
+    if [[ "$UPDATE_CLAUDE_MD" -eq 1 ]]; then
       SHOULD_UPDATE_CLAUDE_MD=1
-      echo "Project goo.md will be updated with remote server summary and safety constraints."
-    else
-      echo "Project goo.md was not updated; rerun with --update-claude-md to add configuration."
-    fi
-  elif [[ "$PROJECT_LAYOUT_DIR_COUNT" -gt 0 ]]; then
-    if confirm "Write project directory conventions to goo.md?" "y"; then
-      SHOULD_UPDATE_CLAUDE_MD=1
-      WRITE_PROJECT_WORKSPACE_CLAUDE=1
-    else
-      echo "Skipped project directory conventions in goo.md by user choice."
-    fi
-    if [[ "$SERVERS_JSON" != "[]" && "$WIKI_READY" -eq 1 ]]; then
-      if confirm "Also write server config and archive principles to goo.md?" "y"; then
+      if [[ "$PROJECT_LAYOUT_DIR_COUNT" -gt 0 ]]; then
+        WRITE_PROJECT_WORKSPACE_CLAUDE=1
+      fi
+    elif [[ "$YES" -eq 1 || ! -t 0 ]]; then
+      if [[ "$PROJECT_LAYOUT_DIR_COUNT" -gt 0 || "$SERVERS_JSON" != "[]" ]]; then
         SHOULD_UPDATE_CLAUDE_MD=1
+        if [[ "$PROJECT_LAYOUT_DIR_COUNT" -gt 0 ]]; then
+          WRITE_PROJECT_WORKSPACE_CLAUDE=1
+        else
+          echo "Project goo.md will be updated with remote server summary and safety constraints."
+        fi
+      elif [[ -f "$HOME/.auto-goo/goo.md" ]]; then
+        echo "Project goo.md not needed; using user-level ~/.auto-goo/goo.md."
+      else
+        echo "Project goo.md was not updated; rerun with --update-claude-md to add configuration."
+      fi
+    elif [[ "$PROJECT_LAYOUT_DIR_COUNT" -gt 0 ]]; then
+      if confirm "Write project directory conventions to goo.md?" "y"; then
+        SHOULD_UPDATE_CLAUDE_MD=1
+        WRITE_PROJECT_WORKSPACE_CLAUDE=1
+      else
+        echo "Skipped project directory conventions in goo.md by user choice."
+      fi
+      if [[ "$SERVERS_JSON" != "[]" && "$WIKI_READY" -eq 1 ]]; then
+        if confirm "Also write server config and archive principles to goo.md?" "y"; then
+          SHOULD_UPDATE_CLAUDE_MD=1
+        fi
+      elif [[ "$SERVERS_JSON" != "[]" ]]; then
+        if confirm "Also write server config to goo.md?" "y"; then
+          SHOULD_UPDATE_CLAUDE_MD=1
+        fi
+      elif [[ "$WIKI_READY" -eq 1 ]]; then
+        if confirm "Also add Goo-wiki archive principles to goo.md?" "y"; then
+          SHOULD_UPDATE_CLAUDE_MD=1
+        fi
+      fi
+    elif [[ "$SERVERS_JSON" != "[]" && "$WIKI_READY" -eq 1 ]]; then
+      if confirm "Update goo.md with server config and archive principles?" "y"; then
+        SHOULD_UPDATE_CLAUDE_MD=1
+      else
+        echo "Skipped project goo.md update by user choice."
       fi
     elif [[ "$SERVERS_JSON" != "[]" ]]; then
-      if confirm "Also write server config to goo.md?" "y"; then
+      if confirm "Update goo.md with server config?" "y"; then
         SHOULD_UPDATE_CLAUDE_MD=1
+      else
+        echo "Skipped project goo.md update by user choice."
       fi
     elif [[ "$WIKI_READY" -eq 1 ]]; then
-      if confirm "Also add Goo-wiki archive principles to goo.md?" "y"; then
+      if confirm "Add Goo-wiki archive principles to goo.md?" "y"; then
         SHOULD_UPDATE_CLAUDE_MD=1
+      else
+        echo "Skipped project goo.md update by user choice."
       fi
     fi
-  elif [[ "$SERVERS_JSON" != "[]" && "$WIKI_READY" -eq 1 ]]; then
-    if confirm "Update goo.md with server config and archive principles?" "y"; then
+    if [[ "$SERVERS_JSON" != "[]" && "$SHOULD_UPDATE_CLAUDE_MD" -eq 0 ]]; then
       SHOULD_UPDATE_CLAUDE_MD=1
-    else
-      echo "Skipped project goo.md update by user choice."
+      if [[ "$PROJECT_LAYOUT_DIR_COUNT" -gt 0 ]]; then
+        WRITE_PROJECT_WORKSPACE_CLAUDE=1
+      fi
+      echo "Project goo.md will be updated with remote server summary and safety constraints."
     fi
-  elif [[ "$SERVERS_JSON" != "[]" ]]; then
-    if confirm "Update goo.md with server config?" "y"; then
-      SHOULD_UPDATE_CLAUDE_MD=1
-    else
-      echo "Skipped project goo.md update by user choice."
+    if [[ "$SHOULD_UPDATE_CLAUDE_MD" -eq 1 ]]; then
+      PROJECT_GOO_GENERATED=1
     fi
-  elif [[ "$WIKI_READY" -eq 1 ]]; then
-    if confirm "Add Goo-wiki archive principles to goo.md?" "y"; then
-      SHOULD_UPDATE_CLAUDE_MD=1
-    else
-      echo "Skipped project goo.md update by user choice."
-    fi
-  fi
-  if [[ "$SERVERS_JSON" != "[]" && "$SHOULD_UPDATE_CLAUDE_MD" -eq 0 ]]; then
-    SHOULD_UPDATE_CLAUDE_MD=1
-    echo "Project goo.md will be updated with remote server summary and safety constraints."
   fi
 
-  if [[ "$SHOULD_UPDATE_CLAUDE_MD" -eq 1 ]]; then
+  # Pointer targets and scope-aware display strings
+  POINTER_TARGETS=""
+  if [[ "$SCOPE" == "user" ]]; then
+    GOO_MD_TARGET="$HOME/.auto-goo/goo.md"
+    GOO_MD_HEADER="# AutoGoo-Plugin 用户级约定"
+    POINTER_HEADER="# AutoGoo-Plugin 用户级约定"
+    CONFIG_DISPLAY="~/.auto-goo/config.json"
+    SECRETS_DISPLAY="~/.auto-goo/secrets.json"
+    INIT_HINT="/auto-goo:goo-init --user"
+    if [[ "$USER_POINTER_EFFECTIVE" == "yes" ]]; then
+      if [[ "$AGENT_TARGET" == "claude" || "$AGENT_TARGET" == "both" ]]; then
+        POINTER_TARGETS+="$HOME/.claude/CLAUDE.md"$'\n'
+      fi
+      if [[ "$AGENT_TARGET" == "codex" || "$AGENT_TARGET" == "both" ]]; then
+        POINTER_TARGETS+="$HOME/.codex/AGENTS.md"$'\n'
+      fi
+    else
+      echo "Skipped user-level pointer (pass --write-user-pointer to enable)."
+    fi
+  else
+    GOO_MD_TARGET="$ROOT/goo.md"
+    GOO_MD_HEADER="# AutoGoo-Plugin 项目约定"
+    POINTER_HEADER="# Project Instructions"
+    CONFIG_DISPLAY=".goo/config.json"
+    SECRETS_DISPLAY=".goo/secrets.json"
+    INIT_HINT="/auto-goo:goo-init --project"
+    if [[ "$SHOULD_UPDATE_CLAUDE_MD" -eq 1 ]]; then
+      if [[ "$AGENT_TARGET" == "claude" || "$AGENT_TARGET" == "both" ]]; then
+        POINTER_TARGETS+="$ROOT/CLAUDE.md"$'\n'
+      fi
+      if [[ "$AGENT_TARGET" == "codex" || "$AGENT_TARGET" == "both" ]]; then
+        POINTER_TARGETS+="$ROOT/AGENTS.md"$'\n'
+      fi
+    fi
+  fi
+
+  if [[ "$SHOULD_UPDATE_CLAUDE_MD" -eq 0 ]]; then
+    echo "goo.md not modified (no content to write)"
+  else
     set +e
-    python3 - "$ROOT" "$WIKI_DIR" "$FALLBACK_PROJECT_ARCHIVE_DIR" "$PROJECT_ARCHIVE_DIR" "$SERVERS_JSON" "$WIKI_READY" "$PROJECT_LAYOUT" "$PROJECT_LAYOUT_DIRS_JSON" "$WRITE_PROJECT_WORKSPACE_CLAUDE" "$AGENT_TARGET" <<'PY'
+    python3 - \
+      "$SCOPE" "$GOO_MD_TARGET" "$WIKI_DIR" "$FALLBACK_PROJECT_ARCHIVE_DIR" \
+      "$PROJECT_ARCHIVE_DIR" "$SERVERS_JSON" "$WIKI_READY" "$PROJECT_LAYOUT" \
+      "$PROJECT_LAYOUT_DIRS_JSON" "$WRITE_PROJECT_WORKSPACE_CLAUDE" \
+      "$AGENT_TARGET" "$PROJECT_GOO_GENERATED" "$GOO_MD_HEADER" \
+      "$POINTER_HEADER" "$CONFIG_DISPLAY" "$SECRETS_DISPLAY" "$INIT_HINT" \
+      "$POINTER_TARGETS" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-root = Path(sys.argv[1])
-goo_md = root / "goo.md"
-claude_md = root / "CLAUDE.md"
-agents_md = root / "AGENTS.md"
-wiki_dir = sys.argv[2]
-fallback_project_dir = sys.argv[3]
-project_archive_dir = sys.argv[4]
-servers_json = sys.argv[5]
-wiki_ready = sys.argv[6] == "1"
-project_layout = sys.argv[7]
-project_layout_dirs = json.loads(sys.argv[8])
-write_project_workspace = sys.argv[9] == "1"
-agent_target = sys.argv[10] if len(sys.argv) > 10 else "both"
+scope = sys.argv[1]
+goo_md_target = Path(sys.argv[2])
+wiki_dir = sys.argv[3]
+fallback_project_dir = sys.argv[4]
+project_archive_dir = sys.argv[5]
+servers_json = sys.argv[6]
+wiki_ready = sys.argv[7] == "1"
+project_layout = sys.argv[8]
+project_layout_dirs = json.loads(sys.argv[9])
+write_project_workspace = sys.argv[10] == "1"
+agent_target = sys.argv[11] or "both"
+project_goo_generated = sys.argv[12] == "1"
+goo_md_header = sys.argv[13] or "# AutoGoo-Plugin 项目约定"
+pointer_header = sys.argv[14] or "# Project Instructions"
+config_display = sys.argv[15]
+secrets_display = sys.argv[16]
+init_hint = sys.argv[17]
+raw_targets = sys.argv[18] if len(sys.argv) > 18 else ""
+pointer_targets = [line for line in raw_targets.splitlines() if line.strip()]
+
+if not project_archive_dir:
+    project_archive_dir = "wiki/projects/<project-slug>"
+if not fallback_project_dir:
+    fallback_project_dir = ".goo/obsidian/<project-slug>"
 
 begin = "<!-- AUTOGOO-PLUGIN-WIKI-ARCHIVE-BEGIN -->"
 end = "<!-- AUTOGOO-PLUGIN-WIKI-ARCHIVE-END -->"
+pb_begin = "<!-- AUTOGOO-PLUGIN-POINTER-BEGIN -->"
+pb_end = "<!-- AUTOGOO-PLUGIN-POINTER-END -->"
+
+
+def render_marker_block(path, content, mb_begin, mb_end, default_header=""):
+    """Idempotently write exactly one marker block into ``path``.
+
+    - removes *every* complete mb_begin..mb_end block (R6)
+    - cleans up an orphan single-sided marker before inserting (R5)
+    - appends one fresh block; never rewrites text outside the markers
+    """
+    path = Path(path)
+    if path.exists():
+        text = path.read_text(encoding="utf-8")
+    elif default_header:
+        text = default_header.rstrip("\n") + "\n"
+    else:
+        text = ""
+
+    while mb_begin in text and mb_end in text:
+        prefix, rest = text.split(mb_begin, 1)
+        _, suffix = rest.split(mb_end, 1)
+        if prefix.strip():
+            text = prefix.rstrip() + "\n" + suffix.lstrip("\n")
+        else:
+            text = suffix.lstrip("\n")
+
+    # orphan begin without end: the incomplete block runs to EOF
+    if mb_begin in text:
+        idx = text.find(mb_begin)
+        line_start = text.rfind("\n", 0, idx) + 1
+        text = text[:line_start].rstrip() + "\n"
+
+    # orphan end without begin: drop only the dangling marker line
+    if mb_end in text:
+        idx = text.find(mb_end)
+        line_end = text.find("\n", idx)
+        line_end = len(text) if line_end == -1 else line_end + 1
+        text = (text[:idx].rstrip() + "\n" + text[line_end:].lstrip("\n")).rstrip() + "\n"
+
+    block = f"{mb_begin}\n{content.rstrip()}\n{mb_end}\n"
+    base = text.rstrip()
+    new_text = base + "\n\n" + block if base else block
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(new_text, encoding="utf-8")
+    return path.resolve()
+
 
 server_section = ""
 try:
@@ -1248,13 +1421,16 @@ try:
             host = s.get("host") or s.get("ip")
             lines.append(f"- **{name}**（{s['type']}，host: `{host}`）：{usage_hint(s, purpose)}连接信息见 `{s['secrets_file']}`。")
         lines.append("")
-        lines.append(f"config 位于 `.goo/config.json`，secrets 位于 `.goo/secrets.json`（chmod 600，已加入 .gitignore）。")
-        lines.append("连接远程服务器由 AutoGoo-Plugin 工具读取 `.goo/config.json` 与 `.goo/secrets.json` 处理；执行任务时必须显式选择目标服务器，不依赖默认第一个。")
+        if scope == "project":
+            lines.append(f"config 位于 `{config_display}`，secrets 位于 `{secrets_display}`（chmod 600，已加入 .gitignore）。")
+        else:
+            lines.append(f"config 位于 `{config_display}`，secrets 位于 `{secrets_display}`（chmod 600）。")
+        lines.append(f"连接远程服务器由 AutoGoo-Plugin 工具读取 `{config_display}` 与 `{secrets_display}` 处理；执行任务时必须显式选择目标服务器，不依赖默认第一个。")
         lines.append("不得把 secrets 展开到命令行、日志、计划正文或 subagent prompt。")
         lines.append("")
         lines.append("添加新服务器：")
         lines.append("```bash")
-        lines.append("/auto-goo:goo-init --project  # 交互式输入服务器信息")
+        lines.append(init_hint)
         lines.append("```")
         server_section = "\n".join(lines)
 except (json.JSONDecodeError, ValueError):
@@ -1326,65 +1502,52 @@ if wiki_ready:
 - 不把归档当作事后报告；归档内容要能支撑下一次任务的召回、规划和复用。
 """
 
-content = project_workspace_section + archive_section + server_section
-if not content.strip():
-    sys.exit(2)
+user_default_section = f"""## 用户级默认约定
 
-block = f"""{begin}
-{content.rstrip()}
-{end}
+- 本文件是 AutoGoo-Plugin 的**用户级默认约定**，对所有项目生效。
+- 约定正文优先级：项目根 `goo.md`（若存在）> 用户级 `~/.auto-goo/goo.md`；项目级约定覆盖用户级约定。
+- 用户级配置位于 `{config_display}`；重新生成本文件请运行 `{init_hint}`。
+- 用户级指针写入 `~/.claude/CLAUDE.md` 与 `~/.codex/AGENTS.md` 的 `AUTOGOO-PLUGIN-POINTER` marker 段。
+- 项目级初始化请运行 `/auto-goo:goo-init --project`。
 """
 
-# Write full content to goo.md
-if goo_md.exists():
-    goo_text = goo_md.read_text(encoding="utf-8")
+if scope == "user":
+    content = archive_section + server_section
+    if not content.strip():
+        content = user_default_section
 else:
-    goo_text = "# AutoGoo-Plugin 项目约定\n"
-if begin in goo_text and end in goo_text:
-    prefix, rest = goo_text.split(begin, 1)
-    _, suffix = rest.split(end, 1)
-    goo_new = prefix.rstrip() + "\n\n" + block + suffix.lstrip("\n")
+    content = project_workspace_section + archive_section + server_section
+    if not content.strip():
+        sys.exit(2)
+
+if scope == "project" and project_goo_generated:
+    effective_goo_md = "[goo.md](goo.md)"
 else:
-    goo_new = goo_text.rstrip() + "\n\n" + block
-goo_md.write_text(goo_new, encoding="utf-8")
+    effective_goo_md = "`~/.auto-goo/goo.md`"
 
-# Write short pointer to CLAUDE.md (Claude Code)
-pointer = f"""<!-- AUTOGOO-PLUGIN-POINTER-BEGIN -->
-## AutoGoo-Plugin
+pointer_body = f"""## AutoGoo-Plugin
 
-本项目使用 AutoGoo-Plugin 进行任务编排。完整约定见 [goo.md](goo.md)。
-<!-- AUTOGOO-PLUGIN-POINTER-END -->
+本项目使用 AutoGoo-Plugin 进行任务编排。
+约定正文优先级：项目根 `goo.md`（若存在）> 用户级 `~/.auto-goo/goo.md`。
+完整约定见 {effective_goo_md}。
 """
-targets = []
-if agent_target in ("claude", "both"):
-    targets.append(claude_md)
-if agent_target in ("codex", "both"):
-    targets.append(agents_md)
-pb_begin = "<!-- AUTOGOO-PLUGIN-POINTER-BEGIN -->"
-pb_end = "<!-- AUTOGOO-PLUGIN-POINTER-END -->"
-for pt in targets:
-    if pt.exists():
-        pt_text = pt.read_text(encoding="utf-8")
-    else:
-        pt_text = "# Project Instructions\n"
-    if pb_begin in pt_text and pb_end in pt_text:
-        prefix, rest = pt_text.split(pb_begin, 1)
-        _, suffix = rest.split(pb_end, 1)
-        pt_new = prefix.rstrip() + "\n\n" + pointer.strip() + "\n" + suffix.lstrip("\n")
-    else:
-        pt_new = pt_text.rstrip() + "\n\n" + pointer
-    pt.write_text(pt_new, encoding="utf-8")
+
+written = []
+written.append(render_marker_block(goo_md_target, content, begin, end, default_header=goo_md_header))
+for target in pointer_targets:
+    written.append(render_marker_block(target, pointer_body, pb_begin, pb_end, default_header=pointer_header))
+
+for path in written:
+    print(f"  wrote: {path}")
 PY
     PY_EXIT=$?
+    set -e
     if [[ "$PY_EXIT" -eq 0 ]]; then
       echo "Updated goo.md + agent pointers ($AGENT_TARGET)"
     else
       echo "goo.md not modified (no content to write)"
     fi
-    set -e
   fi
-elif [[ "$SCOPE" == "project" && "$SKIP_CLAUDE_MD" -eq 1 ]]; then
-  echo "Skipped project goo.md update (--skip-claude-md)"
 fi
 
 echo ""

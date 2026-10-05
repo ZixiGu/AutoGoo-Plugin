@@ -23,8 +23,8 @@ export const TEMPLATE_CONFIG_SCOPE: InteractionTemplate = {
   id: "config_scope",
   question: "请选择 AutoGoo-Plugin 配置写入位置。",
   options: [
-    { label: "项目级 --project (Recommended)", description: "写入当前项目 .goo/config.json，只影响当前项目。", value: "project" },
-    { label: "用户级 --user", description: "写入 ~/.auto-goo/config.json，作为所有项目的默认配置。", value: "user" },
+    { label: "项目级 --project (Recommended)", description: "写入当前项目 .goo/config.json，只影响当前项目；有项目专属内容时才按需生成项目级 goo.md 与指针。", value: "project" },
+    { label: "用户级 --user", description: "写入 ~/.auto-goo/config.json 与约定单源 ~/.auto-goo/goo.md，作为所有项目的默认配置。", value: "user" },
   ],
 };
 
@@ -64,14 +64,25 @@ export const TEMPLATE_PROJECT_WORKSPACE_LAYOUT: InteractionTemplate = {
   ],
 };
 
-/** goo-init: update CLAUDE.md with dir conventions */
+/** goo-init: update project goo.md with dir conventions */
 export const TEMPLATE_PROJECT_WORKSPACE_CLAUDE_MD: InteractionTemplate = {
-  header: "CLAUDE.md 更新",
+  header: "目录约定",
   id: "project_workspace_claude_md",
-  question: "是否把业务目录约定写入项目 CLAUDE.md / AGENTS.md？",
+  question: "是否把业务目录约定写入项目 goo.md（并通过 marker 指针同步到 CLAUDE.md / AGENTS.md）？",
   options: [
-    { label: "是 (Recommended)", description: "在 CLAUDE.md 的 AutoGoo-Plugin marker 段写入目录结构和用途。", value: "yes" },
-    { label: "跳过", description: "不修改 CLAUDE.md。", value: "no" },
+    { label: "写入 (Recommended)", description: "把目录语义、读写边界和 .goo/ 状态边界写入项目级 goo.md；项目 CLAUDE.md / AGENTS.md 只保留 AutoGoo-Plugin marker 指针。", value: "yes" },
+    { label: "跳过", description: "不生成项目级 goo.md，也不修改项目 CLAUDE.md / AGENTS.md。", value: "no" },
+  ],
+};
+
+/** goo-init: write user-level agent pointer (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md) */
+export const TEMPLATE_USER_GOO_MD_POINTER: InteractionTemplate = {
+  header: "用户级指针",
+  id: "user_goo_md_pointer",
+  question: "是否写入用户级指针到 ~/.claude/CLAUDE.md 和 ~/.codex/AGENTS.md？",
+  options: [
+    { label: "写入 (Recommended)", description: "在用户级 agent 文件里插入 AutoGoo-Plugin marker 指针，指向 ~/.auto-goo/goo.md；只改 marker 段。", value: "yes" },
+    { label: "只写 goo.md", description: "只生成 ~/.auto-goo/goo.md，不创建/修改 ~/.claude 或 ~/.codex 下的文件。", value: "no" },
   ],
 };
 

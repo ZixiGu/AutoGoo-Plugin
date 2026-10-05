@@ -303,6 +303,78 @@ def hbar(value: int, maximum: int, width: int = 20, color_fn=None) -> str:
     return "".join(parts)
 
 
+# ── Source Resolution ────────────────────────────────────────────────────────
+
+# Resolution order for every source (highest priority first):
+#   CLI flag > official environment variable > home-directory default.
+# Sources are portable: no Claude Code installation is required to read Pi
+# (or Codex) data, and a missing source never aborts the whole panel.
+
+def _env_path(name: str) -> Path | None:
+    """Read a path from an environment variable; ignore empty/blank values."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return Path(raw).expanduser()
+    except (RuntimeError, OSError):
+        return None
+
+
+def _pi_dir_from_session_file() -> Path | None:
+    """Derive the Pi sessions dir from $PI_SESSION_FILE as dirname(dirname(file))."""
+    raw = os.environ.get("PI_SESSION_FILE", "").strip()
+    if not raw:
+        return None
+    try:
+        return Path(raw).expanduser().parent.parent
+    except (RuntimeError, OSError):
+        return None
+
+
+def resolve_claude_dir(cli: Path | None) -> tuple[Path, str]:
+    """Resolve the Claude Code projects dir and its origin label."""
+    if cli is not None:
+        return cli, "cli"
+    env = _env_path("CLAUDE_CONFIG_DIR")
+    if env is not None:
+        return env / "projects", "CLAUDE_CONFIG_DIR"
+    return Path.home() / ".claude" / "projects", "home"
+
+
+def resolve_codex_dir(cli: Path | None) -> tuple[Path, str]:
+    """Resolve the Codex CLI sessions dir and its origin label."""
+    if cli is not None:
+        return cli, "cli"
+    env = _env_path("CODEX_HOME")
+    if env is not None:
+        return env / "sessions", "CODEX_HOME"
+    return Path.home() / ".codex" / "sessions", "home"
+
+
+def resolve_pi_dir(cli: Path | None) -> tuple[Path, str]:
+    """Resolve the Pi Coding Agent sessions dir and its origin label."""
+    if cli is not None:
+        return cli, "cli"
+    env = _env_path("PI_CODING_AGENT_SESSION_DIR")
+    if env is not None:
+        return env, "PI_CODING_AGENT_SESSION_DIR"
+    env = _env_path("PI_CODING_AGENT_DIR")
+    if env is not None:
+        return env / "sessions", "PI_CODING_AGENT_DIR"
+    from_session = _pi_dir_from_session_file()
+    if from_session is not None:
+        return from_session, "PI_SESSION_FILE"
+    home_pi = Path.home() / ".pi" / "agent" / "sessions"
+    home_goo = Path.home() / ".goo" / "agent" / "sessions"
+    if home_pi.exists():
+        return home_pi, "home"
+    if home_goo.exists():
+        return home_goo, "home"
+    # Backwards-compatible default when neither home candidate exists.
+    return home_pi, "home"
+
+
 # ── Argument Parsing ─────────────────────────────────────────────────────────
 
 def parse_args() -> argparse.Namespace:
@@ -311,9 +383,9 @@ def parse_args() -> argparse.Namespace:
         epilog="Example: /auto-goo:goo-usage",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("-i", "--input-dir", type=Path,
-                   default=Path.home() / ".claude" / "projects",
-                   help="Claude Code projects log directory")
+    p.add_argument("-i", "--input-dir", type=Path, default=None,
+                   help="Claude Code projects log directory "
+                        "(default: $CLAUDE_CONFIG_DIR/projects or ~/.claude/projects)")
     p.add_argument("--since", help="ISO timestamp lower bound")
     p.add_argument("--until", help="ISO timestamp upper bound")
     p.add_argument("--view", choices=("realtime", "daily", "monthly"), default="realtime")
@@ -338,16 +410,27 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--port", type=int, default=9876, help="HTTP server port (default: 9876)")
     p.add_argument("--codex", action="store_true",
                    help="Read Codex CLI usage from ~/.codex/sessions (combine with --claude/--pi for multiple sources)")
-    p.add_argument("--codex-dir", type=Path,
-                   default=Path.home() / ".codex" / "sessions",
-                   help="Codex CLI sessions directory (default: ~/.codex/sessions)")
+    p.add_argument("--codex-dir", type=Path, default=None,
+                   help="Codex CLI sessions directory "
+                        "(default: $CODEX_HOME/sessions or ~/.codex/sessions)")
     p.add_argument("--claude", action="store_true",
                    help="Read Claude Code usage from --input-dir (default: ~/.claude/projects)")
     p.add_argument("--pi", action="store_true",
-                   help="Read Pi usage from ~/.pi/agent/sessions")
+                   help="Read Pi usage from the resolved Pi sessions directory")
+    p.add_argument("--pi-dir", type=Path, default=None,
+                   help="Pi sessions directory (default: $PI_CODING_AGENT_SESSION_DIR, "
+                        "$PI_CODING_AGENT_DIR/sessions, $PI_SESSION_FILE parent, "
+                        "~/.pi/agent/sessions or ~/.goo/agent/sessions)")
+    p.add_argument("--sources", action="store_true",
+                   help="Print resolved usage source paths / file counts and exit")
     p.add_argument("--json", action="store_true",
                    help="Print a JSON summary (for analysis / automation) and exit")
-    return p.parse_args()
+    ns = p.parse_args()
+    # Resolve CLI > official env var > home default, keeping every dir a Path.
+    ns.input_dir, ns.input_dir_origin = resolve_claude_dir(ns.input_dir)
+    ns.codex_dir, ns.codex_dir_origin = resolve_codex_dir(ns.codex_dir)
+    ns.pi_dir, ns.pi_dir_origin = resolve_pi_dir(ns.pi_dir)
+    return ns
 
 
 # ── Keyboard Input ───────────────────────────────────────────────────────────
@@ -733,7 +816,7 @@ def source_flags(args: argparse.Namespace) -> tuple[bool, Path | None, Path | No
     if not (want_claude or want_codex or want_pi):
         want_claude = want_codex = want_pi = True
     codex_dir = args.codex_dir if want_codex else None
-    pi_dir = Path.home() / ".pi" / "agent" / "sessions" if want_pi else None
+    pi_dir = args.pi_dir if want_pi else None
     return want_claude, codex_dir, pi_dir
 
 
@@ -1436,8 +1519,11 @@ def render_table_view(args: argparse.Namespace, pricing: dict[str, dict[str, flo
 
 def render(args: argparse.Namespace, tab: str | None = None, pricing=None, tz=None,
            history_period: str = "7d") -> int:
-    if not args.input_dir.exists():
-        print(f"Input directory not found: {args.input_dir}", file=sys.stderr)
+    # A missing source must never abort the panel: warn per enabled source and
+    # keep rendering with whatever is available. Only fail when no enabled
+    # source has any usable jsonl at all.
+    if _warn_missing_sources(args) == 0:
+        _print_no_sources_help(args)
         return 1
 
     if pricing is None:
@@ -1495,6 +1581,95 @@ def _active_sources(args) -> list[str]:
         srcs.append("pi")
     return srcs
 
+
+def _count_jsonl(path: Path, kind: str) -> int:
+    """Count usage jsonl files for a source, mirroring its read pattern."""
+    if not path.exists():
+        return 0
+    try:
+        if kind == "claude":
+            return sum(1 for _ in path.glob("**/*.jsonl"))
+        if kind == "codex":
+            return sum(1 for _ in path.rglob("rollout-*.jsonl"))
+        # pi: <session-dir>/*.jsonl one level below the source root
+        return sum(1 for d in path.iterdir() if d.is_dir()
+                   for _ in d.glob("*.jsonl"))
+    except OSError:
+        return 0
+
+
+def resolved_sources(args: argparse.Namespace) -> list[dict[str, object]]:
+    """Diagnostic view of every source: resolved path, existence, count, origin."""
+    entries = [
+        ("claude", args.input_dir, getattr(args, "input_dir_origin", "home")),
+        ("codex", args.codex_dir, getattr(args, "codex_dir_origin", "home")),
+        ("pi", args.pi_dir, getattr(args, "pi_dir_origin", "home")),
+    ]
+    out: list[dict[str, object]] = []
+    for name, path, origin in entries:
+        path = Path(path)
+        out.append({
+            "name": name,
+            "path": str(path),
+            "exists": path.exists(),
+            "jsonl_count": _count_jsonl(path, name),
+            "origin": origin,
+        })
+    return out
+
+
+def _warn_missing_sources(args: argparse.Namespace) -> int:
+    """Warn (stderr) about enabled-but-missing sources; return total jsonl count."""
+    enabled = set(_active_sources(args))
+    total = 0
+    for info in resolved_sources(args):
+        if info["name"] not in enabled:
+            continue
+        total += int(info["jsonl_count"])
+        if not info["exists"]:
+            print(
+                f"warning: {info['name']} source not found: {info['path']} "
+                f"(origin: {info['origin']}); skipping",
+                file=sys.stderr,
+            )
+    return total
+
+
+def _print_no_sources_help(args: argparse.Namespace) -> None:
+    """Explain how to fix a totally empty source set (all enabled sources empty)."""
+    enabled = set(_active_sources(args))
+    print("error: no usage records found in any enabled source.", file=sys.stderr)
+    for info in resolved_sources(args):
+        state = "enabled" if info["name"] in enabled else "disabled"
+        print(
+            f"  - {info['name']:<6} [{state:<8}] {info['path']} "
+            f"(exists={'yes' if info['exists'] else 'no'}, "
+            f"jsonl={info['jsonl_count']}, origin={info['origin']})",
+            file=sys.stderr,
+        )
+    print("hint: run with --sources to inspect path resolution.", file=sys.stderr)
+    print("      point at your agent data with CLAUDE_CONFIG_DIR, CODEX_HOME, "
+          "PI_CODING_AGENT_DIR or PI_CODING_AGENT_SESSION_DIR.", file=sys.stderr)
+
+
+def print_sources(args: argparse.Namespace) -> int:
+    """`--sources`: portable first stop when debugging a silent panel."""
+    enabled = set(_active_sources(args))
+    print("Usage sources (resolution order: CLI > env var > home default)")
+    for info in resolved_sources(args):
+        state = "enabled" if info["name"] in enabled else "disabled"
+        print(
+            f"  {info['name']:<6} {state:<8} "
+            f"exists={'yes' if info['exists'] else 'no ':<3} "
+            f"jsonl={info['jsonl_count']:<6} origin={info['origin']}"
+        )
+        print(f"         path: {info['path']}")
+    active = [s for s in ("claude", "codex", "pi") if s in enabled]
+    print()
+    print(f"enabled sources: {', '.join(active) if active else '(none)'}")
+    return 0
+
+
 def api_data(args, pricing, tz):
     rows, since, until = collect(args, tz)
     data = summarize(rows, pricing)
@@ -1503,6 +1678,10 @@ def api_data(args, pricing, tz):
     data["updated"] = datetime.now(tz).isoformat()
     data["interval"] = args.interval
     data["sources"] = _active_sources(args)
+    data["resolved_sources"] = [
+        {k: info[k] for k in ("name", "path", "exists", "jsonl_count", "origin")}
+        for info in resolved_sources(args)
+    ]
     return data
 
 
@@ -1775,6 +1954,9 @@ def run_interactive(args, pricing, tz, current_tab: str, history_period: str, li
 
 def main() -> int:
     args = parse_args()
+
+    if getattr(args, "sources", False):
+        return print_sources(args)
 
     pricing = load_pricing(args.pricing, args.price, not args.no_builtin_pricing)
     tz = resolve_timezone(args.timezone)

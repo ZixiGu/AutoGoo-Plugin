@@ -186,6 +186,26 @@ python3 "$auto_goo_root/skills/auto-goo/scripts/goo-usage.py" --once
 
 多个来源参数可以组合（如 `--codex --pi` 只看这两者）。不传任何来源参数时自动包含全部三个来源。
 
+### 跨环境 / 数据源重定向与排查
+
+默认读取三源：Claude Code `~/.claude/projects`、Codex CLI `~/.codex/sessions`、Pi `~/.pi/agent/sessions`。**只装 pi、没装 Claude Code 的环境也能正常工作**：单个源缺失只会在 stderr 打 warning 并跳过，只有所有启用源都没有 jsonl 时才报错退出。
+
+支持用官方环境变量重定向（解析优先级：CLI 参数 > 环境变量 > home 默认）：
+
+- `CLAUDE_CONFIG_DIR` → claude 源 `$CLAUDE_CONFIG_DIR/projects`
+- `CODEX_HOME` → codex 源 `$CODEX_HOME/sessions`
+- `PI_CODING_AGENT_DIR` → pi 源 `$PI_CODING_AGENT_DIR/sessions`
+- `PI_CODING_AGENT_SESSION_DIR` → pi 源目录本身（优先级高于 `PI_CODING_AGENT_DIR`）
+- `PI_SESSION_FILE` → pi 源取该文件的上两级目录
+
+也可以显式指定：`--input-dir`（claude）、`--codex-dir`（codex）、`--pi-dir`（pi）。
+
+**排查第一入口**：`python3 <root>/skills/auto-goo/scripts/goo-usage.py --sources`。面板为空时按以下顺序排查：
+
+1. 先跑 `--sources`，看每个源的解析路径、`exists` 与 `jsonl` 计数；
+2. 路径不对就用上面的环境变量或 `--input-dir` / `--codex-dir` / `--pi-dir` 覆盖；
+3. 仍不对就看 `--json` 输出里的 `resolved_sources`（含 `name` / `path` / `exists` / `jsonl_count` / `origin`）。
+
 ## 内置价格
 
 脚本内建常见 Claude 模型的官方定价（USD/1M tokens），无需手动传 `--price`：

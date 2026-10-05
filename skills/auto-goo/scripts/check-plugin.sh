@@ -691,7 +691,10 @@ root = Path(sys.argv[1])
 pointer = (root / "CLAUDE.md").read_text(encoding="utf-8")
 text = (root / "goo.md").read_text(encoding="utf-8")
 assert "<!-- AUTOGOO-PLUGIN-POINTER-BEGIN -->" in pointer
+assert "<!-- AUTOGOO-PLUGIN-POINTER-END -->" in pointer
+assert "优先" in pointer
 assert "[goo.md](goo.md)" in pointer
+assert (root / "goo.md").is_file()
 assert "<!-- AUTOGOO-PLUGIN-WIKI-ARCHIVE-BEGIN -->" in text
 assert "## 项目目录约定" in text
 assert "data/raw/" in text
@@ -959,6 +962,276 @@ PY
   fi
 fi
 
+# ── 6e. 用户级 goo.md 与指针 smoke test ──
+echo ""
+echo "── 6e. 用户级 goo.md 与指针 ──"
+
+if command -v python3 &>/dev/null; then
+  # 用例 1：默认 --user 生成用户级 goo.md + ~/.claude/CLAUDE.md + ~/.codex/AGENTS.md
+  USER_DEFAULT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/autogoo-plugin-check-user-default-XXXXXX")"
+  mkdir -p "$USER_DEFAULT_DIR/home" "$USER_DEFAULT_DIR/wiki" "$USER_DEFAULT_DIR/project"
+  if (cd "$USER_DEFAULT_DIR/project" && HOME="$USER_DEFAULT_DIR/home" bash "$ROOT/skills/auto-goo/scripts/goo-init.sh" \
+      --user --wiki-dir "$USER_DEFAULT_DIR/wiki" --yes --force >/dev/null 2>&1) \
+    && python3 - "$USER_DEFAULT_DIR/home" <<'PY'
+import sys
+from pathlib import Path
+
+home = Path(sys.argv[1])
+goo_md = home / ".auto-goo" / "goo.md"
+assert goo_md.is_file(), "user goo.md missing"
+goo_text = goo_md.read_text(encoding="utf-8")
+assert goo_text.count("<!-- AUTOGOO-PLUGIN-WIKI-ARCHIVE-BEGIN -->") == 1
+assert goo_text.count("<!-- AUTOGOO-PLUGIN-WIKI-ARCHIVE-END -->") == 1
+for rel in (".claude/CLAUDE.md", ".codex/AGENTS.md"):
+    pointer = home / rel
+    assert pointer.is_file(), f"user pointer missing: {rel}"
+    text = pointer.read_text(encoding="utf-8")
+    assert text.count("<!-- AUTOGOO-PLUGIN-POINTER-BEGIN -->") == 1, rel
+    assert text.count("<!-- AUTOGOO-PLUGIN-POINTER-END -->") == 1, rel
+    assert "~/.auto-goo/goo.md" in text, rel
+    assert "优先" in text, rel
+PY
+  then
+    pass "  goo-init.sh --user 默认生成用户级 goo.md 与 CLAUDE.md/AGENTS.md 指针"
+  else
+    fail "  goo-init.sh --user 未正确生成用户级 goo.md 或指针"
+  fi
+
+  # 用例 2：重复执行同一 --user 命令，marker 计数仍恒为 1
+  if (cd "$USER_DEFAULT_DIR/project" && HOME="$USER_DEFAULT_DIR/home" bash "$ROOT/skills/auto-goo/scripts/goo-init.sh" \
+      --user --wiki-dir "$USER_DEFAULT_DIR/wiki" --yes --force >/dev/null 2>&1) \
+    && python3 - "$USER_DEFAULT_DIR/home" <<'PY'
+import sys
+from pathlib import Path
+
+home = Path(sys.argv[1])
+goo_text = (home / ".auto-goo" / "goo.md").read_text(encoding="utf-8")
+assert goo_text.count("<!-- AUTOGOO-PLUGIN-WIKI-ARCHIVE-BEGIN -->") == 1
+assert goo_text.count("<!-- AUTOGOO-PLUGIN-WIKI-ARCHIVE-END -->") == 1
+for rel in (".claude/CLAUDE.md", ".codex/AGENTS.md"):
+    text = (home / rel).read_text(encoding="utf-8")
+    assert text.count("<!-- AUTOGOO-PLUGIN-POINTER-BEGIN -->") == 1, rel
+    assert text.count("<!-- AUTOGOO-PLUGIN-POINTER-END -->") == 1, rel
+PY
+  then
+    pass "  goo-init.sh --user 重复执行保持 marker 幂等（计数 == 1）"
+  else
+    fail "  goo-init.sh --user 重复执行后 marker 计数异常"
+  fi
+
+  # 用例 3：--skip-user-pointer 仍写 goo.md，但不创建用户级指针
+  USER_SKIP_POINTER_DIR="$(mktemp -d "${TMPDIR:-/tmp}/autogoo-plugin-check-user-skip-pointer-XXXXXX")"
+  mkdir -p "$USER_SKIP_POINTER_DIR/home" "$USER_SKIP_POINTER_DIR/wiki" "$USER_SKIP_POINTER_DIR/project"
+  if (cd "$USER_SKIP_POINTER_DIR/project" && HOME="$USER_SKIP_POINTER_DIR/home" bash "$ROOT/skills/auto-goo/scripts/goo-init.sh" \
+      --user --wiki-dir "$USER_SKIP_POINTER_DIR/wiki" --yes --force --skip-user-pointer >/dev/null 2>&1) \
+    && [[ -f "$USER_SKIP_POINTER_DIR/home/.auto-goo/goo.md" ]] \
+    && [[ ! -e "$USER_SKIP_POINTER_DIR/home/.claude/CLAUDE.md" ]] \
+    && [[ ! -e "$USER_SKIP_POINTER_DIR/home/.codex/AGENTS.md" ]]; then
+    pass "  goo-init.sh --user --skip-user-pointer 仅写 goo.md，不创建用户级指针"
+  else
+    fail "  goo-init.sh --user --skip-user-pointer 行为不符合契约"
+  fi
+
+  # 用例 4：--agent claude 只创建 ~/.claude/CLAUDE.md，不创建 ~/.codex/AGENTS.md
+  USER_AGENT_CLAUDE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/autogoo-plugin-check-user-agent-claude-XXXXXX")"
+  mkdir -p "$USER_AGENT_CLAUDE_DIR/home" "$USER_AGENT_CLAUDE_DIR/wiki" "$USER_AGENT_CLAUDE_DIR/project"
+  if (cd "$USER_AGENT_CLAUDE_DIR/project" && HOME="$USER_AGENT_CLAUDE_DIR/home" bash "$ROOT/skills/auto-goo/scripts/goo-init.sh" \
+      --user --wiki-dir "$USER_AGENT_CLAUDE_DIR/wiki" --yes --force --agent claude >/dev/null 2>&1) \
+    && [[ -f "$USER_AGENT_CLAUDE_DIR/home/.claude/CLAUDE.md" ]] \
+    && grep -q 'AUTOGOO-PLUGIN-POINTER-BEGIN' "$USER_AGENT_CLAUDE_DIR/home/.claude/CLAUDE.md" \
+    && [[ ! -e "$USER_AGENT_CLAUDE_DIR/home/.codex/AGENTS.md" ]]; then
+    pass "  goo-init.sh --user --agent claude 只创建 ~/.claude/CLAUDE.md"
+  else
+    fail "  goo-init.sh --user --agent claude 指针目标选择不符合契约"
+  fi
+
+  # 用例 5：--agent bogus 非法值 exit 2
+  USER_AGENT_BOGUS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/autogoo-plugin-check-user-agent-bogus-XXXXXX")"
+  mkdir -p "$USER_AGENT_BOGUS_DIR/home" "$USER_AGENT_BOGUS_DIR/wiki" "$USER_AGENT_BOGUS_DIR/project"
+  AGENT_BOGUS_RC=0
+  if (cd "$USER_AGENT_BOGUS_DIR/project" && HOME="$USER_AGENT_BOGUS_DIR/home" bash "$ROOT/skills/auto-goo/scripts/goo-init.sh" \
+      --user --wiki-dir "$USER_AGENT_BOGUS_DIR/wiki" --yes --force --agent bogus >/dev/null 2>&1); then
+    AGENT_BOGUS_RC=0
+  else
+    AGENT_BOGUS_RC=$?
+  fi
+  if [[ "$AGENT_BOGUS_RC" -eq 2 ]]; then
+    pass "  goo-init.sh --agent bogus 拒绝非法值并 exit 2"
+  else
+    fail "  goo-init.sh --agent bogus 未按契约 exit 2（实际 $AGENT_BOGUS_RC）"
+  fi
+
+  # 用例 6：project 按需——已有用户级 goo.md 且无项目专属内容时不生成项目 goo.md
+  PROJECT_ONDEMAND_DIR="$(mktemp -d "${TMPDIR:-/tmp}/autogoo-plugin-check-project-ondemand-XXXXXX")"
+  mkdir -p "$PROJECT_ONDEMAND_DIR/home" "$PROJECT_ONDEMAND_DIR/wiki" "$PROJECT_ONDEMAND_DIR/project"
+  if (cd "$PROJECT_ONDEMAND_DIR/project" && HOME="$PROJECT_ONDEMAND_DIR/home" bash "$ROOT/skills/auto-goo/scripts/goo-init.sh" \
+        --user --wiki-dir "$PROJECT_ONDEMAND_DIR/wiki" --yes --force >/dev/null 2>&1) \
+    && (cd "$PROJECT_ONDEMAND_DIR/project" && HOME="$PROJECT_ONDEMAND_DIR/home" bash "$ROOT/skills/auto-goo/scripts/goo-init.sh" \
+        --project --wiki-dir "$PROJECT_ONDEMAND_DIR/wiki" --yes --force >/dev/null 2>&1) \
+    && [[ ! -e "$PROJECT_ONDEMAND_DIR/project/goo.md" ]] \
+    && [[ ! -e "$PROJECT_ONDEMAND_DIR/project/CLAUDE.md" ]]; then
+    pass "  goo-init.sh --project 无项目专属内容时不生成项目 goo.md"
+  else
+    fail "  goo-init.sh --project 按需语义失败（不应生成项目 goo.md）"
+  fi
+
+  # 用例 7：项目级初始化时指针声明项目 goo.md 优先级
+  PROJECT_PRIORITY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/autogoo-plugin-check-project-priority-XXXXXX")"
+  mkdir -p "$PROJECT_PRIORITY_DIR/home" "$PROJECT_PRIORITY_DIR/wiki" "$PROJECT_PRIORITY_DIR/project"
+  if (cd "$PROJECT_PRIORITY_DIR/project" && HOME="$PROJECT_PRIORITY_DIR/home" bash "$ROOT/skills/auto-goo/scripts/goo-init.sh" \
+      --project --wiki-dir "$PROJECT_PRIORITY_DIR/wiki" --project-layout data --project-slug smoke \
+      --update-claude-md --force --yes >/dev/null 2>&1) \
+    && python3 - "$PROJECT_PRIORITY_DIR/project" <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+assert (root / "goo.md").is_file(), "project goo.md missing"
+pointer = (root / "CLAUDE.md").read_text(encoding="utf-8")
+assert "<!-- AUTOGOO-PLUGIN-POINTER-BEGIN -->" in pointer
+assert "优先" in pointer
+assert "goo.md" in pointer
+assert "[goo.md](goo.md)" in pointer
+PY
+  then
+    pass "  goo-init.sh --project 指针声明项目 goo.md 优先级"
+  else
+    fail "  goo-init.sh --project 指针未声明项目 goo.md 优先级"
+  fi
+fi
+
+# ── 6f. goo-usage 数据源可移植性 ──
+echo ""
+echo "── 6f. goo-usage 数据源可移植性 ──"
+
+if command -v python3 &>/dev/null; then
+  GU="$ROOT/skills/auto-goo/scripts/goo-usage.py"
+  GU_TMP="$(mktemp -d "${TMPDIR:-/tmp}/autogoo-plugin-check-usage-XXXXXX")"
+  mkdir -p "$GU_TMP/home" "$GU_TMP/nope" "$GU_TMP/pi/sessions/demo-proj"
+  # 合法但无 usage 的 pi jsonl：只要文件存在即可让 pi 源计入 jsonl（隔离真实 ~/）
+  printf '%s\n' '{"type":"session","id":"smoke","cwd":"/tmp/demo"}' \
+    > "$GU_TMP/pi/sessions/demo-proj/x.jsonl"
+
+  # 从 --sources 人类可读输出按源名配对解析 path，避免 grep 脆断言
+  gu_source_path() {
+    python3 -c '
+import re
+import sys
+
+name = sys.argv[1]
+paths = {}
+current = None
+for line in sys.stdin.read().splitlines():
+    header = re.match(r"^\s*(claude|codex|pi)\s+\S+", line)
+    if header:
+        current = header.group(1)
+        continue
+    entry = re.match(r"^\s*path:\s*(.+?)\s*$", line)
+    if entry and current:
+        paths[current] = entry.group(1)
+        current = None
+print(paths.get(name, ""))
+' "$1"
+  }
+
+  # 用例 1：三源全缺失 → exit 非零且 stderr 有明确提示（--sources / source）
+  GU_ALL_MISSING_RC=0
+  GU_ALL_MISSING_ERR="$(HOME="$GU_TMP/home" python3 "$GU" --once \
+    --input-dir "$GU_TMP/nope" --codex-dir "$GU_TMP/nope" --pi-dir "$GU_TMP/nope" \
+    </dev/null 2>&1 >/dev/null)" || GU_ALL_MISSING_RC=$?
+  if [[ "$GU_ALL_MISSING_RC" -ne 0 ]] \
+    && printf '%s\n' "$GU_ALL_MISSING_ERR" | grep -q -- '--sources\|source'; then
+    pass "  goo-usage.py 三源全缺失时 exit 非零并提示 --sources"
+  else
+    fail "  goo-usage.py 三源全缺失未按契约报错（rc=$GU_ALL_MISSING_RC）"
+  fi
+
+  # 用例 2：缺 claude 源时仍成功（单源缺失不致命）
+  GU_DEGRADED_RC=0
+  GU_DEGRADED_OUT="$(HOME="$GU_TMP/home" python3 "$GU" --once \
+    --input-dir "$GU_TMP/nope" --codex-dir "$GU_TMP/nope" --pi-dir "$GU_TMP/pi/sessions" \
+    </dev/null 2>/dev/null)" || GU_DEGRADED_RC=$?
+  if [[ "$GU_DEGRADED_RC" -eq 0 ]] && [[ -n "$GU_DEGRADED_OUT" ]]; then
+    pass "  goo-usage.py 缺 claude/codex 源时仍成功渲染 pi 数据"
+  else
+    fail "  goo-usage.py 单源缺失不应致命（rc=$GU_DEGRADED_RC）"
+  fi
+
+  # 用例 3：--sources 列出三源名字与至少两行 path
+  GU_SOURCES_OUT="$(HOME="$GU_TMP/home" python3 "$GU" --sources </dev/null 2>/dev/null)" || true
+  GU_PATH_LINES="$(printf '%s\n' "$GU_SOURCES_OUT" | grep -c 'path:' || true)"
+  if printf '%s\n' "$GU_SOURCES_OUT" | grep -q 'claude' \
+    && printf '%s\n' "$GU_SOURCES_OUT" | grep -q 'codex' \
+    && printf '%s\n' "$GU_SOURCES_OUT" | grep -q 'pi' \
+    && [[ "${GU_PATH_LINES:-0}" -ge 2 ]]; then
+    pass "  goo-usage.py --sources 列出 claude/codex/pi 三源路径（$GU_PATH_LINES 行 path）"
+  else
+    fail "  goo-usage.py --sources 输出不完整（path 行=$GU_PATH_LINES）"
+  fi
+
+  # 用例 4：PI_CODING_AGENT_DIR 生效
+  GU_PIAGENT_PATH="$(env -u PI_CODING_AGENT_SESSION_DIR -u PI_SESSION_FILE \
+    HOME="$GU_TMP/home" PI_CODING_AGENT_DIR="$GU_TMP/piagent" \
+    python3 "$GU" --sources </dev/null 2>/dev/null | gu_source_path pi)" || true
+  if [[ "$GU_PIAGENT_PATH" == "$GU_TMP/piagent/sessions" ]]; then
+    pass "  PI_CODING_AGENT_DIR 生效（pi path = \$PI_CODING_AGENT_DIR/sessions）"
+  else
+    fail "  PI_CODING_AGENT_DIR 未生效（pi path=$GU_PIAGENT_PATH）"
+  fi
+
+  # 用例 5：PI_CODING_AGENT_SESSION_DIR 优先级高于 PI_CODING_AGENT_DIR
+  GU_PI_PRIO_PATH="$(env -u PI_SESSION_FILE \
+    HOME="$GU_TMP/home" PI_CODING_AGENT_DIR="$GU_TMP/a" \
+    PI_CODING_AGENT_SESSION_DIR="$GU_TMP/b" \
+    python3 "$GU" --sources </dev/null 2>/dev/null | gu_source_path pi)" || true
+  if [[ "$GU_PI_PRIO_PATH" == "$GU_TMP/b" ]]; then
+    pass "  PI_CODING_AGENT_SESSION_DIR 优先于 PI_CODING_AGENT_DIR"
+  else
+    fail "  PI_CODING_AGENT_SESSION_DIR 优先级错误（pi path=$GU_PI_PRIO_PATH）"
+  fi
+
+  # 用例 6：CODEX_HOME 生效
+  GU_CODEX_PATH="$(env -u PI_CODING_AGENT_SESSION_DIR -u PI_CODING_AGENT_DIR \
+    -u PI_SESSION_FILE -u CLAUDE_CONFIG_DIR HOME="$GU_TMP/home" \
+    CODEX_HOME="$GU_TMP/codex" \
+    python3 "$GU" --sources </dev/null 2>/dev/null | gu_source_path codex)" || true
+  if [[ "$GU_CODEX_PATH" == "$GU_TMP/codex/sessions" ]]; then
+    pass "  CODEX_HOME 生效（codex path = \$CODEX_HOME/sessions）"
+  else
+    fail "  CODEX_HOME 未生效（codex path=$GU_CODEX_PATH）"
+  fi
+
+  # 用例 7：CLAUDE_CONFIG_DIR 生效
+  GU_CLAUDE_PATH="$(env -u PI_CODING_AGENT_SESSION_DIR -u PI_CODING_AGENT_DIR \
+    -u PI_SESSION_FILE -u CODEX_HOME HOME="$GU_TMP/home" \
+    CLAUDE_CONFIG_DIR="$GU_TMP/claude" \
+    python3 "$GU" --sources </dev/null 2>/dev/null | gu_source_path claude)" || true
+  if [[ "$GU_CLAUDE_PATH" == "$GU_TMP/claude/projects" ]]; then
+    pass "  CLAUDE_CONFIG_DIR 生效（claude path = \$CLAUDE_CONFIG_DIR/projects）"
+  else
+    fail "  CLAUDE_CONFIG_DIR 未生效（claude path=$GU_CLAUDE_PATH）"
+  fi
+
+  # 用例 8：--json 输出包含长度为 3 的 resolved_sources
+  if HOME="$GU_TMP/home" python3 "$GU" --json </dev/null 2>/dev/null | python3 -c '
+import json
+import sys
+
+data = json.load(sys.stdin)
+resolved = data.get("resolved_sources")
+assert isinstance(resolved, list), resolved
+assert len(resolved) == 3, resolved
+assert [e.get("name") for e in resolved] == ["claude", "codex", "pi"], resolved
+for entry in resolved:
+    for key in ("name", "path", "exists", "jsonl_count", "origin"):
+        assert key in entry, (key, entry)
+'; then
+    pass "  goo-usage.py --json 输出 resolved_sources（3 源）"
+  else
+    fail "  goo-usage.py --json 缺少 resolved_sources"
+  fi
+fi
+
 # ── 7. 示例文件 ──
 echo ""
 echo "── 7. 示例文件 ──"
@@ -993,6 +1266,89 @@ if [[ -f "$ROOT/README.md" ]]; then
   pass "README.md"
 else
   warn "README.md 缺失"
+fi
+
+# ── 9. pi 包资源 manifest ──
+# 回归：pi 的 DefaultPackageManager 只要 package.json 存在 `pi` 对象，就会走
+# "只加载 manifest 声明的资源" 分支并 return，**不再扫描约定目录 skills/**。
+# 因此根 package.json 的 pi manifest 必须显式声明 skills，否则 pi install 后技能全部丢失。
+echo ""
+echo "── 9. pi 包资源 manifest ──"
+
+if python3 - "$ROOT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+pkg_path = root / "package.json"
+if not pkg_path.is_file():
+    raise SystemExit("package.json missing")
+pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+pi = pkg.get("pi")
+if not isinstance(pi, dict):
+    raise SystemExit("package.json has no `pi` manifest")
+
+extensions = pi.get("extensions")
+if not isinstance(extensions, list) or not extensions:
+    raise SystemExit("pi.extensions missing or empty")
+for entry in extensions:
+    if not (root / entry).is_file():
+        raise SystemExit(f"pi.extensions entry not found: {entry}")
+
+skills = pi.get("skills")
+if not isinstance(skills, list) or not skills:
+    raise SystemExit(
+        "pi.skills missing: pi only loads manifest-declared resources "
+        "(skills would be silently dropped)"
+    )
+found = []
+for entry in skills:
+    base = root / entry
+    if not base.is_dir():
+        raise SystemExit(f"pi.skills entry is not a directory: {entry}")
+    found.extend(sorted(base.rglob("SKILL.md")))
+if not found:
+    raise SystemExit("pi.skills declares no directory containing SKILL.md")
+
+codeskills = None
+codex_manifest = root / ".codex-plugin/plugin.json"
+if codex_manifest.is_file():
+    codeskills = json.loads(codex_manifest.read_text(encoding="utf-8")).get("skills")
+    if not codeskills:
+        raise SystemExit(".codex-plugin/plugin.json missing `skills`")
+
+print(f"pi.skills={len(skills)} skill_md={len(found)}")
+PY
+then
+  pass "package.json 的 pi manifest 显式声明 skills（含 SKILL.md），Codex manifest 含 skills"
+else
+  fail "pi manifest 未声明 skills，pi install 后技能会全部丢失"
+fi
+
+# 动态复验：直接用 pi 自己的包加载器确认技能真的能被解析出来。
+# pi 未安装到全局 node_modules 时降级为跳过（不影响结论）。
+PI_PKG="$(npm root -g 2>/dev/null || true)/@earendil-works/pi-coding-agent"
+if [[ -f "$PI_PKG/dist/core/package-manager.js" ]]; then
+  PI_PROBE_OUT="$(node --input-type=module -e '
+const { DefaultPackageManager } = await import(process.argv[1] + "/dist/core/package-manager.js");
+const root = process.argv[2];
+const pm = new DefaultPackageManager({ cwd: "/tmp", agentDir: "/tmp", settingsManager: {} });
+const acc = { extensions: new Map(), skills: new Map(), prompts: new Map(), themes: new Map() };
+pm.collectPackageResources(root, acc, null, { source: "local", scope: "user", origin: "package" });
+console.log(acc.extensions.size + " " + acc.skills.size);
+' "$PI_PKG" "$ROOT" 2>/dev/null || true)"
+  PI_EXT_COUNT="${PI_PROBE_OUT%% *}"
+  PI_SKILL_COUNT="${PI_PROBE_OUT##* }"
+  if [[ -n "$PI_PROBE_OUT" && "$PI_SKILL_COUNT" =~ ^[0-9]+$ && "$PI_SKILL_COUNT" -ge 1 ]]; then
+    pass "pi 包加载器实际解析到技能（extensions=$PI_EXT_COUNT skills=$PI_SKILL_COUNT）"
+  elif [[ -n "$PI_PROBE_OUT" ]]; then
+    fail "pi 包加载器解析到 extensions=$PI_EXT_COUNT 但 skills=$PI_SKILL_COUNT"
+  else
+    warn "pi 包加载器探测执行失败（跳过动态复验）"
+  fi
+else
+  warn "未找到全局 pi 包，跳过 pi 包加载器动态探测"
 fi
 
 # ── 结果汇总 ──

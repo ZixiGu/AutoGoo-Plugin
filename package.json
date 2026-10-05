@@ -6,7 +6,8 @@
   "license": "MIT",
   "keywords": ["pi-package", "autogoo-plugin", "workflow", "dag", "orchestration", "subagent"],
   "pi": {
-    "extensions": [".pi/extensions/autogoo-plugin/index.ts"]
+    "extensions": [".pi/extensions/autogoo-plugin/index.ts"],
+    "skills": ["skills"]
   },
   "repository": {
     "type": "git",

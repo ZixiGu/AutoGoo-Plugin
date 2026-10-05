@@ -55,6 +55,22 @@ description: 分析 Claude Code usage 与 Goo-wiki 项目知识，找出可落�
 
 如果用户指定时间范围，collector 先让 `goo-usage.py` 用对应参数生成快照；如果脚本暂不支持该范围，退化为读取最近可用的 daily/monthly 聚合，并在报告里标注限制。
 
+## 跨环境 / 数据源
+
+`goo-usage.py` 默认同时读取三源：Claude Code `~/.claude/projects`、Codex CLI `~/.codex/sessions`、Pi `~/.pi/agent/sessions`。**只装 pi、没装 Claude Code 的环境也能正常采集**：单个源缺失只在 stderr 打 warning 并跳过，只有所有启用源都没有 jsonl 时 collector 才应报告采集失败。
+
+collector 派发时可按目标环境用官方环境变量重定向（解析优先级：CLI > 环境变量 > home 默认）：
+
+- `CLAUDE_CONFIG_DIR` → claude 源 `$CLAUDE_CONFIG_DIR/projects`
+- `CODEX_HOME` → codex 源 `$CODEX_HOME/sessions`
+- `PI_CODING_AGENT_DIR` → pi 源 `$PI_CODING_AGENT_DIR/sessions`
+- `PI_CODING_AGENT_SESSION_DIR` → pi 源目录本身（优先于 `PI_CODING_AGENT_DIR`）
+- `PI_SESSION_FILE` → pi 源取该文件上两级目录
+
+也可用 `--input-dir` / `--codex-dir` / `--pi-dir` 显式指定。
+
+采集为空或路径可疑时，**先跑 `python3 <root>/skills/auto-goo/scripts/goo-usage.py --sources`**（打印三源 path/exists/jsonl/origin），再决定用环境变量或 `--*-dir` 覆盖；仍不清时看 `--json` 的 `resolved_sources`。
+
 ## 输出要求
 
 `.goo/goo-usage-analyse.json` 应包含：

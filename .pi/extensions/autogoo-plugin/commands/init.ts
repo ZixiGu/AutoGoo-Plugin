@@ -153,7 +153,7 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
               value: s.name!,
             }));
             opts.push({ label: "完成删除", value: "__done__" });
-            const pick = await uiSelect(ctx, "选择要删除的服务器", opts);
+            const pick = await uiSelect(ctx, "选择要删除的服务器", opts, { onTimeout: "cancel" });
             if (!pick || pick === "__done__") break;
             toRemove.add(pick);
           }
@@ -170,7 +170,7 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
             value: s.name!,
           }));
           opts.push({ label: "取消", value: "__cancel__" });
-          const pick = await uiSelect(ctx, "选择要替换的服务器", opts);
+          const pick = await uiSelect(ctx, "选择要替换的服务器", opts, { onTimeout: "cancel" });
           if (pick && pick !== "__cancel__") {
             const replaced = await collectOneServer(ctx, pick);
             if (replaced) {
@@ -179,7 +179,7 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
             }
           }
         } else if (manage === "clear") {
-          clearServers = await uiConfirm(ctx, "清空服务器", "确认删除所有已配置的远程服务器？");
+          clearServers = await uiConfirm(ctx, "清空服务器", "确认删除所有已配置的远程服务器？", { defaultOnTimeout: false });
           if (clearServers) {
             skipServerEdit = true; // clear is terminal: don't re-enter the add-servers flow
           }
@@ -441,7 +441,8 @@ async function handleOrganizeExisting(cwd: string, projectDirs: string[], ctx: E
 
   ctx.ui.notify(`发现 ${existing.length} 个可整理的目录。`, "info");
 
-  const applyChoice = await uiSelect(ctx, TEMPLATE_PROJECT_WORKSPACE_APPLY_ORGANIZATION.header, TEMPLATE_PROJECT_WORKSPACE_APPLY_ORGANIZATION.options);
+  // 不可逆操作（会实际移动文件）：超时一律取消，绝不自动执行。
+  const applyChoice = await uiSelect(ctx, TEMPLATE_PROJECT_WORKSPACE_APPLY_ORGANIZATION.header, TEMPLATE_PROJECT_WORKSPACE_APPLY_ORGANIZATION.options, { onTimeout: "cancel" });
   if (applyChoice !== "yes") {
     ctx.ui.notify("已跳过文件整理。", "info");
   }

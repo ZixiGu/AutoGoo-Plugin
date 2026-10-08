@@ -231,6 +231,16 @@ Agent 交互流程：
 
 ## 输出要求
 
+### 交互超时（不卡死）
+
+结构化提问阶段遵守以下超时约束，避免无人应答时流程挂起：
+
+- Pi 环境下由 `interaction.timeout_seconds`（默认 **180**，`0` 禁用）控制 `ctx.ui` 对话框超时；超时后对话框自动关闭。
+- 超时兜底：`select` 采用带 `(Recommended)` 的选项，无可推荐项则**视为取消**；`confirm` 为 `false`；`input` 回退默认值。
+- **不可逆操作显式禁用兜底**：删除/替换服务器、清空服务器、文件整理执行、plan 确认执行、新建 thread 等，超时一律不执行，必须等待用户显式确认。
+- Claude Code / Codex 环境下如平台不支持原生超时，主 Agent 应把超时视为“用户未选择”，按上述兜底规则继续，并在最终摘要中说明哪些项是默认采用的。
+- 任何被兜底采用的选项都必须在结果摘要中标注“超时默认”，不得让用户误以为是自己的选择。
+
 - 不覆盖已有 `.goo/config.json`，除非用户明确确认；但保留 config 时仍可按 `--update-claude-md` 更新项目级 `goo.md` 与项目指针 `CLAUDE.md`/`AGENTS.md`
 - 不覆盖已有 `~/.auto-goo/config.json`，除非用户明确确认；`--user` 仍会生成或幂等更新 `~/.auto-goo/goo.md`（除非 `--skip-claude-md`）
 - 不删除任何已有 `.goo/` 内容

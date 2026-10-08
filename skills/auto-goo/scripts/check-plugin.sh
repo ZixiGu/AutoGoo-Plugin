@@ -1351,6 +1351,76 @@ else
   warn "未找到全局 pi 包，跳过 pi 包加载器动态探测"
 fi
 
+# ── 10. 交互超时保护 ──
+# 回归：任何 ctx.ui 对话框都必须经 utils/ui.ts 的超时感知封装调用，
+# 否则无人应答时工作流会无限挂起。
+echo ""
+echo "── 10. 交互超时保护 ──"
+
+UI_TS="$ROOT/.pi/extensions/autogoo-plugin/utils/ui.ts"
+if python3 - "$ROOT" <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+ui = root / ".pi/extensions/autogoo-plugin/utils/ui.ts"
+text = ui.read_text(encoding="utf-8")
+
+for symbol in (
+    "UIDialogOptions",
+    "getInteractionTimeoutMs",
+    "uiSelectDetailed",
+    "uiConfirmDetailed",
+    "uiInputDetailed",
+    "DEFAULT_INTERACTION_TIMEOUT_MS",
+):
+    if symbol not in text:
+        raise SystemExit(f"ui.ts missing {symbol}")
+
+# 裸 ctx.ui.<dialog>( 调用只允许出现在 ui.ts 自身
+import re
+bare = re.compile(r"ctx\.ui\.(select|confirm|input)\s*\(")
+offenders = []
+for path in sorted((root / ".pi/extensions/autogoo-plugin").rglob("*.ts")):
+    if "__tests__" in path.parts or path.name == "ui.ts":
+        continue
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if bare.search(line):
+            offenders.append(f"{path.relative_to(root)}:{lineno}")
+if offenders:
+    raise SystemExit("bare ctx.ui dialog calls (must use ui.ts helpers): " + ", ".join(offenders))
+
+# 不可逆操作必须显式禁用超时兜底
+init = (root / ".pi/extensions/autogoo-plugin/commands/init.ts").read_text(encoding="utf-8")
+plan = (root / ".pi/extensions/autogoo-plugin/commands/plan.ts").read_text(encoding="utf-8")
+checks = [
+    (init, "选择要删除的服务器", 'onTimeout: "cancel"'),
+    (init, "选择要替换的服务器", 'onTimeout: "cancel"'),
+    (init, "清空服务器", "defaultOnTimeout: false"),
+    (init, "TEMPLATE_PROJECT_WORKSPACE_APPLY_ORGANIZATION", 'onTimeout: "cancel"'),
+    (plan, "TEMPLATE_PLAN_REVIEW_START", 'onTimeout: "cancel"'),
+    (plan, "TEMPLATE_THREAD_ACTION", 'onTimeout: "cancel"'),
+]
+for source, marker, guard in checks:
+    # 调用可能跨行，在 marker 出现位置后的窗口内找 guard（避开 import 行的干扰）
+    if not re.search(re.escape(marker) + r"[\s\S]{0,400}?" + re.escape(guard), source):
+        raise SystemExit(f"unsafe dialog (missing {guard}): {marker}")
+
+idx = (root / ".pi/extensions/autogoo-plugin/index.ts").read_text(encoding="utf-8")
+for token in ("timeoutSeconds", "onTimeout", "details.source", "autoResolved"):
+    if token not in idx:
+        raise SystemExit(f"auto_goo_ask_user missing {token}")
+
+print("ok")
+PY
+then
+  pass "ui.ts 提供超时感知封装，且无裸 ctx.ui 对话框调用"
+  pass "不可逆操作（删/换/清服务器、文件整理、plan 确认、新建 thread）已禁用超时兜底"
+  pass "auto_goo_ask_user 支持 timeoutSeconds/onTimeout 并回报 source"
+else
+  fail "交互超时保护缺失或不完整"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

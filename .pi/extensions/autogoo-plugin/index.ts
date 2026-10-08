@@ -57,6 +57,14 @@ import { registerWorktreeTools } from "./tools/worktree.js";
 // Utils
 import { REPO_ROOT, isRepoValid } from "./utils/paths.js";
 import { AUTOGOO_PLUGIN_SYSTEM_PROMPT } from "./constants.js";
+import {
+  uiSelectDetailed,
+  uiConfirmDetailed,
+  uiInputDetailed,
+  type UIOnTimeout,
+  type UIDialogResult,
+} from "./utils/ui.js";
+import type { SelectOption } from "./types.js";
 
 // ── Command routing table ───────────────────────────────────────────────────
 
@@ -243,10 +251,12 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "auto_goo_ask_user",
     label: "Ask User",
-    description: "向用户提问并获取结构化选择。用选择/确认/输入三种模式替代普通文本提问。",
-    promptSnippet: "向用户提问获取选择或输入",
+    description: "向用户提问并获取结构化选择。用选择/确认/输入三种模式替代普通文本提问。对话框超时会自动关闭：有 (Recommended) 选项时采用它，否则视为取消（confirm 默认 false，input 回退 defaultValue），并用 source 字段标明结果来源，因此不会因无人应答而卡死。",
+    promptSnippet: "向用户提问获取选择或输入（超时自动按推荐项继续）",
     promptGuidelines: [
       "使用 auto_goo_ask_user 向用户提问，提供结构化选项让用户选择，而不是用普通文本要求用户回复编号。",
+      "提问返回后必须检查 details.source：source=user 才是用户真实选择；source=recommended/first/default 表示超时或非交互下自动采用了兜底值，需在回复中明确告知用户；source=cancelled 表示未作答且无可推荐项，此时不要擅自继续不可逆操作。",
+      "对不可逆操作（删除、覆盖、发布、执行移动/整理）显式传 onTimeout='cancel'，不要让超时替你确认。",
     ],
     parameters: {
       type: "object",
@@ -266,38 +276,79 @@ export default function (pi: ExtensionAPI) {
           },
           description: "选择类型时的选项列表",
         },
-        defaultValue: { type: "string", description: "输入类型时的默认值" },
+        defaultValue: { type: "string", description: "输入类型时的默认值（也是超时兜底值）" },
+        timeoutSeconds: {
+          type: "number",
+          description: "覆盖超时秒数；0 或负数表示禁用超时（一直等待）。不传则用 config.interaction.timeout_seconds，默认 180。",
+        },
+        onTimeout: {
+          type: "string",
+          enum: ["recommended", "first", "cancel"],
+          description: "超时兜底策略（仅 select）：recommended=采用含 (Recommended) 的选项（无则取消，默认）；first=采用第一项；cancel=直接取消。",
+        },
       },
       required: ["header", "question", "type"],
     },
     async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, ctx: any) {
-      let result: any;
+      const uiOpts = {
+        ...(typeof params.timeoutSeconds === "number" ? { timeoutMs: params.timeoutSeconds * 1000 } : {}),
+        onTimeout: (params.onTimeout ?? "recommended") as UIOnTimeout,
+        defaultOnTimeout: false,
+      };
+
+      let detail: UIDialogResult<string | boolean>;
       switch (params.type) {
         case "select": {
-          // Convert objects to string labels for Pi's select API
-          const options = (params.options || []).map((o: any) =>
-            typeof o === "string" ? o : (o.label || String(o))
+          const options: SelectOption[] = (params.options || []).map((o: any) =>
+            typeof o === "string" ? { label: o, value: o } : { label: o.label ?? String(o), value: o.value ?? o.label ?? String(o) },
           );
-          const label = await ctx.ui.select(`${params.header}\n${params.question}`, options);
-          // Map back to value if input was objects with label/value
-          if (label && params.options?.[0]?.value !== undefined) {
-            const found = params.options.find((o: any) => o.label === label);
-            result = found?.value ?? label;
-          } else {
-            result = label;
-          }
+          detail = await uiSelectDetailed(
+            ctx,
+            `${params.header}\n${params.question}`,
+            options,
+            uiOpts,
+          );
           break;
         }
         case "confirm":
-          result = await ctx.ui.confirm(params.header, params.question);
+          detail = await uiConfirmDetailed(ctx, params.header, params.question, uiOpts);
           break;
         case "input":
-          result = await ctx.ui.input(params.question, params.defaultValue || "");
+          detail = await uiInputDetailed(ctx, params.question, params.defaultValue || "", uiOpts);
+          break;
+        default:
+          return {
+            content: [{ type: "text", text: `不支持的交互类型: ${String(params.type)}` }],
+            isError: true,
+          };
+      }
+
+      // Make the provenance explicit so the model never treats a fallback as a real answer.
+      const value = detail.value;
+      let text: string;
+      switch (detail.source) {
+        case "user":
+          text = `用户回答: ${String(value ?? "(无回答)")}`;
+          break;
+        case "no-ui":
+          text = `当前模式无交互界面，已采用兜底值: ${String(value ?? "(取消)")}（source=no-ui）`;
+          break;
+        case "cancelled":
+          text = "用户未在超时时间内响应，且没有可推荐的选项，已取消该问题（source=cancelled）。不要据此执行不可逆操作。";
+          break;
+        default:
+          text = `用户未在超时时间内响应，已自动采用${detail.source === "first" ? "第一项" : "默认/推荐值"}: ${String(value ?? "(取消)")}（source=${detail.source}）。请在回复中告知用户这是超时兜底结果。`;
           break;
       }
+
       return {
-        content: [{ type: "text", text: `用户回答: ${String(result ?? "(无回答)")}` }],
-        details: { userResponse: result },
+        content: [{ type: "text", text }],
+        details: {
+          userResponse: value,
+          timedOut: detail.timedOut,
+          source: detail.source,
+          autoResolved: detail.source !== "user",
+        },
       };
     },
   });
@@ -319,10 +370,13 @@ export default function (pi: ExtensionAPI) {
       required: ["command"],
     },
     async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, ctx: any) {
-      const approved = await ctx.ui.confirm(
+      // shell 命令审批：超时一律拒绝（安全默认）。
+      const approved = (await uiConfirmDetailed(
+        ctx,
         "AutoGoo Shell",
         `${params.description || "执行项目命令"}\n\n${params.command}`,
-      );
+        { defaultOnTimeout: false },
+      )).value ?? false;
       if (!approved) {
         return {
           content: [{ type: "text", text: "用户取消了 shell 命令。" }],

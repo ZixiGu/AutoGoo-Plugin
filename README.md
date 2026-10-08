@@ -215,6 +215,7 @@ Pi 扩展使用原生 API 注册 17 个自定义工具（`auto_goo_execute`、`a
 - **Thread 状态**：每条任务线保存在 `.goo/threads/<thread_id>/`；兼容入口 `.goo/plan.json` 指向当前 thread 的 active plan。
 - **计划状态**：plan 是任务执行的源头，步骤状态包括 `pending`、`running`、`completed`、`blocked`、`failed`。
 - **用户确认**：涉及范围、方案、优先级或不可自动决定的选项时，优先用结构化选择 UI 的固定选项模板。
+- **交互不卡死**：结构化提问默认 **180 秒**超时，超时会自动关闭对话框并采用带 `(Recommended)` 的选项；若没有推荐项则视为取消。`confirm` 超时为 `false`，`input` 超时回退默认值。删除/替换服务器、清空服务器、文件整理执行、plan 确认执行、新建 thread 等不可逆或高影响操作**显式禁用自动兜底**（`onTimeout=cancel`），超时一律不执行。用 `interaction.timeout_seconds` 调整，`0` 表示禁用超时（恢复一直等待）。`auto_goo_ask_user` 返回的 `details.source` 会标明答案来源（`user` / `recommended` / `first` / `default` / `no-ui` / `cancelled`），模型不得把兜底值当作真实用户回答。
 - **并行执行**：同层级且互不依赖的步骤会优先并行；串行依赖需要在计划里写明原因。
 - **日志记录**：subagent 的过程信息写入当前 thread 的 `logs/`，前台只展示摘要、阻塞和下一步。
 - **归档记忆**：默认写入 Goo-wiki；没有配置时回退到 `.goo/obsidian/`。
@@ -239,6 +240,7 @@ AutoGoo-Plugin 读取两级配置：
 | `archive` | 归档目录、回退目录和命名规则。 |
 | `execution` | 并发数、超时、日志和 heartbeat 行为。 |
 | `planning` | 默认执行模式、用户确认策略和计划细节级别。 |
+| `interaction` | 交互对话框超时（`timeout_seconds`，默认 180；`0` 禁用）。 |
 | `publish` | HTML 状态页输出目录和可见字段。 |
 | `servers` | 远程机器、角色、路径和连接策略。 |
 

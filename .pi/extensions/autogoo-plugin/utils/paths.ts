@@ -227,6 +227,10 @@ export interface AutogooPluginConfig {
     recall_wiki?: boolean;
     require_wiki_context?: boolean;
   };
+  /** 交互对话框超时策略；timeout_seconds <= 0 表示禁用超时。 */
+  interaction?: {
+    timeout_seconds?: number;
+  };
   init?: {
     prompt_for_scope?: boolean;
     prompt_for_wiki_dir?: boolean;

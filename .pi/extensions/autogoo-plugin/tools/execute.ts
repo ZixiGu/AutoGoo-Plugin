@@ -216,12 +216,15 @@ async function runSchedule(
     }
     let answer = false;
     try {
-      answer = await ctx.ui.confirm(
+      // 高风险步骤确认：超时一律拒绝并保持 blocked。
+      answer = (await uiConfirmDetailed(
+        ctx,
         `确认执行步骤 #${step.id}？`,
         `步骤: ${step.name}\n\n${step.description || ""}\n\n` +
           `此步骤在规划时标记为需用户确认（requires_user_confirm，高风险/远程/成本类操作）。\n` +
           `确认后继续派发执行；拒绝则保持 blocked。`,
-      );
+        { defaultOnTimeout: false },
+      )).value ?? false;
     } catch (e: any) {
       console.warn(`[AutoGoo-Plugin] confirm #${step.id} 失败，默认拒绝:`, e?.message ?? String(e));
       answer = false;

@@ -149,7 +149,8 @@ export async function handleGooPlan(taskDescription: string, ctx: ExtensionConte
   );
   ctx.ui.notify(`📋 计划已生成！共 ${plan.steps.length} 步，请在编辑器中查看并确认。`, "info");
 
-  const reviewChoice = await uiSelect(ctx, TEMPLATE_PLAN_REVIEW_START.header, TEMPLATE_PLAN_REVIEW_START.options);
+  // 高影响操作：超时会直接进入执行阶段，因此超时一律取消，等用户显式确认。
+  const reviewChoice = await uiSelect(ctx, TEMPLATE_PLAN_REVIEW_START.header, TEMPLATE_PLAN_REVIEW_START.options, { onTimeout: "cancel" });
 
   if (reviewChoice === "cancel") {
     ctx.ui.setEditorText("");
@@ -201,7 +202,8 @@ async function resolveThread(cwd: string, ctx: ExtensionContext): Promise<{ thre
 
   ctx.ui.notify(`当前 thread 还有 ${unfinishedCount} 个未完成步骤。`, "warning");
 
-  const choice = await uiSelect(ctx, TEMPLATE_THREAD_ACTION.header, TEMPLATE_THREAD_ACTION.options);
+  // 高影响操作：新建 thread 会归档当前 plan，超时一律取消。
+  const choice = await uiSelect(ctx, TEMPLATE_THREAD_ACTION.header, TEMPLATE_THREAD_ACTION.options, { onTimeout: "cancel" });
   if (!choice || choice === "cancel") return { threadAction: "cancel", threadId: null };
   if (choice === "continue") return { threadAction: "continue", threadId: currentThreadId };
 

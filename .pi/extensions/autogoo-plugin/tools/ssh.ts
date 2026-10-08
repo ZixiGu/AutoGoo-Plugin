@@ -22,6 +22,7 @@ import {
   type AutogooPluginConfig,
   type ServerEntry,
 } from "../utils/paths.js";
+import { uiSelectDetailed, uiConfirmDetailed, uiInputDetailed } from "../utils/ui.js";
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -104,11 +105,12 @@ export async function resolveServer(
       let combined = "";
       try {
         combined = (
-          (await ctx.ui.input(
+          (await uiInputDetailed(
+            ctx,
             `未找到服务器 "${selector}"。可用服务器: ${servers.map((s) => s.name).join(", ") || "无"}\n` +
               `请输入连接串新增配置（格式 user@host[:port]，port 默认 22）：`,
             "",
-          )) ?? ""
+          )).value ?? ""
         ).trim();
       } catch {
         /* ui 交互被中止（如 Esc） */
@@ -135,18 +137,30 @@ export async function resolveServer(
     }
     let type: "cpu" | "gpu" = "cpu";
     try {
-      const t = await ctx.ui.select(`服务器 ${selector} 类型`, ["cpu", "gpu"]);
-      if (t === "gpu" || t === "cpu") type = t;
+      // 超时/无 UI 时 onTimeout=cancel 返回 null，保留默认 cpu。
+      const typeResult = await uiSelectDetailed(
+        ctx,
+        `服务器 ${selector} 类型`,
+        [
+          { label: "cpu", value: "cpu" },
+          { label: "gpu", value: "gpu" },
+        ],
+        { onTimeout: "cancel" },
+      );
+      if (typeResult.value === "gpu" || typeResult.value === "cpu") type = typeResult.value;
     } catch {
       /* 默认 cpu */
     }
 
-    const addAnswer = await ctx.ui.confirm(
+    // 写配置文件：不可逆，超时一律拒绝。
+    const addAnswer = (await uiConfirmDetailed(
+      ctx,
       `新增服务器 ${selector}？`,
       `未在配置中找到 "${selector}"。将新增到 ${projectConfigPath(cwd)}：\n` +
         `  name=${selector}\n  host=${host}\n  port=${port}\n  user=${user}\n  type=${type}\n` +
         `\n是否添加？添加后立即用该配置执行；拒绝则中止。`,
-    );
+      { defaultOnTimeout: false },
+    )).value ?? false;
     if (!addAnswer) {
       return {
         server: null as any,
@@ -195,11 +209,14 @@ export async function resolveServer(
   }
 
   if (conflicts.length > 0 && ctx?.ui) {
-    const updateAnswer = await ctx.ui.confirm(
+    // 写配置：不可逆，超时一律拒绝。
+    const updateAnswer = (await uiConfirmDetailed(
+      ctx,
       `服务器 ${existing.name} 配置冲突/缺失`,
       `检测到提供的信息与 .goo/config.json 不一致：\n${conflicts.join("\n")}\n\n` +
         `是否更新配置？\n选择"是" → 更新后用新值执行；选择"否" → 忽略提供值，用现有配置执行。`,
-    );
+      { defaultOnTimeout: false },
+    )).value ?? false;
     if (updateAnswer) {
       if (provided.host) existing.host = provided.host;
       if (provided.port) existing.port = Number(provided.port);

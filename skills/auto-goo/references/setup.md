@@ -156,7 +156,7 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py --cached-onl
 
 | 关注点 | 说明 |
 | --- | --- |
-| 为什么比 SHA 而不是版本号 | `package.json` 的 version 可能跨多个 commit 不变（实测：本地领先 6 个 commit，两边都还是 `0.5.1`），比版本号会漏报 |
+| 为什么比 SHA 而不是版本号 | `package.json` 的 version 可能跨多个 commit 不变（实测：本地领先 6 个 commit 时，两边 version 仍然相同），比版本号会漏报 |
 | 只读保证 | 只用 `git ls-remote` / `rev-parse` / `symbolic-ref` / `remote`，**从不** `fetch`/`pull`，不改动本地 checkout |
 | 缓存 | `~/.auto-goo/cache/update-check.json`，默认 24h（`--interval-hours` 可调）；缓存按 `root` 校验，避免另一份安装的结论被误用 |
 | 不阻塞启动 | 会话启动路径只用 `--cached-only`（绝不联网）；完整检查由 pi 扩展在 `session_start` **异步**触发 |

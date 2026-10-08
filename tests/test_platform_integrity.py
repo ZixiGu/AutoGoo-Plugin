@@ -8,19 +8,31 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_versions_are_consistent() -> None:
+    # package.json 是单一事实源：其余位置必须与它一致。
+    # 不要把具体版本号写进断言，否则每次 bump 都要改测试。
+    source = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
+    expected = str(source)
+
     manifests = [
         ROOT / ".claude-plugin/plugin.json",
         ROOT / ".codex-plugin/plugin.json",
         ROOT / "package.json",
         ROOT / ".pi/extensions/autogoo-plugin/package.json",
+        ROOT / ".claude-plugin/marketplace.json",
     ]
     versions = {json.loads(path.read_text(encoding="utf-8"))["version"] for path in manifests}
-    assert versions == {"0.5.1"}
+    assert versions == {expected}, f"manifest versions {versions} != {expected}"
+
     skill = (ROOT / "skills/auto-goo/SKILL.md").read_text(encoding="utf-8")
-    assert re.search(r"^version:\s*0\.5\.1$", skill, re.MULTILINE)
+    assert re.search(rf"^version:\s*{re.escape(expected)}$", skill, re.MULTILINE), "SKILL.md version out of sync"
+
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "当前版本：**v0.5.1**" in readme
+    assert f"当前版本：**v{expected}**" in readme, "README version out of sync"
+    assert f"version-{expected}-green" in readme, "README badge out of sync"
     assert "17 个自定义工具" in readme
+
+    entry = (ROOT / ".pi/extensions/autogoo-plugin/index.ts").read_text(encoding="utf-8")
+    assert f"v{expected}" in entry, "extension banner/header out of sync"
 
 
 def test_pi_relative_imports_exist() -> None:

@@ -99,6 +99,31 @@ AutoGoo-Plugin 的行为不能只改一处。涉及命令、计划 schema、配�
 - `skills/auto-goo/scripts/check-plugin.sh`
 - `.claude-plugin/marketplace.json` 或插件注册信息
 
+### 版本号约定（每次提交必做）
+
+**每次提交都必须 bump 版本号。** `package.json` 的 `version` 是**单一事实源**，其余 7 个位置必须与它一致：
+
+- `.pi/extensions/autogoo-plugin/package.json`
+- `.claude-plugin/plugin.json`、`.claude-plugin/marketplace.json`
+- `.codex-plugin/plugin.json`
+- `skills/auto-goo/SKILL.md`（frontmatter `version:`）
+- `README.md`（badge + 「当前版本」两处）
+- `.pi/extensions/autogoo-plugin/index.ts`（文件头注释 + 启动 banner）
+
+不要手改，用脚本一次改全并在提交前校验：
+
+```bash
+python3 skills/auto-goo/scripts/bump-version.py --patch   # 修 bug
+python3 skills/auto-goo/scripts/bump-version.py --minor   # 新增功能
+python3 skills/auto-goo/scripts/bump-version.py --major   # 破坏性变更
+python3 skills/auto-goo/scripts/bump-version.py --check   # 只校验一致性
+```
+
+约束：
+- `tests/test_platform_integrity.py` 必须从 `package.json` 推导期望版本，**不得硬编码具体版本号**（否则每次 bump 都要改测试）。
+- `check-plugin.sh` 第 14 节会校验全位置一致性与脚本覆盖完整度，提交前必须全绿。
+- 历史叙述/示例里出现的旧版本号不属于版本字段，不要为了“统一”去改它们；如果会随版本漂移，就把数字泛化掉。
+
 改动后优先运行结构校验脚本。脚本路径必须先通过 Claude Code 的 installed plugin `installPath` 解析；如果该路径不存在，再检查 `settings.json` 中是否启用了本地 directory marketplace，并使用该 marketplace 路径。不要在 `CLAUDE.md` 中写展开后的路径解析代码或本机绝对路径。
 
 ## 参考入口

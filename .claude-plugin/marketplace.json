@@ -4,7 +4,7 @@
     "name": "zixigu"
   },
   "description": "AutoGoo-Plugin marketplace for Claude Code workflow orchestration, DAG planning, status tracking, and Goo-wiki archival.",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "plugins": [
     {
       "name": "autogoo-plugin",

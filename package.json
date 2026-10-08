@@ -1,6 +1,6 @@
 {
   "name": "autogoo-plugin",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "AutoGoo-Plugin — DAG 驱动的多智能体编排框架。自动解析任务为 DAG，按依赖并行/串行执行 Subagent，结果归档到 Goo-wiki。",
   "author": { "name": "zixigu" },
   "license": "MIT",

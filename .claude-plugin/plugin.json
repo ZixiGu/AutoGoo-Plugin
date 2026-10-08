@@ -1,7 +1,7 @@
 {
   "name": "autogoo-plugin",
   "description": "AutoGoo-Plugin 自动化智能体编排框架。接收任务后自动解析为 DAG，按依赖关系并行/串行执行，性能场景自动优化迭代，结果归档到 Goo-wiki Obsidian vault。",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "license": "MIT",
   "author": {
     "name": "zixigu"

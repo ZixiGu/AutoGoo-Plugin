@@ -1633,6 +1633,53 @@ else
   fail "session-start.py 未接入只读更新提醒"
 fi
 
+# ── 14. 版本号一致性 ──
+# 约定：package.json 是单一事实源，其余 manifest / SKILL / README / 扩展入口
+# 必须与它一致；**每次提交都要 bump**（用 bump-version.py 一次改全）。
+echo ""
+echo "── 14. 版本号一致性 ──"
+
+if python3 "$ROOT/skills/auto-goo/scripts/bump-version.py" --check --root "$ROOT" >/dev/null 2>&1; then
+  VER="$(python3 -c "import json;print(json.load(open('$ROOT/package.json'))['version'])")"
+  pass "版本号全位置一致（$VER）"
+else
+  fail "版本号不一致：运行 python3 skills/auto-goo/scripts/bump-version.py --check 查看差异"
+fi
+
+# bump-version.py 必须覆盖全部已知位置，不能漏
+if python3 - "$ROOT" <<'PY'
+import re, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+src = (root / "skills/auto-goo/scripts/bump-version.py").read_text(encoding="utf-8")
+required = [
+    "package.json",
+    ".pi/extensions/autogoo-plugin/package.json",
+    ".claude-plugin/plugin.json",
+    ".codex-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
+    "skills/auto-goo/SKILL.md",
+    "README.md",
+    ".pi/extensions/autogoo-plugin/index.ts",
+]
+missing = [item for item in required if item not in src]
+if missing:
+    raise SystemExit("bump-version.py 未覆盖: " + ", ".join(missing))
+PY
+then
+  pass "bump-version.py 覆盖全部 8 个版本位置"
+else
+  fail "bump-version.py 覆盖不全，bump 时会漏改"
+fi
+
+# 版本一致性测试不得硬编码版本号（否则每次 bump 都要改测试）
+if grep -qE 'versions == \{"[0-9]' "$ROOT/tests/test_platform_integrity.py"; then
+  fail "test_platform_integrity.py 硬编码了版本号，bump 时会失败"
+else
+  pass "版本测试从 package.json 推导期望值（bump 无需改测试）"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

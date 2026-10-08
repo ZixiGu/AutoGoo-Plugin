@@ -4,7 +4,8 @@
 Compares the **local git HEAD** with the remote branch HEAD. Version numbers are
 deliberately not used: `package.json` may stay at the same version across
 several commits, so a version comparison misses real updates (verified against
-this repo: local was 6 commits ahead while both sides read 0.5.1).
+this repo: local was 6 commits ahead while both sides reported the same version
+  (releases bump the version; intermediate commits do not).
 
 Design constraints:
   * Never break the caller — every failure degrades to ``status=unknown`` and

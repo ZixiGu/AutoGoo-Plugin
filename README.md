@@ -2,7 +2,7 @@
 
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-Plugin-blue)
 ![Codex](https://img.shields.io/badge/Codex-Compatible-purple)
-![Version](https://img.shields.io/badge/version-0.5.1-green)
+![Version](https://img.shields.io/badge/version-0.6.0-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 AutoGoo-Plugin 是一个同时兼容 Claude Code 和 Codex 的智能体编排插件，用来把开放式任务拆成可执行计划、并行调用 subagent、记录运行状态，并把结果同步到 Goo-wiki / Obsidian。
@@ -102,7 +102,7 @@ pi install /path/to/AutoGoo-Plugin        # 仓库根即 pi 包
 }
 ```
 
-> Pi 扩展版本：**v0.5.1**。使用 Pi 原生 API（`ctx.ui`、自定义工具、事件系统）。卸载：`pi remove git:github.com/ZixiGu/AutoGoo-Plugin`。
+> Pi 扩展版本：**v0.6.0**。使用 Pi 原生 API（`ctx.ui`、自定义工具、事件系统）。卸载：`pi remove git:github.com/ZixiGu/AutoGoo-Plugin`。
 
 ## 在 Claude Code 中使用
 
@@ -324,7 +324,20 @@ bash skills/auto-goo/scripts/check-plugin.sh
 
 ## 版本
 
-当前版本：**v0.5.1**。
+当前版本：**v0.6.0**。
+
+### 发版约定：每次提交都 bump
+
+`package.json` 的 `version` 是**单一事实源**，其余 7 个位置（pi/Claude/Codex manifest、`SKILL.md`、README badge 与本节、扩展入口 banner）必须与它一致。**每次提交前都要 bump**，用脚本一次改全并校验：
+
+```bash
+python3 skills/auto-goo/scripts/bump-version.py --patch   # 修 bug
+python3 skills/auto-goo/scripts/bump-version.py --minor   # 新增功能
+python3 skills/auto-goo/scripts/bump-version.py --major   # 破坏性变更
+python3 skills/auto-goo/scripts/bump-version.py --check   # 只校验
+```
+
+`check-plugin.sh` 第 14 节会校验全位置一致性，提交前必须全绿。
 
 ## 许可证
 

@@ -21,6 +21,38 @@ import { existsSync } from "node:fs";
 // ── Global pi reference, set by setPi() from index.ts ───────────────────────
 let _pi: ExtensionAPI | null = null;
 
+// Agent 忙闲状态（2026-10-08）：
+// sendUserMessage({deliverAs:"followUp"}) 的语义是「等当前 turn 结束后再投递」。
+// 主 Agent 在一个 turn 内连续调度多个 step 时，每条完成通知都会排队，
+// 结果全部堆到 turn 结束才一次性倾泻（实测现象）。
+// 而子进程模式（2026-08-10）下主 Agent await runSubagent 后本来就会在同一 turn
+// 继续推进，**根本不需要被唤醒** —— 该通知只对「Agent 已空闲但 plan 仍有剩余」
+// 的场景有意义（如后台/异步回调完成）。
+// 因此用 agent_start/agent_end 跟踪忙闲：忙时不入队，只做即时 UI 反馈。
+let agentBusy = false;
+let wakeupPending = false;
+
+/** 注册 agent 忙闲跟踪（由 registerExecutionTools 调用一次）。 */
+function registerBusyTracking(pi: any): void {
+  try {
+    pi.on("agent_start", () => {
+      agentBusy = true;
+      // 新 turn 开始 → 上一条唤醒已生效，允许下一次空闲时再唤醒
+      wakeupPending = false;
+    });
+    pi.on("agent_end", () => {
+      agentBusy = false;
+    });
+    // 会话替换/重启时复位，避免 agent_end 未触发导致忙标志卡在 true（那样会永久抑制唤醒）
+    pi.on("session_start", () => {
+      agentBusy = false;
+      wakeupPending = false;
+    });
+  } catch (e) {
+    console.warn("[AutoGoo-Plugin] agent 忙闲跟踪注册失败:", e);
+  }
+}
+
 export function setPi(pi: ExtensionAPI): void {
   _pi = pi;
 }
@@ -115,6 +147,7 @@ async function showStatus(cwd: string, ctx: ExtensionContext): Promise<void> {
 export function registerExecutionTools(pi: any, options: { skipDispatch?: boolean } = {}): void {
   // 子进程模式（AUTOGOO_SUBAGENT=1）跳过派发/调度工具，防止 Subagent 递归调度 DAG
   const skipDispatch = options.skipDispatch || process.env.AUTOGOO_SUBAGENT === "1";
+  registerBusyTracking(pi);
   // Tool: auto_goo_update_step
   pi.registerTool({
     name: "auto_goo_update_step",
@@ -217,19 +250,34 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
         if ((params.action === "complete" || params.action === "fail" || params.action === "block" || params.action === "pending" || params.action === "confirm") && process.env.AUTOGOO_SUBAGENT !== "1") {
           try {
             const plan = await loadPlan(cwd);
-            const hasRemaining = plan?.steps?.some(
+            const remainingSteps = (plan?.steps ?? []).filter(
               (s: any) => s.status === "pending" || s.status === "running",
-            ) ?? false;
-            if (hasRemaining && _pi) {
-              const remaining = plan.steps
+            );
+            if (remainingSteps.length > 0) {
+              const pendingIds = remainingSteps
                 .filter((s: any) => s.status === "pending")
                 .map((s: any) => `#${s.id}`)
                 .join(", ");
-              _pi.sendUserMessage(
-                `[AutoGoo-Plugin] step ${params.stepId} 已${params.action === "complete" ? "完成" : params.action}。` +
-                `还有待执行步骤（${remaining || "无 pending"}）。请调用 auto_goo_execute 继续调度 DAG。`,
-                { deliverAs: "followUp" }
-              );
+              const verb = params.action === "complete" ? "完成" : params.action;
+
+              if (agentBusy) {
+                // 主 Agent 正在同一 turn 内继续调度 → 不入队（否则会堆到 turn 结束一次性发送）。
+                // 只在 UI 上即时反馈进度，让执行过程可见。
+                const level = params.action === "complete" ? "info" : "warning";
+                ctx.ui.notify(
+                  `✔ step ${params.stepId} ${verb}；剩余 ${remainingSteps.length} 步${pendingIds ? `（待执行 ${pendingIds}）` : ""}`,
+                  level,
+                );
+              } else if (_pi && !wakeupPending) {
+                // Agent 已空闲但 plan 仍有剩余：这才是唤醒真正有意义的场景。
+                // wakeupPending 去重，避免同一段空闲期重复入队多条相同的唤醒消息。
+                wakeupPending = true;
+                _pi.sendUserMessage(
+                  `[AutoGoo-Plugin] step ${params.stepId} 已${verb}。` +
+                  `还有 ${remainingSteps.length} 步待执行${pendingIds ? `（${pendingIds}）` : ""}。请调用 auto_goo_execute 继续调度 DAG。`,
+                  { deliverAs: "followUp" },
+                );
+              }
             }
           } catch (e: any) {
             console.warn("[AutoGoo-Plugin] update_step 唤醒主 Agent 失败:", e?.message ?? String(e));

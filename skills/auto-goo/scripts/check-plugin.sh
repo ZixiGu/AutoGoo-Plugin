@@ -1501,6 +1501,47 @@ fi
 # 真实 ~/ 未被触碰
 echo "" >/dev/null
 
+# ── 12. DAG 唤醒消息投递 ──
+# 回归：sendUserMessage({deliverAs:"followUp"}) 只在当前 turn 结束后投递。
+# 主 Agent 在同一 turn 内连续调度时若仍发 followUp，通知会全部堆到 turn 结束才
+# 一次性倒出（实测现象）。因此必须用 agent_start/agent_end 跟踪忙闲，忙时不入队。
+echo ""
+echo "── 12. DAG 唤醒消息投递 ──"
+
+if python3 - "$ROOT" <<'PY'
+import sys
+from pathlib import Path
+
+start = (Path(sys.argv[1]) / ".pi/extensions/autogoo-plugin/commands/start.ts").read_text(encoding="utf-8")
+
+required = [
+    "agentBusy",
+    "wakeupPending",
+    "registerBusyTracking",
+    'pi.on("agent_start"',
+    'pi.on("agent_end"',
+]
+for token in required:
+    if token not in start:
+        raise SystemExit(f"missing busy-tracking token: {token}")
+
+# 忙时必须走 UI 反馈而不是 followUp：确认 agentBusy 分支存在且先于 sendUserMessage
+busy_idx = start.find("if (agentBusy)")
+send_idx = start.find('deliverAs: "followUp"', busy_idx if busy_idx >= 0 else 0)
+if busy_idx < 0 or send_idx < 0 or busy_idx > send_idx:
+    raise SystemExit("followUp 未被 agentBusy 门控（可能在 turn 内仍入队）")
+
+# 依赖跳过子进程递归的守门不得被删掉
+if 'process.env.AUTOGOO_SUBAGENT !== "1"' not in start:
+    raise SystemExit('missing AUTOGOO_SUBAGENT guard')
+print("ok")
+PY
+then
+  pass "update-step 唤醒消息受 agent 忙闲门控（忙时改 UI 反馈，不入队）"
+else
+  fail "DAG 唤醒消息未做忙闲门控，会堆到 turn 结束一次性发送"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

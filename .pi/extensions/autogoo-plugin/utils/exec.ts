@@ -263,6 +263,19 @@ export function execPython(
 }
 
 /**
+ * Async variant of {@link execPython} — for fire-and-forget work (e.g. the
+ * plugin update check) that must not block the caller's turn.
+ */
+export function execPythonAsync(
+  scriptPath: string,
+  scriptArgs: string[],
+  cwd: string,
+  options?: ExecAsyncOptions,
+): Promise<ExecAsyncResult> {
+  return execAsync("python3", [scriptPath, ...scriptArgs], cwd, options);
+}
+
+/**
  * Execute a bash script with arguments.
  */
 export function execBash(

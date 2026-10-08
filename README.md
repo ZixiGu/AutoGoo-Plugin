@@ -222,6 +222,7 @@ Pi 扩展使用原生 API 注册 17 个自定义工具（`auto_goo_execute`、`a
 - **usage 数据源**：`goo-usage` 默认读取 Claude Code / Codex / Pi 三源，支持官方环境变量覆盖（`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`PI_CODING_AGENT_DIR`、`PI_CODING_AGENT_SESSION_DIR`、`PI_SESSION_FILE`）；用 `python3 skills/auto-goo/scripts/goo-usage.py --sources` 诊断路径与 jsonl 计数，未安装 Claude Code 的环境也能读取 Pi/Codex 数据。
 - **约定单源化**：完整项目约定写入 `goo.md`；默认单源为用户级 `~/.auto-goo/goo.md`，项目级 `goo.md` 按需覆盖且优先级更高，`CLAUDE.md` / `AGENTS.md` 只保留 marker 指针。
 - **约定缺失可检测可恢复**：插件内置备份模板 `skills/auto-goo/templates/goo.md`。`goo-md.py --check` 报告当前生效的 goo.md（`project` / `user` / `missing`，missing 时 exit 1）；`goo-md.py --ensure` 在缺失时从模板恢复用户级 `~/.auto-goo/goo.md`（幂等，不覆盖已有内容，**不写 `~/.claude`/`~/.codex`**）。会话启动（`session-start.py` 与 pi `session_start`）在缺失时会给出可操作提示。
+- **更新自动提醒**：`goo-update-check.py` 比对本地 git HEAD 与远端分支 HEAD，有新提交时在会话启动时提醒并给出更新命令（只提醒，不自动更新）。只读（仅 `git ls-remote`）、带 24h 缓存、失败静默降级、`exit 0` 从不阻断启动；可用 `AUTOGOO_SKIP_UPDATE_CHECK` / `PI_SKIP_VERSION_CHECK` / `PI_OFFLINE` / `AUTOGOO_OFFLINE` 或 `update_check.enabled=false` 关闭。
 - **派发可见且中断不误判**：Subagent 派发时会立即回一行并在运行中每 8s 输出 `elapsed + 事件数 + 最近活动`，同步写入状态栏；用户 Esc / 超时 / 信号杀（exit 143/137）一律标记 `interrupted` 而**不是** `failed`，并提示先检查产物再决定 `--complete` / `--resume` / 重派。
 - **分析文档**：论文分析和代码分析必须生成独立 Markdown 并归档到 Goo-wiki；fallback 只作临时防丢失，不能视为归档完成。
 - **安全边界**：敏感信息放在 `.goo/secrets.json` 或 `~/.auto-goo/secrets.json`，不要写入计划、日志或 HTML 发布页。
@@ -243,6 +244,7 @@ AutoGoo-Plugin 读取两级配置：
 | `execution` | 并发数、超时、日志和 heartbeat 行为。 |
 | `planning` | 默认执行模式、用户确认策略和计划细节级别。 |
 | `interaction` | 交互对话框超时（`timeout_seconds`，默认 180；`0` 禁用）。 |
+| `update_check` | 插件更新提醒（`enabled`、`interval_hours`，默认 24）。 |
 | `publish` | HTML 状态页输出目录和可见字段。 |
 | `servers` | 远程机器、角色、路径和连接策略。 |
 

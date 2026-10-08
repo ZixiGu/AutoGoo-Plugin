@@ -231,6 +231,11 @@ export interface AutogooPluginConfig {
   interaction?: {
     timeout_seconds?: number;
   };
+  /** 插件更新检查（只提醒不自动更新）。 */
+  update_check?: {
+    enabled?: boolean;
+    interval_hours?: number;
+  };
   init?: {
     prompt_for_scope?: boolean;
     prompt_for_wiki_dir?: boolean;

@@ -1542,6 +1542,97 @@ else
   fail "DAG 唤醒消息未做忙闲门控，会堆到 turn 结束一次性发送"
 fi
 
+# ── 13. 插件更新提醒 ──
+# 回归：更新检测必须只读（不 fetch/pull）、尊重 opt-out、失败降级为 unknown
+# 且 exit 0（会话启动路径不能被网络问题拖死）。
+echo ""
+echo "── 13. 插件更新提醒 ──"
+
+UPD="$ROOT/skills/auto-goo/scripts/goo-update-check.py"
+
+if [[ -f "$UPD" ]] && python3 -m py_compile "$UPD" 2>/dev/null; then
+  pass "goo-update-check.py 存在且可编译"
+else
+  fail "goo-update-check.py 缺失或无法编译"
+fi
+
+# 不得修改本地 checkout：只检查**真实执行的 git 子命令**
+# （update_hint() 里的 "git ... pull" 只是给用户的建议文本，不在此列）
+if python3 - "$UPD" <<'PY'
+import re, sys
+from pathlib import Path
+
+src = Path(sys.argv[1]).read_text(encoding="utf-8")
+calls = re.findall(r"_git\(\[(.*?)\]", src, re.S)
+if not calls:
+    raise SystemExit("no _git([...]) calls found")
+allowed = {"ls-remote", "rev-parse", "symbolic-ref", "remote"}
+for call in calls:
+    tokens = re.findall(r'"([^"]+)"', call)
+    if not tokens:
+        raise SystemExit(f"unparsable git call: {call!r}")
+    if tokens[0] not in allowed:
+        raise SystemExit(f"disallowed git subcommand: {tokens[0]}")
+if not any('"ls-remote"' in c for c in calls):
+    raise SystemExit("ls-remote not used")
+PY
+then
+  pass "goo-update-check.py 只读（仅 ls-remote/rev-parse/symbolic-ref/remote，不 fetch/pull）"
+else
+  fail "goo-update-check.py 执行了修改性 git 子命令"
+fi
+
+# opt-out 全部生效
+UPD_OPTIN=1
+for v in AUTOGOO_SKIP_UPDATE_CHECK PI_SKIP_VERSION_CHECK PI_OFFLINE AUTOGOO_OFFLINE; do
+  OUT="$(env "$v=1" python3 "$UPD" --force 2>&1 | head -1)"
+  case "$OUT" in
+    *已禁用*) ;;
+    *) UPD_OPTIN=0 ;;
+  esac
+done
+if [[ "$UPD_OPTIN" -eq 1 ]]; then
+  pass "更新检查尊重 AUTOGOO_SKIP_UPDATE_CHECK / PI_SKIP_VERSION_CHECK / PI_OFFLINE / AUTOGOO_OFFLINE"
+else
+  fail "更新检查未尊重全部 opt-out 环境变量"
+fi
+
+# 非 git 目录 → unknown 且 exit 0（不阻断启动）
+UPD_TMP="$(mktemp -d)"
+UPD_OUT="$(python3 "$UPD" --root "$UPD_TMP" --force --quiet 2>&1)"; UPD_RC=$?
+if [[ "$UPD_RC" -eq 0 ]]; then
+  pass "更新检查在非 git 目录下 exit 0（不阻断会话启动）"
+else
+  fail "更新检查在非 git 目录下 exit $UPD_RC（应恒为 0）"
+fi
+
+# --cached-only 绝不联网：清掉缓存后应无输出且不写缓存
+UPD_CACHE="$HOME/.auto-goo/cache/update-check.json"
+UPD_BAK=""
+if [[ -f "$UPD_CACHE" ]]; then UPD_BAK="$(cat "$UPD_CACHE")"; rm -f "$UPD_CACHE"; fi
+UPD_CO="$(python3 "$UPD" --root "$UPD_TMP" --cached-only 2>&1)"; UPD_CO_RC=$?
+if [[ -z "$UPD_CO" && "$UPD_CO_RC" -eq 0 && ! -f "$UPD_CACHE" ]]; then
+  pass "--cached-only 缓存未命中时无输出、exit 0 且不写缓存"
+else
+  fail "--cached-only 行为异常（out='$UPD_CO' rc=$UPD_CO_RC）"
+fi
+if [[ -n "$UPD_BAK" ]]; then printf '%s' "$UPD_BAK" > "$UPD_CACHE"; fi
+
+# --json 必须包含 status 字段
+if python3 "$UPD" --root "$UPD_TMP" --force --json 2>/dev/null | grep -q '"status"'; then
+  pass "goo-update-check.py --json 输出含 status"
+else
+  fail "goo-update-check.py --json 输出异常"
+fi
+
+# session-start 必须引用更新检查（只读缓存路径）
+if grep -q "goo-update-check.py" "$ROOT/skills/auto-goo/scripts/session-start.py" \
+  && grep -q -- "--cached-only" "$ROOT/skills/auto-goo/scripts/session-start.py"; then
+  pass "session-start.py 用 --cached-only 做更新提醒（不阻塞网络）"
+else
+  fail "session-start.py 未接入只读更新提醒"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

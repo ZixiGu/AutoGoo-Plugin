@@ -66,6 +66,37 @@ import {
 } from "./utils/ui.js";
 import type { SelectOption } from "./types.js";
 
+// ── Plugin update check ─────────────────────────────────────────────────────
+// 只提醒不自动更新：比对本地 git HEAD 与远端分支 HEAD（版本号不可靠——
+// package.json 可能多个 commit 不变），命中缓存则跳过网络。
+// 全程异步、失败静默，绝不阻塞或拖慢会话启动。
+let _updateNoticeShown = false;
+
+async function checkForPluginUpdate(ctx: any): Promise<void> {
+  if (_updateNoticeShown) return;
+  const skip =
+    process.env.AUTOGOO_SKIP_UPDATE_CHECK ||
+    process.env.PI_SKIP_VERSION_CHECK ||
+    process.env.PI_OFFLINE ||
+    process.env.AUTOGOO_OFFLINE;
+  if (skip) return;
+  try {
+    const { execPythonAsync } = await import("./utils/exec.js");
+    const script = `${REPO_ROOT}/skills/auto-goo/scripts/goo-update-check.py`;
+    const result = await execPythonAsync(script, ["--check"], ctx.cwd, { timeout: 15000 });
+    const line = (result.stdout || "").trim();
+    if (line && line.includes("有更新")) {
+      _updateNoticeShown = true;
+      ctx.ui.notify(
+        `[AutoGoo-Plugin] ⬆ ${line.replace(/^AutoGoo-Plugin\s*/, "")}`,
+        "info",
+      );
+    }
+  } catch {
+    // 更新提醒失败一律静默（网络/限流/git 缺失等）
+  }
+}
+
 // ── Command routing table ───────────────────────────────────────────────────
 
 interface CommandEntry {
@@ -466,6 +497,10 @@ export default function (pi: ExtensionAPI) {
         } catch (e) {
           console.error("[AutoGoo-Plugin] session_start goo.md check error:", e);
         }
+
+        // 插件更新提醒（2026-10-08）：**异步**执行，绝不阻塞启动。
+        // 脚本内部有 24h 缓存与超时，失败静默降级为 unknown。
+        void checkForPluginUpdate(ctx);
       }
     } catch (e) {
       console.error("[AutoGoo-Plugin] session_start outer error:", e);

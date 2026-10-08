@@ -143,6 +143,27 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-md.py --ensure --scope proje
 | 幂等 | 已存在时只替换 marker 段，不追加第二份，不改 marker 段外内容 |
 | 提示入口 | `session-start.py`（Claude Code hook）与 pi 的 `session_start` 在 missing 时会给出 `--ensure` 与 `/auto-goo:goo-init --user` 两条命令 |
 
+### 插件更新提醒（`goo-update-check.py`）
+
+插件会把**本地 git HEAD** 与**远端分支 HEAD** 做比对，落后时在会话启动提醒并给出更新命令。**只提醒，不自动更新。**
+
+```bash
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py           # 人类可读单行
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py --json    # 机器可读
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py --force   # 绕过缓存
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py --cached-only  # 只读缓存，不联网
+```
+
+| 关注点 | 说明 |
+| --- | --- |
+| 为什么比 SHA 而不是版本号 | `package.json` 的 version 可能跨多个 commit 不变（实测：本地领先 6 个 commit，两边都还是 `0.5.1`），比版本号会漏报 |
+| 只读保证 | 只用 `git ls-remote` / `rev-parse` / `symbolic-ref` / `remote`，**从不** `fetch`/`pull`，不改动本地 checkout |
+| 缓存 | `~/.auto-goo/cache/update-check.json`，默认 24h（`--interval-hours` 可调）；缓存按 `root` 校验，避免另一份安装的结论被误用 |
+| 不阻塞启动 | 会话启动路径只用 `--cached-only`（绝不联网）；完整检查由 pi 扩展在 `session_start` **异步**触发 |
+| 失败降级 | 网络不可达 / 非 git 目录 / 限流 → `status=unknown`，**始终 exit 0**，永不阻断会话 |
+| 关闭方式 | `AUTOGOO_SKIP_UPDATE_CHECK=1` / `PI_SKIP_VERSION_CHECK=1` / `PI_OFFLINE=1` / `AUTOGOO_OFFLINE=1`，或配置 `update_check.enabled=false` |
+| 更新命令 | 按安装方式自动给出：pi git → `pi update --extensions`；Claude marketplace → `/plugin update`；本地 checkout → `git pull --ff-only` |
+
 ### 项目初始化复用已配置的 wiki 路径
 
 未传 `--wiki-dir` 时，`goo-init.sh` 按以下优先级解析默认值，**已配置的用户级路径会被自动复用**，不必每个项目重新输入：

@@ -82,16 +82,17 @@ Agent 交互流程：
 
    请回复 1/2，或直接回复“项目级”/“用户级”。
    ```
-6. 第二个问题必须优先用 `AskUserQuestion` 呈现以下选项：
-   - `~/workspace/Goo-wiki` (Recommended)
-   - 自定义路径（选择后在 Other 输入）
+6. 第二个问题必须优先用 `AskUserQuestion` 呈现以下选项。**如果用户级 `~/.auto-goo/config.json` 已配置 `wiki_dir`（或环境变量 `AUTOGOO_PLUGIN_WIKI_DIR` 已设），必须把该已配置路径作为首个推荐选项**，避免每个项目重复输入；未配置时才用默认路径：
+   - 已配置时：`<已配置路径>` (Recommended) / `~/workspace/Goo-wiki` / 自定义路径（Other 输入）
+   - 未配置时：`~/workspace/Goo-wiki` (Recommended) / 自定义路径（选择后在 Other 输入）
 7. 如果无法渲染结构化选项，使用以下纯文本 fallback：
    ```text
    这是 fallback：结构化选择 UI 不可用。请选择 Goo-wiki 路径：
-   1. ~/workspace/Goo-wiki (Recommended)
-   2. 自定义路径
+   1. <已配置路径，若有> (Recommended)
+   2. ~/workspace/Goo-wiki
+   3. 自定义路径
 
-   请回复 1/2；如果选择自定义路径，请直接写完整路径。
+   请回复序号；如果选择自定义路径，请直接写完整路径。
    ```
 8. 后续二选一问题也必须优先用 `AskUserQuestion` 提供两个显式选项；只有交互控件不可用时，才允许使用明确标注 fallback 的纯文本列表。凡 `skills/auto-goo/references/interaction-templates.md` 已定义固定 `id` 的问题，必须复用对应模板，不要临场改写。
 9. 项目级初始化时，继续询问：
@@ -240,6 +241,21 @@ Agent 交互流程：
 - **不可逆操作显式禁用兜底**：删除/替换服务器、清空服务器、文件整理执行、plan 确认执行、新建 thread 等，超时一律不执行，必须等待用户显式确认。
 - Claude Code / Codex 环境下如平台不支持原生超时，主 Agent 应把超时视为“用户未选择”，按上述兜底规则继续，并在最终摘要中说明哪些项是默认采用的。
 - 任何被兜底采用的选项都必须在结果摘要中标注“超时默认”，不得让用户误以为是自己的选择。
+
+### goo.md 缺失时的恢复
+
+如果发现环境里没有 goo.md（项目级与用户级都没有），可提示用户用内置备份恢复：
+
+```bash
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-md.py --check    # 确认状态
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-md.py --ensure   # 从模板恢复用户级 goo.md
+```
+
+`--ensure` 幂等且不覆盖已有内容，只写 `~/.auto-goo/goo.md`；需要重新写用户级/项目级指针时仍需跑 `/auto-goo:goo-init`。
+
+### 复用已配置的 wiki 路径
+
+询问 Goo-wiki 路径时，若用户级 `~/.auto-goo/config.json` 已配置 `wiki_dir`（或设了 `AUTOGOO_PLUGIN_WIKI_DIR`），**必须把该路径作为首个推荐选项**，不要默认只给 `~/workspace/Goo-wiki`，否则用户每个项目都要重复输入。
 
 - 不覆盖已有 `.goo/config.json`，除非用户明确确认；但保留 config 时仍可按 `--update-claude-md` 更新项目级 `goo.md` 与项目指针 `CLAUDE.md`/`AGENTS.md`
 - 不覆盖已有 `~/.auto-goo/config.json`，除非用户明确确认；`--user` 仍会生成或幂等更新 `~/.auto-goo/goo.md`（除非 `--skip-claude-md`）

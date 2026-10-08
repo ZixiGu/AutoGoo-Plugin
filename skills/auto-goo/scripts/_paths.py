@@ -191,6 +191,46 @@ def logs_dir_from_plan(plan_path: Path) -> Path:
     return project_root / logs_dir
 
 
+# ── goo.md resolution ────────────────────────────────────────────────────────
+
+def resolve_goo_md(
+    project_root: Path | None = None,
+    home: Path | None = None,
+) -> dict[str, Any]:
+    """Locate the effective AutoGoo-Plugin ``goo.md`` convention file.
+
+    Resolution order follows goo-init.sh: project root ``<root>/goo.md``
+    shadows the user-level ``~/.auto-goo/goo.md``.  *project_root* defaults to
+    the current working directory, *home* defaults to ``Path.home()`` (both are
+    injectable so callers/tests can point at a temporary HOME).
+
+    Returns::
+
+        {'scope': 'project'|'user'|'missing',
+         'path': Path | None,
+         'candidates': [{'scope': str, 'path': Path, 'exists': bool}, ...]}
+    """
+    root = (project_root if project_root is not None else Path.cwd()).expanduser().resolve()
+    home_dir = (home if home is not None else Path.home()).expanduser().resolve()
+
+    candidates: list[dict[str, Any]] = [
+        {"scope": "project", "path": root / "goo.md"},
+        {"scope": "user", "path": home_dir / ".auto-goo" / "goo.md"},
+    ]
+    for candidate in candidates:
+        candidate["exists"] = candidate["path"].is_file()
+
+    scope = "missing"
+    path: Path | None = None
+    for candidate in candidates:
+        if candidate["exists"]:
+            scope = candidate["scope"]
+            path = candidate["path"]
+            break
+
+    return {"scope": scope, "path": path, "candidates": candidates}
+
+
 # ── Plan status ──────────────────────────────────────────────────────────────
 
 def compute_plan_status(plan: dict[str, Any]) -> str:

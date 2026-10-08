@@ -221,6 +221,8 @@ Pi 扩展使用原生 API 注册 17 个自定义工具（`auto_goo_execute`、`a
 - **归档记忆**：默认写入 Goo-wiki；没有配置时回退到 `.goo/obsidian/`。
 - **usage 数据源**：`goo-usage` 默认读取 Claude Code / Codex / Pi 三源，支持官方环境变量覆盖（`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`PI_CODING_AGENT_DIR`、`PI_CODING_AGENT_SESSION_DIR`、`PI_SESSION_FILE`）；用 `python3 skills/auto-goo/scripts/goo-usage.py --sources` 诊断路径与 jsonl 计数，未安装 Claude Code 的环境也能读取 Pi/Codex 数据。
 - **约定单源化**：完整项目约定写入 `goo.md`；默认单源为用户级 `~/.auto-goo/goo.md`，项目级 `goo.md` 按需覆盖且优先级更高，`CLAUDE.md` / `AGENTS.md` 只保留 marker 指针。
+- **约定缺失可检测可恢复**：插件内置备份模板 `skills/auto-goo/templates/goo.md`。`goo-md.py --check` 报告当前生效的 goo.md（`project` / `user` / `missing`，missing 时 exit 1）；`goo-md.py --ensure` 在缺失时从模板恢复用户级 `~/.auto-goo/goo.md`（幂等，不覆盖已有内容，**不写 `~/.claude`/`~/.codex`**）。会话启动（`session-start.py` 与 pi `session_start`）在缺失时会给出可操作提示。
+- **派发可见且中断不误判**：Subagent 派发时会立即回一行并在运行中每 8s 输出 `elapsed + 事件数 + 最近活动`，同步写入状态栏；用户 Esc / 超时 / 信号杀（exit 143/137）一律标记 `interrupted` 而**不是** `failed`，并提示先检查产物再决定 `--complete` / `--resume` / 重派。
 - **分析文档**：论文分析和代码分析必须生成独立 Markdown 并归档到 Goo-wiki；fallback 只作临时防丢失，不能视为归档完成。
 - **安全边界**：敏感信息放在 `.goo/secrets.json` 或 `~/.auto-goo/secrets.json`，不要写入计划、日志或 HTML 发布页。
 - **Web 修改请求**：`goo-publish --serve` 可在网页提交修改请求，落盘到 `.goo/change-requests/`，由 AutoGoo-Plugin 后续读取并让模型修改、审计。

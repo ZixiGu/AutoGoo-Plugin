@@ -1421,6 +1421,86 @@ else
   fail "交互超时保护缺失或不完整"
 fi
 
+# ── 11. goo.md 检测与备份恢复 ──
+# 回归：环境里缺 goo.md 时必须能检测出来并从内置模板恢复，
+# 否则工作流会在“没有任何约定来源”的沙地上运行。
+echo ""
+echo "── 11. goo.md 检测与备份恢复 ──"
+
+GMD="$ROOT/skills/auto-goo/scripts/goo-md.py"
+GMD_TPL="$ROOT/skills/auto-goo/templates/goo.md"
+
+if python3 - "$GMD_TPL" <<'PY'
+try:
+    import sys
+    from pathlib import Path
+    tpl = Path(sys.argv[1])
+    if not tpl.is_file():
+        raise SystemExit("templates/goo.md missing")
+    text = tpl.read_text(encoding="utf-8")
+    for token in ("AUTOGOO-PLUGIN-WIKI-ARCHIVE-BEGIN", "AUTOGOO-PLUGIN-WIKI-ARCHIVE-END"):
+        if token not in text:
+            raise SystemExit(f"template missing marker {token}")
+    if "{{WIKI_DIR}}" not in text:
+        raise SystemExit("template missing {{WIKI_DIR}} placeholder")
+except SystemExit:
+    raise
+except Exception as exc:
+    raise SystemExit(f"template check error: {exc}")
+PY
+then
+  pass "templates/goo.md 存在且含 WIKI-ARCHIVE marker 与占位符"
+else
+  fail "templates/goo.md 缺失或不完整"
+fi
+
+GMD_TMP="$(mktemp -d)"
+mkdir -p "$GMD_TMP/home" "$GMD_TMP/proj"
+
+if HOME="$GMD_TMP/home" python3 "$GMD" --check --root "$GMD_TMP/proj" >/dev/null 2>&1; then
+  fail "goo-md.py --check 在无 goo.md 时未返回非零"
+else
+  pass "goo-md.py --check 无 goo.md 时 exit 1"
+fi
+
+if HOME="$GMD_TMP/home" python3 "$GMD" --ensure --root "$GMD_TMP/proj" >/dev/null 2>&1 \
+  && [[ -f "$GMD_TMP/home/.auto-goo/goo.md" ]] \
+  && grep -q "AUTOGOO-PLUGIN-WIKI-ARCHIVE-BEGIN" "$GMD_TMP/home/.auto-goo/goo.md" \
+  && ! grep -q '{{' "$GMD_TMP/home/.auto-goo/goo.md"; then
+  pass "goo-md.py --ensure 从模板恢复用户级 goo.md 且占位符已替换"
+else
+  fail "goo-md.py --ensure 未正确恢复 goo.md"
+fi
+
+# 幂等：在 marker 段外手工追加一行，再 ensure 两次
+echo "KEEP-ME-OUTSIDE-MARKER" >> "$GMD_TMP/home/.auto-goo/goo.md"
+HOME="$GMD_TMP/home" python3 "$GMD" --ensure --root "$GMD_TMP/proj" >/dev/null 2>&1
+HOME="$GMD_TMP/home" python3 "$GMD" --ensure --root "$GMD_TMP/proj" >/dev/null 2>&1
+GMD_MARKERS="$(grep -c 'AUTOGOO-PLUGIN-WIKI-ARCHIVE-BEGIN' "$GMD_TMP/home/.auto-goo/goo.md")"
+if [[ "$GMD_MARKERS" == "1" ]] && grep -q "KEEP-ME-OUTSIDE-MARKER" "$GMD_TMP/home/.auto-goo/goo.md"; then
+  pass "goo-md.py --ensure 幂等（marker 计数 1）且不改 marker 段外内容"
+else
+  fail "goo-md.py --ensure 幂等失败（marker=$GMD_MARKERS）或覆盖了段外内容"
+fi
+
+if HOME="$GMD_TMP/home" python3 "$GMD" --check --root "$GMD_TMP/proj" >/dev/null 2>&1; then
+  pass "goo-md.py --check 恢复后 exit 0"
+else
+  fail "goo-md.py --check 恢复后仍报失败"
+fi
+
+# project 级优先于 user 级
+printf '# project goo\n<!-- AUTOGOO-PLUGIN-WIKI-ARCHIVE-BEGIN -->\n<!-- AUTOGOO-PLUGIN-WIKI-ARCHIVE-END -->\n' > "$GMD_TMP/proj/goo.md"
+GMD_SCOPE="$(HOME="$GMD_TMP/home" python3 "$GMD" --check --root "$GMD_TMP/proj" --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("scope",""))' 2>/dev/null)"
+if [[ "$GMD_SCOPE" == "project" ]]; then
+  pass "goo-md.py --check 项目级 goo.md 优先于用户级"
+else
+  fail "goo-md.py --check 优先级错误（got scope=$GMD_SCOPE）"
+fi
+
+# 真实 ~/ 未被触碰
+echo "" >/dev/null
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

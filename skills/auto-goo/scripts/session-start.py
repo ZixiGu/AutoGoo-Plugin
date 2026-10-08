@@ -37,7 +37,11 @@ def main() -> int:
     elif user_goo.is_file():
         print(f"AutoGoo: goo.md=user ({user_goo})")
     else:
-        print("AutoGoo: goo.md=missing (run /auto-goo:goo-init --user)")
+        here = Path(__file__).resolve().parent
+        restore = f"python3 {here}/goo-md.py --ensure"
+        print("AutoGoo: goo.md=missing（当前环境没有约定正文）")
+        print(f"AutoGoo:   恢复内置备份：{restore}")
+        print("AutoGoo:   或重新初始化：/auto-goo:goo-init --user")
     return 0
 
 

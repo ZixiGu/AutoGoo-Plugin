@@ -118,6 +118,40 @@ AutoGoo-Plugin 把完整项目约定正文单源化到 `goo.md`，`CLAUDE.md` / 
 - **marker 幂等**：正文用 `AUTOGOO-PLUGIN-WIKI-ARCHIVE-BEGIN/END`，指针用 `AUTOGOO-PLUGIN-POINTER-BEGIN/END`；重复初始化先收敛已有块和悬挂 marker，再只写入/替换 marker 段，不改段外内容。
 - **相关参数**：`--write-user-pointer` / `--skip-user-pointer` 控制用户级指针（互斥，同时传入 `exit 2`）；`--agent claude|codex|both` 选择指针目标（默认 `both`，非法值 `exit 2`）；`--skip-claude-md` 与 `--update-claude-md` 互斥。
 - **`--skip-claude-md` 覆盖范围**：同时跳过用户级 `~/.auto-goo/goo.md`、项目级 `<根>/goo.md` 和两类指针（用户级与项目级都生效）；只想跳过用户级指针时用 `--skip-user-pointer`。
+
+### 检测与备份恢复（`goo-md.py`）
+
+环境里没有 goo.md 时工作流就失去了约定来源（历史故障：pi 扩展旧版 user 分支误传 `--skip-claude-md`，导致 goo.md 静默未生成）。为此插件内置了备份模板与检测/恢复 CLI：
+
+```bash
+# 查看当前生效的 goo.md（project / user / missing；missing 时 exit 1）
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-md.py --check
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-md.py --check --json
+
+# 缺失时从内置模板恢复用户级 ~/.auto-goo/goo.md（幂等，不覆盖已有）
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-md.py --ensure
+
+# 恢复项目级
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-md.py --ensure --scope project --root <项目根>
+```
+
+| 关注点 | 说明 |
+| --- | --- |
+| 模板 | `skills/auto-goo/templates/goo.md`，与 `goo-init` **共用 `AUTOGOO-PLUGIN-WIKI-ARCHIVE` marker**，因此两边写入可互相幂等替换 |
+| 占位符 | `{{WIKI_DIR}}` `{{PROJECT_ARCHIVE_DIR}}` `{{FALLBACK_PROJECT_DIR}}` `{{CONFIG_DISPLAY}}` `{{INIT_HINT}}`，取值走既有 config 优先级（env > 项目 config > 用户 config > 默认） |
+| 边界 | **只恢复 goo.md 正文，不写 `~/.claude` / `~/.codex`**；指针仍由 `goo-init` 负责 |
+| 幂等 | 已存在时只替换 marker 段，不追加第二份，不改 marker 段外内容 |
+| 提示入口 | `session-start.py`（Claude Code hook）与 pi 的 `session_start` 在 missing 时会给出 `--ensure` 与 `/auto-goo:goo-init --user` 两条命令 |
+
+### 项目初始化复用已配置的 wiki 路径
+
+未传 `--wiki-dir` 时，`goo-init.sh` 按以下优先级解析默认值，**已配置的用户级路径会被自动复用**，不必每个项目重新输入：
+
+1. 环境变量 `AUTOGOO_PLUGIN_WIKI_DIR`
+2. 用户级 `~/.auto-goo/config.json` 的 `wiki_dir`
+3. `~/workspace/Goo-wiki`
+
+交互式下它作为提示默认值；非交互（`--yes` / 无 TTY）下直接采用，不再报错退出。pi 扩展在检测到已配置 `wiki_dir` 时，会把它作为首个 `(Recommended)` 选项。
 - **三条 CLAUDE.md 区分**：`$wiki_dir/CLAUDE.md` 是 Goo-wiki vault 自身说明；`~/.claude/CLAUDE.md` 是用户级 agent 指针；`<项目根>/CLAUDE.md` 是项目级 agent 指针。
 
 ## goo.md 归档原则与 agent 指针

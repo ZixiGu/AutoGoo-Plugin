@@ -445,6 +445,27 @@ export default function (pi: ExtensionAPI) {
         } catch (e) {
           console.error("[AutoGoo-Plugin] session_start updateStatusBar error:", e);
         }
+
+        // goo.md 检测（2026-10-08）：环境里没有约定正文时给出可操作提示。
+        // 优先级：项目 <cwd>/goo.md > 用户 ~/.auto-goo/goo.md。
+        // 只提示不自动写入（恢复由用户显式跑 goo-md.py --ensure）。
+        try {
+          const { existsSync } = await import("node:fs");
+          const { join } = await import("node:path");
+          const projectGoo = join(ctx.cwd, "goo.md");
+          const userGoo = join(process.env.HOME || "~", ".auto-goo", "goo.md");
+          if (!existsSync(projectGoo) && !existsSync(userGoo)) {
+            const restore = `python3 ${join(REPO_ROOT, "skills/auto-goo/scripts/goo-md.py")} --ensure`;
+            ctx.ui.notify(
+              `[AutoGoo-Plugin] ⚠ 未检测到 goo.md（项目与用户级都没有）。\n` +
+                `  恢复内置备份：${restore}\n` +
+                `  或初始化：/auto-goo:goo-init --user`,
+              "warning",
+            );
+          }
+        } catch (e) {
+          console.error("[AutoGoo-Plugin] session_start goo.md check error:", e);
+        }
       }
     } catch (e) {
       console.error("[AutoGoo-Plugin] session_start outer error:", e);

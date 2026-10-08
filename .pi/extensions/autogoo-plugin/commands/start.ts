@@ -352,6 +352,33 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
       const planPath = projectPlanPath(cwd);
       const agentId = `agent-${params.stepId}-${Date.now()}`;
 
+      // 保活进度显示（2026-10-08）：子进程可能长时间思考不产生事件，
+      // 若只在有消息时才 onUpdate，工具输出会长时间静止，用户会以为卡死。
+      // 因此：(1) 派发时立刻回一行；(2) 每 8s 周期性回一行 elapsed + 最近活动；
+      //      (3) 同步写入 TUI 状态栏；结束时清理。
+      const startedAt = Date.now();
+      const fmtElapsed = () => {
+        const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+        return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+      };
+      let lastActivity = "已派发，等待首个事件…";
+      let eventCount = 0;
+      const emit = (text: string) => {
+        try {
+          onUpdate?.({ content: [{ type: "text", text }] });
+        } catch {
+          /* 进度上报失败不阻塞 */
+        }
+      };
+      const setProgressStatus = (text: string | undefined) => {
+        try {
+          ctx?.ui?.setStatus?.("autogoo-dispatch", text);
+        } catch {
+          /* 状态栏不可用不阻塞 */
+        }
+      };
+      const roleLabel = `${params.role}${params.taskAgent ? "/" + params.taskAgent : ""}`;
+
       // 保活心跳（P2/P16，共享 heartbeatTick）：
       // - 不传 --progress：避免把 Subagent 已更新的 progress 覆盖回 0
       // - 写前 loadPlan 检查 step.status === 'running'，非 running 直接跳过
@@ -369,7 +396,16 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
         ctx.ui.notify("已取消本次 Subagent 派发（未配置 subagent 模型）", "warning");
         return { content: [{ type: "text", text: "blocked: Subagent 模型未配置或用户取消，未派发本 step；请配置 execution.subagent_provider+subagent_model 后重试" }] };
       }
-      const subagentResult = await runSubagent({
+      emit(`▶ step ${params.stepId} 派发中 · ${roleLabel} · ${subModel.provider}/${subModel.model} · [00:00]`);
+      setProgressStatus(`▶ #${params.stepId} ${roleLabel} 00:00`);
+      const progressTimer = setInterval(() => {
+        emit(`⏳ step ${params.stepId} 运行中 [${fmtElapsed()}] · 事件 ${eventCount} · ${lastActivity}`);
+        setProgressStatus(`⏳ #${params.stepId} ${fmtElapsed()} · ${lastActivity.slice(0, 40)}`);
+      }, 8000);
+
+      let subagentResult;
+      try {
+        subagentResult = await runSubagent({
         systemPrompt: [rolePrompt, taskPrompt].filter(Boolean).join("\n"),
         task: prompt,
         cwd,
@@ -378,8 +414,9 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
         model: subModel.model,
         onTick: () => void heartbeatTick(cwd, planPath, params.stepId, agentId),
         // pi 流式观察（2026-08-14）：Subagent 子进程 JSON 流 → 工具 onUpdate → TUI 实时显示
+        // 2026-10-08：增加「保活进度条」——子进程长时间思考时也会周期性上报 elapsed，
+        // 否则工具输出长时间静止，用户会误以为卡死。
         onMessage: (message: any) => {
-          if (!onUpdate) return;
           try {
             const role = message?.role;
             let text = "";
@@ -393,14 +430,20 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
               text = `⟦tool result⟧ ${String(c).slice(0, 200)}`;
             }
             if (text) {
-              onUpdate({ content: [{ type: "text", text: `  #${params.stepId} ▶ ${text.slice(0, 300)}` }] });
+              eventCount += 1;
+              lastActivity = text.replace(/\s+/g, " ").slice(0, 80);
+              emit(`  #${params.stepId} [${fmtElapsed()}] ▶ ${text.slice(0, 300)}`);
             }
           } catch {
             /* 流式转发失败不阻塞 */
           }
         },
         timeoutMs: (params as any).timeoutMs ?? 30 * 60 * 1000,
-      });
+        });
+      } finally {
+        clearInterval(progressTimer);
+        setProgressStatus(undefined);
+      }
 
       // 4. 兕底状态：子进程退出后 step 可能已被 Subagent 调 auto_goo_update_step
       //    标记 complete/fail；若仍 running，根据退出码兕底标记。
@@ -408,7 +451,14 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
       const stepAfter = planAfter?.steps.find((s: Step) => String(s.id) === String(params.stepId));
       let statusNote = "";
       if (stepAfter?.status === "running") {
-        const ok = subagentResult.exitCode === 0 && !subagentResult.errorMessage && !subagentResult.timedOut;
+        // ⚠ wrapper 被信号杀（143/137）/超时/用户中断 不等于任务失败：
+        // 子进程可能已写完产物，必须标 interrupted（实例：step 1 已产出 3 个文件却被标 failed）。
+        const res = subagentResult;
+        const killedBySignal =
+          res.exitCode === 143 || res.exitCode === 137 ||
+          res.stopReason === "SIGTERM" || res.stopReason === "SIGKILL";
+        const ok =
+          res.exitCode === 0 && !res.errorMessage && !res.timedOut && !res.aborted && !killedBySignal;
         if (ok) {
           execPython(
             UPDATE_STEP_PY,
@@ -417,10 +467,24 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
             { timeout: 10000 },
           );
           statusNote = "（兜底完成）";
+        } else if (res.aborted || res.timedOut || killedBySignal) {
+          const reason = res.aborted
+            ? "派发被中断（用户 Esc / 会话中断）"
+            : res.timedOut
+              ? "派发超时"
+              : `wrapper 被信号杀（exit ${res.exitCode}）`;
+          execPython(
+            UPDATE_STEP_PY,
+            ["--plan", planPath, "--step-id", String(params.stepId), "--interrupt",
+             "--note", `${reason}；子进程已终止，产物可能已部分生成，检查后再 resume 或重派`],
+            cwd,
+            { timeout: 10000 },
+          );
+          statusNote = `，${reason} → step 标记为 interrupted（非失败）`;
         } else {
           execPython(
             UPDATE_STEP_PY,
-            ["--plan", planPath, "--step-id", String(params.stepId), "--fail", "--error", subagentResult.errorMessage || `subagent exit ${subagentResult.exitCode}${subagentResult.timedOut ? "（超时）" : ""}`],
+            ["--plan", planPath, "--step-id", String(params.stepId), "--fail", "--error", res.errorMessage || `subagent exit ${res.exitCode}`],
             cwd,
             { timeout: 10000 },
           );
@@ -440,20 +504,35 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
         ? `\n\n输出: ${output.slice(0, 500)}${output.length > 500 ? "…" : ""}`
         : "";
 
+      // 中断/超时不是失败，不要用 ✅ 误导。
+      const interrupted = !!(
+        subagentResult.aborted || subagentResult.timedOut ||
+        subagentResult.exitCode === 143 || subagentResult.exitCode === 137
+      );
+
       return {
         content: [
           {
             type: "text",
-            text: `✅ step ${params.stepId} 子进程执行完成${statusNote} (exit=${subagentResult.exitCode}, ${subagentResult.model ?? "default"})${usageLine}${outputLine}`,
+            text: `${interrupted ? "⏸" : subagentResult.exitCode === 0 ? "✅" : "❌"} ` +
+              (interrupted
+                ? `step ${params.stepId} 派发中断${statusNote} (exit=${subagentResult.exitCode}, ${subagentResult.model ?? "default"}, 耗时 ${fmtElapsed()})`
+                : `step ${params.stepId} 子进程执行完成${statusNote} (exit=${subagentResult.exitCode}, ${subagentResult.model ?? "default"}, 耗时 ${fmtElapsed()})${usageLine}`) +
+              (interrupted
+                ? "\n\n下一步：先检查该 step 声明的产物是否已生成；已生成→auto_goo_update_step --complete，未完成→--resume 或重派。中断不是失败，不要直接 --fail。"
+                : "") +
+              outputLine,
           },
         ],
         details: {
           stepId: params.stepId,
           role: params.role,
           taskAgent: params.taskAgent,
+          interrupted,
           subagent: {
             exitCode: subagentResult.exitCode,
             timedOut: subagentResult.timedOut ?? false,
+            aborted: subagentResult.aborted ?? false,
             stopReason: subagentResult.stopReason,
             errorMessage: subagentResult.errorMessage,
             usage: subagentResult.usage,

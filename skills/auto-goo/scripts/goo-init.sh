@@ -657,15 +657,46 @@ case "$SCOPE" in
     ;;
 esac
 
-if [[ -z "$WIKI_DIR" ]]; then
-  if [[ ! -t 0 ]]; then
-    echo "error: cannot choose wiki_dir in non-interactive mode" >&2
-    echo "hint: pass --wiki-dir ~/workspace/Goo-wiki or another Goo-wiki path explicitly" >&2
-    exit 2
+# 解析 wiki 目录默认值：已配置的用户级路径应被复用，而不是每个项目重新输入。
+# 优先级：--wiki-dir 显式传入 > AUTOGOO_PLUGIN_WIKI_DIR > 用户级 config.json.wiki_dir > ~/workspace/Goo-wiki
+resolve_default_wiki_dir() {
+  local user_cfg="$HOME/.auto-goo/config.json"
+  if [[ -n "${AUTOGOO_PLUGIN_WIKI_DIR:-}" ]]; then
+    printf '%s\n' "$AUTOGOO_PLUGIN_WIKI_DIR"
+    return
   fi
-  DEFAULT_WIKI_DIR="$HOME/workspace/Goo-wiki"
-  WIKI_DIR="$(prompt "Goo-wiki directory (press Enter to use default)" "$DEFAULT_WIKI_DIR")"
-  WIKI_DIR_PROVIDED=1
+  if [[ -f "$user_cfg" ]]; then
+    local configured
+    configured="$(python3 - "$user_cfg" <<'PY'
+import json, sys
+from pathlib import Path
+try:
+    data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    value = data.get("wiki_dir") if isinstance(data, dict) else None
+    print(value if isinstance(value, str) else "")
+except (OSError, ValueError):
+    print("")
+PY
+)"
+    if [[ -n "$configured" ]]; then
+      printf '%s\n' "$configured"
+      return
+    fi
+  fi
+  printf '%s\n' "$HOME/workspace/Goo-wiki"
+}
+
+if [[ -z "$WIKI_DIR" ]]; then
+  DEFAULT_WIKI_DIR="$(resolve_default_wiki_dir)"
+  if [[ ! -t 0 ]]; then
+    # 非交互：直接采用解析出的默认值（用户级已配置则复用），不再报错退出。
+    WIKI_DIR="$DEFAULT_WIKI_DIR"
+    WIKI_DIR_PROVIDED=1
+    echo "wiki_dir: using $WIKI_DIR (from user config / env / default)"
+  else
+    WIKI_DIR="$(prompt "Goo-wiki directory (press Enter to use default)" "$DEFAULT_WIKI_DIR")"
+    WIKI_DIR_PROVIDED=1
+  fi
 elif [[ "$WIKI_DIR_PROVIDED" -eq 0 && -n "${AUTOGOO_PLUGIN_WIKI_DIR:-}" ]]; then
   WIKI_DIR_PROVIDED=1
 fi

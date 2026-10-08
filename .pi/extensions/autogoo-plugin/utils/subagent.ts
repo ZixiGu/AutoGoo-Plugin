@@ -66,6 +66,8 @@ export interface SubagentRunResult {
   stopReason?: string;
   errorMessage?: string;
   timedOut?: boolean;
+  /** 被调用方的 AbortSignal 中断（用户 Esc / 会话中断），与超时区分 */
+  aborted?: boolean;
 }
 
 /**
@@ -258,6 +260,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
     messages,
     usage,
     timedOut: false,
+    aborted: false,
   };
 
   const cleanup = () => {
@@ -332,7 +335,12 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
     }
 
     // P11：abort listener 在 close/error 时移除，避免泄漏
-    const onAbort = () => killProc("SIGTERM");
+    // 显式区分「用户中断」与「超时」：两者都走 SIGTERM，但语义不同，
+    // 上层据此把 step 标记为 interrupted 而不是 failed。
+    const onAbort = () => {
+      result.aborted = true;
+      killProc("SIGTERM");
+    };
     if (opts.signal) {
       if (opts.signal.aborted) onAbort();
       else opts.signal.addEventListener("abort", onAbort, { once: true });

@@ -383,7 +383,40 @@ async function runSchedule(
         `- 写入边界: ${(step.allowed_write_paths || []).join(", ") || "无"}`,
         `- 验收标准: ${step.validation || "报告结构化结果"}`,
       ];
-      const result = await runSubagent({
+      // 保活进度显示（2026-10-08）：子进程可能长时间思考不产生事件，
+      // 只在有消息时 onUpdate 会让工具输出长时间静止，用户以为卡死。
+      const startedAt = Date.now();
+      const fmtElapsed = () => {
+        const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+        return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+      };
+      let lastActivity = "已派发，等待首个事件…";
+      let eventCount = 0;
+      const emit = (text: string) => {
+        try {
+          onUpdate?.({ content: [{ type: "text", text }] });
+        } catch {
+          /* 进度上报失败不阻塞 */
+        }
+      };
+      const setProgressStatus = (text: string | undefined) => {
+        try {
+          ctx?.ui?.setStatus?.("autogoo-dispatch", text);
+        } catch {
+          /* 状态栏不可用不阻塞 */
+        }
+      };
+      const roleLabel = `${step.subagent || "researcher"}${step.task_agent ? "/" + step.task_agent : ""}`;
+      emit(`▶ step #${step.id} 派发中 · ${roleLabel} · ${subModel.provider}/${subModel.model} · [00:00]`);
+      setProgressStatus(`▶ #${step.id} ${roleLabel} 00:00`);
+      const progressTimer = setInterval(() => {
+        emit(`⏳ step #${step.id} 运行中 [${fmtElapsed()}] · 事件 ${eventCount} · ${lastActivity}`);
+        setProgressStatus(`⏳ #${step.id} ${fmtElapsed()} · ${lastActivity.slice(0, 40)}`);
+      }, 8000);
+
+      let result;
+      try {
+        result = await runSubagent({
         systemPrompt: [getRolePrompt(step.subagent || "researcher"), getTaskAgentPrompt(step.task_agent || "")].filter(Boolean).join("\n"),
         task: buildSubagentTaskPrompt({
           role: step.subagent || "researcher",
@@ -403,7 +436,6 @@ async function runSchedule(
         // （assistant 文本 / tool call / tool result）桥接到工具 onUpdate，
         // TUI 实时显示执行过程。之前未接线 → pi 版看不到 Subagent 内部。
         onMessage: (message: any) => {
-          if (!onUpdate) return;
           try {
             const role = message?.role;
             let text = "";
@@ -417,14 +449,20 @@ async function runSchedule(
               text = `⟦tool result⟧ ${String(c).slice(0, 200)}`;
             }
             if (text) {
-              onUpdate({ content: [{ type: "text", text: `  #${step.id} ▶ ${text.slice(0, 300)}` }] });
+              eventCount += 1;
+              lastActivity = text.replace(/\s+/g, " ").slice(0, 80);
+              emit(`  #${step.id} [${fmtElapsed()}] ▶ ${text.slice(0, 300)}`);
             }
           } catch {
             /* 流式转发失败不阻塞 */
           }
         },
         timeoutMs: 30 * 60 * 1000,
-      });
+        });
+      } finally {
+        clearInterval(progressTimer);
+        setProgressStatus(undefined);
+      }
       // 兕底：子进程退出后 step 若仍 running，按退出码标记
       const planNow = await loadPlan(cwd, planPath);
       const stepNow = planNow?.steps.find((s: any) => String(s.id) === String(step.id));

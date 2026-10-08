@@ -70,16 +70,30 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
 
   // ── Step 2: Wiki directory ────────────────────────────────────────────────
   if (!wikiDir) {
-    const choice = await uiSelect(ctx, TEMPLATE_WIKI_DIR.header, TEMPLATE_WIKI_DIR.options);
+    // 若用户级 config 已配过 wiki_dir，复用它并作为推荐项；否则才回退默认路径。
+    const configured = readConfiguredWikiDir();
+    const defaultPath = resolve(process.env.HOME || "~", "workspace/Goo-wiki");
+    const options = configured
+      ? [
+          { label: `已配置：${configured} (Recommended)`, description: "复用用户级 ~/.auto-goo/config.json 中已设置的 wiki_dir。", value: "__configured__" },
+          { label: "~/workspace/Goo-wiki", description: "改用默认 Goo-wiki 路径。", value: "__default__" },
+          { label: "自定义路径", description: "选择后在输入框中输入路径。", value: "__custom__" },
+        ]
+      : TEMPLATE_WIKI_DIR.options;
+
+    const choice = await uiSelect(ctx, TEMPLATE_WIKI_DIR.header, options);
     if (!choice) {
       ctx.ui.notify("已取消初始化。", "info");
       return;
     }
-    if (choice === "__default__") {
-      wikiDir = resolve(process.env.HOME || "~", "workspace/Goo-wiki");
+    if (choice === "__configured__" && configured) {
+      wikiDir = configured;
+      ctx.ui.notify(`复用用户级已配置 wiki 路径：${configured}`, "info");
+    } else if (choice === "__default__") {
+      wikiDir = defaultPath;
     } else if (choice === "__custom__") {
-      const input = await uiInput(ctx, "Goo-wiki 路径", "~/workspace/Goo-wiki");
-      wikiDir = input ? resolve(input.replace(/^~/, process.env.HOME || "~")) : resolve(process.env.HOME || "~", "workspace/Goo-wiki");
+      const input = await uiInput(ctx, "Goo-wiki 路径", configured ?? "~/workspace/Goo-wiki");
+      wikiDir = input ? resolve(input.replace(/^~/, process.env.HOME || "~")) : (configured ?? defaultPath);
     }
   }
 
@@ -394,6 +408,27 @@ async function collectServers(ctx: ExtensionContext): Promise<ServerInfo[]> {
   }
 
   return servers;
+}
+
+/**
+ * Read the user-level configured wiki_dir (~/.auto-goo/config.json).
+ * Returns an absolute path, or null when unset / unreadable.
+ * Used so project init can reuse an already-configured Goo-wiki path
+ * instead of making the user re-enter it.
+ */
+function readConfiguredWikiDir(): string | null {
+  try {
+    const envDir = process.env.AUTOGOO_PLUGIN_WIKI_DIR;
+    if (envDir) return resolve(envDir.replace(/^~/, process.env.HOME || "~"));
+    const path = userConfigPath();
+    if (!existsSync(path)) return null;
+    const cfg = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    const value = cfg?.wiki_dir;
+    if (typeof value !== "string" || !value.trim()) return null;
+    return resolve(value.replace(/^~/, process.env.HOME || "~"));
+  } catch {
+    return null;
+  }
 }
 
 interface ExistingServer {

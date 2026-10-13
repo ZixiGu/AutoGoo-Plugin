@@ -1,5 +1,5 @@
 /**
- * AutoGoo-Plugin Pi Extension v0.6.0 — 主入口
+ * AutoGoo-Plugin Pi Extension v0.7.0 — 主入口
  *
  * DAG 驱动的多智能体编排框架，从 Claude Code 插件迁移。
  *
@@ -58,6 +58,7 @@ import { registerWorktreeTools } from "./tools/worktree.js";
 import { REPO_ROOT, isRepoValid } from "./utils/paths.js";
 import { AUTOGOO_PLUGIN_SYSTEM_PROMPT } from "./constants.js";
 import {
+  uiSelect,
   uiSelectDetailed,
   uiConfirmDetailed,
   uiInputDetailed,
@@ -94,6 +95,94 @@ async function checkForPluginUpdate(ctx: any): Promise<void> {
     }
   } catch {
     // 更新提醒失败一律静默（网络/限流/git 缺失等）
+  }
+}
+
+// ── Plan health prompt ──────────────────────────────────────────────────────
+// 中断/搁置的 DAG 不会自己消失：步骤卡在 running 但心跳已停、plan 完成而 thread
+// 状态没跟上、或整个 thread 多日未动，却没人注意到。会话启动时主动问一次
+// 「继续还是结束」。
+//
+// **区分 thread**：项目下可能有多个 thread，其中只有一个是 current
+// （.goo/current_thread.json）。当前 thread 需要用户拍板，历史 thread 则是
+// 清理决策，两者混在一起会让人误关错对象，所以分开提示。
+let _planHealthAsked = false;
+
+async function promptPlanHealth(ctx: any): Promise<void> {
+  if (_planHealthAsked) return;
+  _planHealthAsked = true;
+  try {
+    const { execPythonAsync } = await import("./utils/exec.js");
+    const script = `${REPO_ROOT}/skills/auto-goo/scripts/goo-plan-health.py`;
+    const probe = await execPythonAsync(script, ["--json"], ctx.cwd, { timeout: 15000 });
+    const report = JSON.parse(probe.stdout || "{}");
+    const active = report.active;
+
+    const describe = (entry: any) => {
+      const counts = entry.counts || {};
+      const summary = Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(", ") || "无步骤";
+      return `步骤：${summary}\n迹象：${(entry.reasons || []).join("；") || "状态异常"}`;
+    };
+
+    // 1) 当前 thread：继续 / 结束 / 稍后。
+    // onTimeout=cancel：超时/无 UI 一律不动作（绝不因超时而关掉任务线）。
+    if (report.active_needs_attention && active) {
+      const choice = await uiSelect(
+        ctx,
+        `AutoGoo-Plugin：当前 thread 可能已中断\n\n` +
+          `thread：${active.id}\n任务：${active.task ?? "(未命名)"}\n${describe(active)}`,
+        [
+          { label: "继续执行（用 /goo-continue 恢复）", value: "continue" },
+          { label: "标记结束（归档并关闭该 thread）", value: "close" },
+          { label: "稍后再说（该 thread 24h 内不再问）", value: "snooze" },
+        ],
+        { onTimeout: "cancel" },
+      );
+      if (choice === "close") {
+        await execPythonAsync(
+          script,
+          ["--close", "--thread", String(active.id), "--close-reason", "user closed from session-start prompt"],
+          ctx.cwd,
+          { timeout: 15000 },
+        );
+        ctx.ui.notify(`[AutoGoo-Plugin] 已归档并关闭 thread ${active.id}`, "info");
+      } else if (choice === "snooze") {
+        await execPythonAsync(script, ["--snooze", "--snooze-hours", "24"], ctx.cwd, { timeout: 15000 });
+      }
+    }
+
+    // 2) 历史 thread：单独问，避免误关当前任务线
+    const others: string[] = report.other_needing_attention || [];
+    if (others.length > 0) {
+      const report2 = JSON.parse((await execPythonAsync(script, ["--json"], ctx.cwd, { timeout: 15000 })).stdout || "{}");
+      const entries = (report2.threads || []).filter((e: any) => others.includes(e.id));
+      const shown = entries.slice(0, 5).map((e: any) => `- ${e.id}（${(e.reasons || []).join("；")}）`).join("\n");
+      const choice = await uiSelect(
+        ctx,
+        `AutoGoo-Plugin：发现 ${others.length} 个历史 thread 状态异常/未完成\n\n${shown}` +
+          (others.length > 5 ? `\n… 其余 ${others.length - 5} 个` : ""),
+        [
+          { label: "暂不处理（24h 内不再问）", value: "snooze" },
+          { label: "全部标记结束（归档这些 thread）", value: "close-all" },
+        ],
+        { onTimeout: "cancel" },
+      );
+      if (choice === "close-all") {
+        for (const id of others) {
+          await execPythonAsync(
+            script,
+            ["--close", "--thread", String(id), "--close-reason", "bulk-closed from session-start prompt"],
+            ctx.cwd,
+            { timeout: 15000 },
+          );
+        }
+        ctx.ui.notify(`[AutoGoo-Plugin] 已归档并关闭 ${others.length} 个历史 thread`, "info");
+      } else {
+        await execPythonAsync(script, ["--snooze", "--snooze-hours", "24"], ctx.cwd, { timeout: 15000 });
+      }
+    }
+  } catch (e) {
+    console.error("[AutoGoo-Plugin] plan health prompt error:", e);
   }
 }
 
@@ -458,17 +547,6 @@ export default function (pi: ExtensionAPI) {
       const { loadPlan } = await import("./utils/plan.js");
       const plan = await loadPlan(ctx.cwd);
       if (plan) {
-        const pending = plan.steps?.filter(
-          (s: any) => s.status === "pending" || s.status === "running",
-        ).length || 0;
-        const blocked = plan.steps?.filter((s: any) => s.status === "blocked").length || 0;
-        if (pending > 0 || blocked > 0) {
-          ctx.ui.notify(
-            `[AutoGoo-Plugin] 📋 检测到未完成计划 (${pending} 待执行, ${blocked} 阻塞)。` +
-            `使用 /goo-status 查看详情，/goo-continue 恢复执行。`,
-            "info",
-          );
-        }
         // Update status bar
         try {
           const { updateStatusBar } = await import("./utils/status.js");
@@ -476,6 +554,9 @@ export default function (pi: ExtensionAPI) {
         } catch (e) {
           console.error("[AutoGoo-Plugin] session_start updateStatusBar error:", e);
         }
+
+        // 中断/搁置 plan 确认：区分当前 thread 与历史 thread 分别问（见函数注释）。
+        void promptPlanHealth(ctx);
 
         // goo.md 检测（2026-10-08）：环境里没有约定正文时给出可操作提示。
         // 优先级：项目 <cwd>/goo.md > 用户 ~/.auto-goo/goo.md。
@@ -526,5 +607,5 @@ export default function (pi: ExtensionAPI) {
 
   // ── Startup banner ────────────────────────────────────────────────────────
   // Use stderr to avoid interfering with Pi's TUI rendering
-  process.stderr.write(`[AutoGoo-Plugin] ✅ 扩展已加载 (v0.6.0)\n`);
+  process.stderr.write(`[AutoGoo-Plugin] ✅ 扩展已加载 (v0.7.0)\n`);
 }

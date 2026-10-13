@@ -1680,6 +1680,96 @@ else
   pass "版本测试从 package.json 推导期望值（bump 无需改测试）"
 fi
 
+# ── 15. thread 健康检查（中断/搁置 plan 确认）──
+# 回归：中断的 DAG 要能被识别，且必须区分「当前 thread」与「历史 thread」——
+# 混在一起会让人误关当前任务线。
+echo ""
+echo "── 15. thread 健康检查 ──"
+
+PH="$ROOT/skills/auto-goo/scripts/goo-plan-health.py"
+
+if [[ -f "$PH" ]] && python3 -m py_compile "$PH" 2>/dev/null; then
+  pass "goo-plan-health.py 存在且可编译"
+else
+  fail "goo-plan-health.py 缺失或无法编译"
+fi
+
+if python3 - "$PH" <<'PY'
+import sys
+from pathlib import Path
+
+src = Path(sys.argv[1]).read_text(encoding="utf-8")
+for token in ("active_thread_id", "active_needs_attention", "other_needing_attention", "current_thread.json"):
+    if token not in src:
+        raise SystemExit(f"missing thread-awareness token: {token}")
+# --close 必须同时维护 plan 与 thread 记录，否则又会制造状态不一致
+if "meta[\"status\"] = \"abandoned\"" not in src:
+    raise SystemExit("--close does not update thread.json status")
+if '"abandoned"' not in src:
+    raise SystemExit("--close does not set abandoned")
+PY
+then
+  pass "goo-plan-health.py 区分 current/历史 thread，且 --close 同步 plan 与 thread"
+else
+  fail "thread 维度处理缺失（会误关当前任务线或制造新的状态不一致）"
+fi
+
+# 场景：plan 完成但 thread 仍 running → 必须报 inconsistent
+PH_TMP="$(mktemp -d)"
+mkdir -p "$PH_TMP/.goo/threads/t1"
+printf '{"id":"t1","title":"T","status":"running","updated_at":"2099-01-01T00:00:00Z"}' > "$PH_TMP/.goo/threads/t1/thread.json"
+printf '{"status":"completed","steps":[{"id":1,"status":"completed"}]}' > "$PH_TMP/.goo/threads/t1/plan.json"
+printf '{"thread_id":"t1"}' > "$PH_TMP/.goo/current_thread.json"
+
+PH_STATE="$(python3 "$PH" --root "$PH_TMP" --json 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["active"]["state"])' 2>/dev/null)"
+if [[ "$PH_STATE" == "inconsistent" ]]; then
+  pass "plan 完成但 thread 仍 running 被识别为 inconsistent"
+else
+  fail "状态不一致未被识别（got state=$PH_STATE）"
+fi
+
+# 场景：当前 thread 心跳停滞 → active_needs_attention=true
+PH_TMP2="$(mktemp -d)"
+mkdir -p "$PH_TMP2/.goo/threads/t1"
+printf '{"id":"t1","title":"T","status":"running","updated_at":"2099-01-01T00:00:00Z"}' > "$PH_TMP2/.goo/threads/t1/thread.json"
+printf '{"status":"running","updated_at":"2099-01-01T00:00:00Z","steps":[{"id":1,"status":"running","heartbeat_at":"2020-01-01T00:00:00Z"}]}' > "$PH_TMP2/.goo/threads/t1/plan.json"
+printf '{"thread_id":"t1"}' > "$PH_TMP2/.goo/current_thread.json"
+
+if python3 "$PH" --root "$PH_TMP2" --json 2>/dev/null | python3 -c 'import json,sys;raise SystemExit(0 if json.load(sys.stdin)["active_needs_attention"] else 1)'; then
+  pass "当前 thread 心跳停滞时 active_needs_attention=true"
+else
+  fail "心跳停滞的当前 thread 未被标记"
+fi
+
+# 场景：--close 不得伪造步骤完成，且要归档
+python3 "$PH" --root "$PH_TMP2" --close --thread t1 --close-reason check >/dev/null 2>&1
+if python3 - "$PH_TMP2" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+plan = json.loads((root / ".goo/threads/t1/plan.json").read_text())
+thread = json.loads((root / ".goo/threads/t1/thread.json").read_text())
+steps = [s["status"] for s in plan["steps"]]
+assert plan["status"] == "abandoned", plan["status"]
+assert thread["status"] == "abandoned", thread["status"]
+assert steps == ["running"], steps  # 不得把 running 改写成 completed
+assert list((root / ".goo/plans/history").glob("*.json")), "no archived copy"
+PY
+then
+  pass "--close 标记 abandoned、保留原步骤状态、生成归档副本"
+else
+  fail "--close 行为不正确（伪造完成/未归档/状态未同步）"
+fi
+
+rm -rf "$PH_TMP" "$PH_TMP2"
+
+# session-start 必须接入（Claude Code 侧的可观测性）
+if grep -q "goo-plan-health.py" "$ROOT/skills/auto-goo/scripts/session-start.py"; then
+  pass "session-start.py 已接入 thread 健康检查"
+else
+  fail "session-start.py 未接入 thread 健康检查"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

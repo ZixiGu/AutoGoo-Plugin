@@ -25,11 +25,10 @@ def main() -> int:
     wiki_dir = Path(str(wiki_text)).expanduser()
     print(f"AutoGoo: wiki={'ready' if (wiki_dir / 'CLAUDE.md').exists() else 'unavailable'} ({wiki_dir})")
 
-    plan = read_json(cwd / ".goo/plan.json")
-    steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
-    unfinished = [step for step in steps if isinstance(step, dict) and step.get("status") not in {"completed", "failed"}]
-    if unfinished:
-        print(f"AutoGoo: unfinished plan detected ({len(unfinished)}/{len(steps)} steps); use /auto-goo:goo-continue")
+    # thread 维度健康检查（2026-10-08）：区分当前 thread 与历史 thread，
+    # 提示可能已中断/状态不一致的 DAG。Claude Code hook 无法交互提问，
+    # 只能给出结论与下一步命令；交互式确认由 pi 扩展的 session_start 完成。
+    print_plan_health(cwd)
 
     project_goo = cwd / "goo.md"
     user_goo = Path.home() / ".auto-goo" / "goo.md"
@@ -48,6 +47,28 @@ def main() -> int:
     # 真正的检查由 goo-update-check.py 在别处（pi 启动时异步）完成并写缓存。
     print_update_notice()
     return 0
+
+
+def print_plan_health(cwd: Path) -> None:
+    """Print the thread-aware plan health summary (never blocks, never raises)."""
+    try:
+        import subprocess
+
+        script = Path(__file__).resolve().parent / "goo-plan-health.py"
+        if not script.is_file():
+            return
+        proc = subprocess.run(
+            [sys.executable, str(script), "--root", str(cwd)],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        for line in (proc.stdout or "").splitlines():
+            if line.strip():
+                print(line)
+    except Exception:
+        # 健康检查绝不能影响会话启动
+        pass
 
 
 def print_update_notice() -> None:

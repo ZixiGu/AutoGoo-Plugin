@@ -143,6 +143,38 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-md.py --ensure --scope proje
 | 幂等 | 已存在时只替换 marker 段，不追加第二份，不改 marker 段外内容 |
 | 提示入口 | `session-start.py`（Claude Code hook）与 pi 的 `session_start` 在 missing 时会给出 `--ensure` 与 `/auto-goo:goo-init --user` 两条命令 |
 
+### 中断/搁置 plan 的主动确认（`goo-plan-health.py`）
+
+DAG 可能因会话关闭、subagent 被杀、用户切任务而停在半路。更隐蔽的是**状态不一致**：plan 已经完成，但 `thread.json` 还停在 `running`，此后没人再动它。
+
+`goo-plan-health.py` 在**会话启动**时检查并按 **thread 维度**汇报：
+
+```bash
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-plan-health.py            # 人类可读
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-plan-health.py --json     # 机器可读
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-plan-health.py --all      # 含无 plan 的 thread
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-plan-health.py --snooze   # 24h 内不再提醒
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-plan-health.py --close --thread <id>
+```
+
+| thread 状态 | 含义 |
+| --- | --- |
+| `healthy` | 未完成但近期活跃 |
+| `needs-attention` | 未完成且：有心跳停滞的 `running` 步骤 / 有 `failed`·`interrupted`·`blocked` 步骤 / 超过 `--stale-hours`（默认 24h）未更新 |
+| `inconsistent` | **plan 与 thread 状态不一致**（如 plan 已完成但 thread 仍 `running`，或反之） |
+| `completed` | plan 完成且 thread 状态一致 |
+| `no-plan` | 已归档或无 plan（默认不报） |
+
+**为什么必须区分 thread**：一个项目下可能有多个 thread，其中只有一个是 current（`.goo/current_thread.json`）。当前 thread 要用户拍板「继续还是结束」，历史 thread 则是「要不要清理」，两者混在一起会把当前任务线误关。因此输出分三组：`active`、`active_needs_attention`、`other_needing_attention`。
+
+**交互位置**：pi 扩展在 `session_start` 分别弹两次选择（当前 thread → 继续/结束/稍后；历史 thread → 暂不处理/全部结束），且都用 `onTimeout: cancel`，**超时或非交互模式一律不动作**。Claude Code 侧的 SessionStart hook 无法提问，只输出提示行。
+
+**`--close` 的安全边界**：
+
+- 只把 `plan.json`、`thread.json`、`threads/index.json` 的 status 改为 `abandoned`；
+- **不篡改步骤状态**（不会把 `running` 伪装成 `completed`）；
+- **不删除任何文件**，并先在 `.goo/plans/history/` 留一份归档副本。
+
 ### 插件更新提醒（`goo-update-check.py`）
 
 插件会把**本地 git HEAD** 与**远端分支 HEAD** 做比对，落后时在会话启动提醒并给出更新命令。**只提醒，不自动更新。**

@@ -1770,6 +1770,91 @@ else
   fail "session-start.py 未接入 thread 健康检查"
 fi
 
+# ── 16. thread 记录对账（thread-doctor）──
+# 回归：plan/thread/index/current/文件系统 五处没有交叉校验时会出现静默漂移。
+# 要求：能检出各类不一致；--fix 只能做安全修复（不伪造状态、不删文件、幂等）。
+echo ""
+echo "── 16. thread 记录对账 ──"
+
+TD="$ROOT/skills/auto-goo/scripts/thread-doctor.py"
+
+if [[ -f "$TD" ]] && python3 -m py_compile "$TD" 2>/dev/null; then
+  pass "thread-doctor.py 存在且可编译"
+else
+  fail "thread-doctor.py 缺失或无法编译"
+fi
+
+# 构造一份脏数据：幽灵索引 + 状态漂移 + plan_path 越界 + 时间戳倒置
+TD_TMP="$(mktemp -d)"
+mkdir -p "$TD_TMP/.goo/threads/ok" "$TD_TMP/.goo/threads/drift"
+printf '{"id":"ok","title":"OK","status":"completed","created_at":"2026-01-01T00:00:00Z","completed_at":"2026-01-02T00:00:00Z"}' > "$TD_TMP/.goo/threads/ok/thread.json"
+printf '{"status":"completed","thread":{"id":"ok"},"steps":[{"id":1,"status":"completed"}]}' > "$TD_TMP/.goo/threads/ok/plan.json"
+printf '{"id":"drift","title":"D","status":"running","created_at":"2026-01-01T00:00:00Z","completed_at":"2025-12-01T00:00:00Z"}' > "$TD_TMP/.goo/threads/drift/thread.json"
+printf '{"status":"completed","thread":{"id":"drift"},"steps":[{"id":1,"status":"completed"}]}' > "$TD_TMP/.goo/threads/drift/plan.json"
+printf '{"threads":[{"id":"ok"},{"id":"drift"},{"id":"ghost"}]}' > "$TD_TMP/.goo/threads/index.json"
+printf '{"thread_id":"missing-thread"}' > "$TD_TMP/.goo/current_thread.json"
+
+TD_JSON="$(python3 "$TD" --root "$TD_TMP" --json 2>/dev/null)"
+if echo "$TD_JSON" | python3 -c '
+import json, sys
+kinds = {i["kind"] for i in json.load(sys.stdin)["issues"]}
+need = {"ghost_index", "thread_status_drift", "timestamp_inverted", "current_missing"}
+missing = need - kinds
+raise SystemExit(f"missing detections: {missing}" if missing else 0)
+'; then
+  pass "thread-doctor 检出 ghost_index / 状态漂移 / 时间戳倒置 / current 失效"
+else
+  fail "thread-doctor 未能检出上述不一致"
+fi
+
+# --fix 只能修安全项，且不得改动步骤状态、不得删目录
+BEFORE_DIRS="$(find "$TD_TMP/.goo/threads" -maxdepth 1 -type d | wc -l)"
+python3 "$TD" --root "$TD_TMP" --fix >/dev/null 2>&1
+AFTER_DIRS="$(find "$TD_TMP/.goo/threads" -maxdepth 1 -type d | wc -l)"
+TD_AFTER="$(python3 "$TD" --root "$TD_TMP" --json 2>/dev/null)"
+DRIFT_STATUS="$(python3 -c "import json;print(json.load(open('$TD_TMP/.goo/threads/drift/thread.json'))['status'])")"
+PLAN_STEPS="$(python3 -c "import json;print([s['status'] for s in json.load(open('$TD_TMP/.goo/threads/drift/plan.json'))['steps']])")"
+
+if [[ "$BEFORE_DIRS" == "$AFTER_DIRS" ]] && [[ "$DRIFT_STATUS" == "completed" ]] && [[ "$PLAN_STEPS" == "['completed']" ]]; then
+  pass "--fix 同步 thread 状态且不删目录、不改步骤状态"
+else
+  fail "--fix 行为异常（dirs $BEFORE_DIRS->$AFTER_DIRS, drift=$DRIFT_STATUS, steps=$PLAN_STEPS）"
+fi
+
+if echo "$TD_AFTER" | python3 -c '
+import json, sys
+kinds = {i["kind"] for i in json.load(sys.stdin)["issues"]}
+raise SystemExit(0 if "ghost_index" not in kinds else 1)
+'; then
+  pass "--fix 清除了 ghost_index 记录"
+else
+  fail "--fix 未清除 ghost_index"
+fi
+
+# 幂等：第二次 --fix 不应再产生变更
+TD_CHANGED2="$(python3 "$TD" --root "$TD_TMP" --fix --json 2>/dev/null | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["fix"]["changed"]))' 2>/dev/null)"
+if [[ "$TD_CHANGED2" == "0" ]]; then
+  pass "--fix 幂等（第二次无变更）"
+else
+  fail "--fix 非幂等（第二次仍变更 $TD_CHANGED2 项）"
+fi
+
+# --fix 必须先备份 index
+if ls "$TD_TMP/.goo/plans/history/"threads-index-*.json >/dev/null 2>&1; then
+  pass "--fix 修改前备份 threads/index.json"
+else
+  fail "--fix 未备份 index"
+fi
+
+rm -rf "$TD_TMP"
+
+# session-start 必须接入
+if grep -q "thread-doctor.py" "$ROOT/skills/auto-goo/scripts/session-start.py"; then
+  pass "session-start.py 已接入 thread 对账"
+else
+  fail "session-start.py 未接入 thread 对账"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

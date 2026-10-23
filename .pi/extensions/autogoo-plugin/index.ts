@@ -1,5 +1,5 @@
 /**
- * AutoGoo-Plugin Pi Extension v0.7.0 — 主入口
+ * AutoGoo-Plugin Pi Extension v0.8.0 — 主入口
  *
  * DAG 驱动的多智能体编排框架，从 Claude Code 插件迁移。
  *
@@ -107,6 +107,34 @@ async function checkForPluginUpdate(ctx: any): Promise<void> {
 // （.goo/current_thread.json）。当前 thread 需要用户拍板，历史 thread 则是
 // 清理决策，两者混在一起会让人误关错对象，所以分开提示。
 let _planHealthAsked = false;
+
+// thread 记录对账（2026-10-08）：plan/thread/index/current/文件系统 五处容易出现
+// 静默漂移（幽灵索引、plan_path 指向 /tmp、thread 状态未跟随 plan）。
+// 这里只提示，不自动改；修复需用户显式跑 thread-doctor.py --fix。
+let _threadDoctorChecked = false;
+
+async function checkThreadRecords(ctx: any): Promise<void> {
+  if (_threadDoctorChecked) return;
+  _threadDoctorChecked = true;
+  try {
+    const { execPythonAsync } = await import("./utils/exec.js");
+    const script = `${REPO_ROOT}/skills/auto-goo/scripts/thread-doctor.py`;
+    const result = await execPythonAsync(script, ["--json"], ctx.cwd, { timeout: 15000 });
+    const report = JSON.parse(result.stdout || "{}");
+    const count = Number(report.issue_count || 0);
+    if (count <= 0) return;
+    const detail = Object.entries(report.counts || {})
+      .map(([k, v]) => `${k}×${v}`)
+      .join(", ");
+    ctx.ui.notify(
+      `[AutoGoo-Plugin] ⚠ thread 记录有 ${count} 项不一致（${detail}）。\n` +
+        `  ${report.auto_fixable_count || 0} 项可安全自动修复：python3 ${script} --fix`,
+      "warning",
+    );
+  } catch (e) {
+    console.error("[AutoGoo-Plugin] thread doctor error:", e);
+  }
+}
 
 async function promptPlanHealth(ctx: any): Promise<void> {
   if (_planHealthAsked) return;
@@ -556,6 +584,7 @@ export default function (pi: ExtensionAPI) {
         }
 
         // 中断/搁置 plan 确认：区分当前 thread 与历史 thread 分别问（见函数注释）。
+        void checkThreadRecords(ctx);
         void promptPlanHealth(ctx);
 
         // goo.md 检测（2026-10-08）：环境里没有约定正文时给出可操作提示。
@@ -607,5 +636,5 @@ export default function (pi: ExtensionAPI) {
 
   // ── Startup banner ────────────────────────────────────────────────────────
   // Use stderr to avoid interfering with Pi's TUI rendering
-  process.stderr.write(`[AutoGoo-Plugin] ✅ 扩展已加载 (v0.7.0)\n`);
+  process.stderr.write(`[AutoGoo-Plugin] ✅ 扩展已加载 (v0.8.0)\n`);
 }

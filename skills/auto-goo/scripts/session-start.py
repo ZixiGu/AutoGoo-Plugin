@@ -29,6 +29,7 @@ def main() -> int:
     # 提示可能已中断/状态不一致的 DAG。Claude Code hook 无法交互提问，
     # 只能给出结论与下一步命令；交互式确认由 pi 扩展的 session_start 完成。
     print_plan_health(cwd)
+    print_thread_doctor(cwd)
 
     project_goo = cwd / "goo.md"
     user_goo = Path.home() / ".auto-goo" / "goo.md"
@@ -68,6 +69,35 @@ def print_plan_health(cwd: Path) -> None:
                 print(line)
     except Exception:
         # 健康检查绝不能影响会话启动
+        pass
+
+
+def print_thread_doctor(cwd: Path) -> None:
+    """Print a one-line thread-record reconciliation summary (never blocks)."""
+    try:
+        import subprocess
+
+        script = Path(__file__).resolve().parent / "thread-doctor.py"
+        if not script.is_file():
+            return
+        proc = subprocess.run(
+            [sys.executable, str(script), "--root", str(cwd), "--json"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        report = json.loads(proc.stdout or "{}")
+        count = int(report.get("issue_count") or 0)
+        if count <= 0:
+            return
+        counts = report.get("counts") or {}
+        detail = ", ".join(f"{k}×{v}" for k, v in sorted(counts.items()))
+        print(
+            f"AutoGoo: ⚠ thread 记录有 {count} 项不一致（{detail}）；"
+            f"修复：python3 {script} --fix"
+        )
+    except Exception:
+        # 对账检查绝不能影响会话启动
         pass
 
 

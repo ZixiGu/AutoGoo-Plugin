@@ -175,6 +175,46 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-plan-health.py --close --thr
 - **不篡改步骤状态**（不会把 `running` 伪装成 `completed`）；
 - **不删除任何文件**，并先在 `.goo/plans/history/` 留一份归档副本。
 
+### thread 记录对账（`thread-doctor.py`）
+
+thread 状态存在**五处**，此前没有任何交叉校验：
+
+1. `.goo/threads/<id>/thread.json`
+2. `.goo/threads/<id>/plan.json`
+3. `.goo/threads/index.json`
+4. `.goo/current_thread.json`
+5. 文件系统
+
+它们之间的漂移是静默的：索引指向 `/tmp/...`、plan 已完成但 thread 仍 `running`、`current_thread` 指向已删除的 thread —— 都不会报错，只会慢慢腐坏。
+
+```bash
+python3 <auto_goo_root>/skills/auto-goo/scripts/thread-doctor.py          # 只诊断
+python3 <auto_goo_root>/skills/auto-goo/scripts/thread-doctor.py --json
+python3 <auto_goo_root>/skills/auto-goo/scripts/thread-doctor.py --fix    # 安全修复
+```
+
+| 类别 | 说明 | 可自动修复 |
+| --- | --- | --- |
+| `ghost_index` | index 有记录但目录已不存在 | ✅ 移除该条记录（先备份 index） |
+| `missing_index` | 目录存在但 index 无记录 | ✅ 补记录 |
+| `thread_status_drift` | plan 已结束但 thread 未跟随 | ✅ 同步 `thread.status`（仅安全方向） |
+| `current_missing` | `current_thread` 指向不存在的 thread | ✅ 改指最近更新的现存 thread |
+| `plan_path_missing` | `plan_path` 指向不存在的文件 | ❌ 需人工判断 |
+| `plan_path_outside` | `plan_path` 落在 `.goo/` 之外 | ❌ 需人工判断 |
+| `thread_id_mismatch` | `plan.thread.id` 与所在目录名不一致 | ❌ 需人工判断 |
+| `plan_thread_missing` | plan 缺少 `thread.id` | ❌ 需人工判断 |
+| `timestamp_inverted` | `completed_at` 早于 `created_at` | ❌ 需人工判断 |
+| `thread_meta_missing` / `plan_unreadable` | 文件缺失或无法解析 | ❌ 需人工判断 |
+
+**`--fix` 的安全边界**（写进 check-plugin §16 断言）：
+
+- 只做**幂等**修复，第二次执行必须无变更；
+- **不删除任何目录或文件**，修改 `index.json` 前先备份到 `.goo/plans/history/`；
+- **不篡改 plan 里的步骤状态**（不会把 `running` 伪装成 `completed`）；
+- 只在「plan 已结束、thread 未结束」这个安全方向同步状态；反向（thread 已结束但 plan 还有未完成步骤）**只报告不修**，因为需要人判断到底该恢复还是该放弃。
+
+**接入**：`session-start.py`（Claude Code hook）与 pi `session_start` 都会在有问题时提示；修复始终由用户显式执行。
+
 ### 插件更新提醒（`goo-update-check.py`）
 
 插件会把**本地 git HEAD** 与**远端分支 HEAD** 做比对，落后时在会话启动提醒并给出更新命令。**只提醒，不自动更新。**

@@ -2431,6 +2431,82 @@ else
   fail "初始化失败只报 exit code（无从判断原因）"
 fi
 
+# ── 22. 共享 TUI 组件与面板 ──
+# 回归：/goo-usage 曾把脚本输出 strip ANSI 后塞进
+# sendUserMessage(deliverAs:"followUp") —— 既被排队，又变成"发给模型"的消息，
+# 用户实际看不到面板。必须用 ctx.ui.custom 渲染真正的 TUI。
+echo ""
+echo "── 22. 共享 TUI 组件与面板 ──"
+
+KIT="$ROOT/.pi/extensions/autogoo-plugin/utils/tui-kit.ts"
+UPANEL="$ROOT/.pi/extensions/autogoo-plugin/utils/usage-panel.ts"
+SPANEL="$ROOT/.pi/extensions/autogoo-plugin/utils/status-panel.ts"
+OTHER_TS="$ROOT/.pi/extensions/autogoo-plugin/commands/other.ts"
+
+for sym in "export function fit" "export function bar" "export class ListState" "export function keyHelp" "export function statusToken"; do
+  if grep -q "$sym" "$KIT" 2>/dev/null; then
+    pass "tui-kit 提供 $sym"
+  else
+    fail "tui-kit 缺少 $sym"
+  fi
+done
+
+if grep -q "export class UsagePanel" "$UPANEL" 2>/dev/null \
+  && grep -q "ctx.ui.custom" "$OTHER_TS" \
+  && grep -q "new UsagePanel" "$OTHER_TS"; then
+  pass "/goo-usage 用 ctx.ui.custom 渲染 UsagePanel"
+else
+  fail "/goo-usage 未接入 TUI 面板"
+fi
+
+# 关键回归：usage 不得再通过 sendUserMessage 发给模型
+if python3 - "$OTHER_TS" <<'PY2'
+import re, sys
+from pathlib import Path
+
+src = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = src.find("export async function handleGooUsage(")
+end = src.find("export async function handleGooUsageAnalyse(")
+body = src[start:end] if start >= 0 and end > start else ""
+# 只匹配真实调用，不匹配注释/字符串里的词
+code_lines = [
+    line for line in body.splitlines()
+    if not line.lstrip().startswith("//") and not line.lstrip().startswith("*")
+]
+if any(".sendUserMessage(" in line for line in code_lines):
+    raise SystemExit("handleGooUsage still calls sendUserMessage (queued followUp, not a visible panel)")
+PY2
+then
+  pass "/goo-usage 不再用 sendUserMessage 排队（用户能直接看到面板）"
+else
+  fail "/goo-usage 仍把输出塞进 sendUserMessage（会被排队）"
+fi
+
+if grep -q 'ctx.mode !== "tui"' "$OTHER_TS" && grep -q 'ctx.mode === "tui"' "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts"; then
+  pass "usage/status 都有非 TUI 降级判定"
+else
+  fail "缺少非 TUI 降级判定"
+fi
+
+if grep -q "export class StatusPanel" "$SPANEL" 2>/dev/null \
+  && grep -q "new StatusPanel" "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts"; then
+  pass "/goo-status 用 ctx.ui.custom 渲染 StatusPanel"
+else
+  fail "/goo-status 未接入 TUI 面板"
+fi
+
+if grep -q "dispose(): void" "$SPANEL" && grep -q "clearInterval" "$SPANEL"; then
+  pass "StatusPanel 在 dispose 中清理自动刷新定时器"
+else
+  fail "StatusPanel 未清理定时器（会泄漏）"
+fi
+
+if grep -q "setInterval" "$SPANEL" && grep -q "requestRender" "$SPANEL"; then
+  pass "StatusPanel 具备自动刷新"
+else
+  fail "StatusPanel 缺少自动刷新"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

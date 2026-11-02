@@ -323,6 +323,30 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/thread-locks.py release-plan --p
 
 僵尸锁超过 10 分钟（`STALE_LOCK_AGE_SECONDS`）会被视为陈旧。
 
+### pi TUI 面板（`tui-kit` + 各面板）
+
+pi 提供 `ctx.ui.custom()`：factory 返回 `{ render(width), invalidate(), handleInput(data), dispose?() }` 的组件，由 pi 接管交互区。共享渲染原语在 `.pi/extensions/autogoo-plugin/utils/tui-kit.ts`：
+
+| 导出 | 用途 |
+| --- | --- |
+| `fit` / `rule` / `headerLine` / `keyHelp` | CJK 安全的行裁剪、分隔线、标题、底部按键提示 |
+| `bar` / `fmtInt` / `fmtCompact` / `fmtPct` / `fmtAge` | 条形图与数字/时间格式化 |
+| `ListState` | 选中项 + 滚动窗口（避免每个界面重写） |
+| `statusToken` / `statusMark` | 步骤状态 → 语义色与符号 |
+
+已接入的面板：
+
+| 命令 | 面板 | 特点 |
+| --- | --- | --- |
+| `/goo-thread` | `ThreadManager` | 列表 + 详情，切换/重命名/归档/恢复/关闭 |
+| `/goo-usage` | `UsagePanel` | 4 个 tab（overview/projects/models/history） |
+| `/goo-status` | `StatusPanel` | 步骤列表 + **2 秒自动刷新** + 选中步骤 log 尾部，`dispose` 清理定时器 |
+
+约定：
+- 面板**只做渲染与导航**，写操作通过 `done(action)` 交回调用方，复用既有的确认/脚本逻辑；
+- 必须提供**非 TUI 降级**（`ctx.mode !== "tui"` → 文本输出）；
+- 渲染一律走 `fit` / `truncateToWidth`，保证 CJK 不超宽。
+
 ### thread 统一管理（`goo-thread.py`）
 
 thread 操作原先散在四个脚本里（`thread-state.py` / `init-plan.sh` / `goo-plan-health.py` / `thread-doctor.py`），现收口成一个入口：

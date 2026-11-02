@@ -12,6 +12,7 @@ export function setPi(pi: ExtensionAPI): void {
 }
 import { REPO_ROOT, GOO_STATUS_PY, GOO_PUBLISH_PY, projectPlanPath, scriptsDir } from "../utils/paths.js";
 import { execPython, execShell } from "../utils/exec.js";
+import { UsagePanel, type UsageAction, type UsageData } from "../utils/usage-panel.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -90,54 +91,78 @@ export async function handleGooResearch(args: string, ctx: ExtensionContext): Pr
 export async function handleGooUsage(args: string, ctx: ExtensionContext): Promise<void> {
   const cwd = ctx.cwd;
   const scriptPath = join(REPO_ROOT, "skills/auto-goo/scripts/goo-usage.py");
-  
+
   if (!existsSync(scriptPath)) {
     ctx.ui.notify("goo-usage.py 未找到", "warning");
     return;
   }
 
-  // Quick one-shot summary (default: all sources — claude + codex + pi)
-  // Pass --pi / --codex / --claude in args to filter by source.
-  const scriptArgs = ["--once"];
-  if (args.trim()) {
-    const parsed: string[] = [];
+  // 解析额外参数（--pi / --codex / --claude / --input-dir …）后透传给脚本
+  const extraArgs: string[] = [];
+  const trimmed = (args || "").trim();
+  if (trimmed) {
     let current = "";
     let inQuote: string | null = null;
-    for (const ch of args.trim()) {
+    for (const ch of trimmed) {
       if (inQuote) {
         if (ch === inQuote) { inQuote = null; continue; }
         current += ch;
       } else if (ch === "'" || ch === '"') {
         inQuote = ch;
       } else if (ch === " ") {
-        if (current) { parsed.push(current); current = ""; }
+        if (current) { extraArgs.push(current); current = ""; }
       } else {
         current += ch;
       }
     }
-    if (current) parsed.push(current);
-    scriptArgs.push(...parsed.filter(a => a !== "--once"));
+    if (current) extraArgs.push(current);
   }
 
-  const result = execPython(scriptPath, scriptArgs, cwd, { timeout: 30000 });
-  if (result.exitCode !== 0) {
-    ctx.ui.notify("usage 统计失败", "error");
+  const loadData = (): UsageData | null => {
+    const result = execPython(scriptPath, ["--json", ...extraArgs], cwd, { timeout: 60000 });
+    if (result.exitCode !== 0) {
+      ctx.ui.notify(
+        `usage 统计失败 (exit ${result.exitCode})\n${(result.stderr || result.stdout || "").slice(-600)}`,
+        "error",
+      );
+      return null;
+    }
+    try {
+      return JSON.parse(result.stdout || "{}") as UsageData;
+    } catch (e: any) {
+      ctx.ui.notify(`usage 输出解析失败：${e?.message ?? String(e)}`, "error");
+      return null;
+    }
+  };
+
+  // 非 TUI 模式（json/print/rpc）：退化为一次性文本，仍走会话可见的输出
+  if (ctx.mode !== "tui" || !ctx.hasUI) {
+    const result = execPython(scriptPath, ["--once", ...extraArgs], cwd, { timeout: 60000 });
+    const clean = (result.stdout || "").replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+    ctx.ui.notify(clean.slice(0, 1500) || "（无 usage 数据）", result.exitCode === 0 ? "info" : "error");
     return;
   }
 
-  // Strip ANSI codes and send full output to conversation
-  const raw = result.stdout || "";
-  const clean = raw.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").replace(/\x1b\][0-9;]*[a-zA-Z]/g, "");
+  // TUI：真正的面板（之前塞进 sendUserMessage 会被排队、且变成发给模型的消息）
+  for (;;) {
+    const data = loadData();
+    if (!data) return;
 
-  if (_pi) {
-    _pi.sendUserMessage(
-      `📊 **Pi Usage 统计**\n\n\`\`\`\n${clean.slice(0, 4000)}\n\`\`\``,
-      { deliverAs: "followUp" }
-    );
+    const action = await ctx.ui.custom<UsageAction>((tui, theme, keybindings, done) => {
+      return new UsagePanel(data, theme, done, () => {
+        try {
+          tui.requestRender();
+        } catch {
+          /* 渲染失败不阻塞 */
+        }
+      }, keybindings);
+    });
+
+    if (!action || action.action === "quit") return;
+    // refresh：重新进入循环重新取数；tab：面板内部已处理，无需重取
+    if (action.action === "tab") continue;
   }
 }
-
-// ── goo-usage-analyse ───────────────────────────────────────────────────────
 
 export async function handleGooUsageAnalyse(args: string, ctx: ExtensionContext): Promise<void> {
   const cwd = ctx.cwd;

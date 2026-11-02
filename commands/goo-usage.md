@@ -3,6 +3,17 @@ name: auto-goo:goo-usage
 description: 显示 Claude Code token 和 usage 监控面板 — 多色可视化终端仪表盘，可选 --serve 启动 HTML 仪表盘
 ---
 
+## pi TUI 面板
+
+在 pi（TUI 模式）下，`/goo-usage` 直接打开**键盘驱动的面板**，而不是把终端文本塞进对话：
+
+```
+ [1] overview  [2] projects  [3] models  [4] history
+ ←→/1-4 切 tab · ↑↓ 移动 · r 刷新 · q 退出
+```
+
+数据来自 `goo-usage.py --json`（与脚本自带的终端面板同一数据源）。非 TUI 模式（json/print）自动降级为一次性文本输出。
+
 ## 执行流程
 
 加载此命令后，**必须优先调用 AskUserQuestion / 结构化选择 UI 询问用户**，让 Claude Code 渲染可用方向键移动、Enter 确认的选择控件；必须复用 `skills/auto-goo/references/interaction-templates.md` 中 `id=usage_view` 的 JSON 模板，不得在交互控件可用时用普通文本要求用户手打 `1/2`：

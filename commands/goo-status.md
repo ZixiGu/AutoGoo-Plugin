@@ -3,7 +3,23 @@ name: auto-goo:goo-status
 description: 显示当前 AutoGoo-Plugin 任务执行进度 — 优先读取当前 thread plan 渲染简洁仪表盘
 ---
 
-# /auto-goo:goo-status — 执行仪表盘
+# /auto-goo:goo-status
+
+## pi TUI 仪表盘
+
+在 pi（TUI 模式）下打开**实时仪表盘**（不再是一次性文本快照）：
+
+```
+ AutoGoo Status         <thread> · 2/4 · running
+ ▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 50%
+  ✓ 1  审计          completed 100%
+  › ► 2  改造脚本    running    45%  hb 8s
+  · 3  验证          pending     0%
+ ── log 尾部 ──
+ ↑↓ 移动 · r 立即刷新 · q 退出 · 自动刷新 2s
+```
+
+每 2 秒自动刷新心跳与进度；选中步骤即可看该 step 的 log 尾部。非 TUI 模式保持原文本快照。 — 执行仪表盘
 
 以 plan.json 或 thread 为数据源，渲染简洁终端仪表盘。**少字，多看。**
 

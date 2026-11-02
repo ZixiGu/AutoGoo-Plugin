@@ -17,6 +17,9 @@ import { uiSelect, uiInput } from "../utils/ui.js";
 import { updateStatusBar } from "../utils/status.js";
 import { generateWikiPacket, buildSubagentTaskPrompt, heartbeatTick } from "../utils/dispatch.js";
 import { existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { StatusPanel, type StatusAction, type StatusData } from "../utils/status-panel.js";
 import { checkPlanLocks, acquirePlanLocks, releasePlanLocks, describeConflicts } from "../utils/locks.js";
 
 // ── Global pi reference, set by setPi() from index.ts ───────────────────────
@@ -125,7 +128,88 @@ export async function handleGooStart(args: string, ctx: ExtensionContext): Promi
 // ── goo-status handler ──────────────────────────────────────────────────────
 
 export async function handleGooStatus(args: string, ctx: ExtensionContext): Promise<void> {
-  await showStatus(ctx.cwd, ctx);
+  const cwd = ctx.cwd;
+
+  // TUI 模式：实时仪表盘（步骤列表 + 详情 + 2s 自动刷新 + log 尾部）。
+  // 非 TUI 模式保持原来的文本快照行为。
+  if (ctx.mode === "tui" && ctx.hasUI) {
+    const snapshot = (): StatusData | null => {
+      const planPath = projectPlanPath(cwd);
+      let plan: any = null;
+      try {
+        const raw = readFileSync(planPath, "utf-8");
+        plan = JSON.parse(raw);
+      } catch {
+        return null;
+      }
+      const steps = (plan?.steps ?? []).map((s: any) => ({
+        id: s.id,
+        name: String(s.name ?? ""),
+        status: String(s.status ?? "pending"),
+        progress: Number(s.progress ?? 0),
+        heartbeat_at: s.heartbeat_at ?? null,
+        started_at: s.started_at ?? null,
+        completed_at: s.completed_at ?? null,
+        agent_id: s.agent_id ?? null,
+        error: s.error ?? null,
+        log_path: s.log_path ?? null,
+        description: s.description ?? "",
+      }));
+      return {
+        threadId: plan?.thread?.id ?? null,
+        task: String(plan?.task ?? ""),
+        planStatus: String(plan?.status ?? "pending"),
+        steps,
+        updatedAt: plan?.updated_at ?? null,
+      };
+    };
+
+    const first = snapshot();
+    if (!first) {
+      ctx.ui.notify(`未找到可读的 plan：${projectPlanPath(cwd)}`, "warning");
+      return;
+    }
+
+    const loadLog = (step: StatusData["steps"][number]): string[] => {
+      const rel = step.log_path;
+      if (!rel) return [];
+      const candidates = [rel, join(cwd, rel)];
+      for (const candidate of candidates) {
+        try {
+          const text = readFileSync(candidate, "utf-8");
+          return text.split("\n").filter((l) => l.trim()).slice(-40);
+        } catch {
+          /* 尝试下一个候选路径 */
+        }
+      }
+      return [];
+    };
+
+    try {
+      await ctx.ui.custom<StatusAction>((tui, theme, keybindings, done) => {
+        return new StatusPanel(
+          first,
+          theme,
+          done,
+          () => {
+            try {
+              tui.requestRender();
+            } catch {
+              /* 渲染失败不阻塞 */
+            }
+          },
+          loadLog,
+          snapshot,
+          keybindings,
+        );
+      });
+    } catch (e: any) {
+      ctx.ui.notify(`状态面板异常：${e?.message ?? String(e)}`, "error");
+    }
+    return;
+  }
+
+  await showStatus(cwd, ctx);
 }
 
 async function showStatus(cwd: string, ctx: ExtensionContext): Promise<void> {

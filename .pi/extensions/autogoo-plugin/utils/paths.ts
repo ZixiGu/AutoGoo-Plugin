@@ -56,6 +56,9 @@ export const RESOLVE_ROOT_SH = scriptPath("resolve-root.sh");
 /** Thread-state.py path. */
 export const THREAD_STATE_PY = scriptPath("thread-state.py");
 
+/** Goo-observe.py path（环境/路径/shell 快照）。 */
+export const GOO_OBSERVE_PY = scriptPath("goo-observe.py");
+
 /** Thread-locks.py path. */
 export const THREAD_LOCKS_PY = scriptPath("thread-locks.py");
 

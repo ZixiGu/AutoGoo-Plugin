@@ -2440,7 +2440,7 @@ echo "── 22. 共享 TUI 组件与面板 ──"
 
 KIT="$ROOT/.pi/extensions/autogoo-plugin/utils/tui-kit.ts"
 UPANEL="$ROOT/.pi/extensions/autogoo-plugin/utils/usage-panel.ts"
-SPANEL="$ROOT/.pi/extensions/autogoo-plugin/utils/status-panel.ts"
+OPANEL="$ROOT/.pi/extensions/autogoo-plugin/utils/observe-panel.ts"
 OTHER_TS="$ROOT/.pi/extensions/autogoo-plugin/commands/other.ts"
 
 for sym in "export function fit" "export function bar" "export class ListState" "export function keyHelp" "export function statusToken"; do
@@ -2482,29 +2482,50 @@ else
   fail "/goo-usage 仍把输出塞进 sendUserMessage（会被排队）"
 fi
 
-if grep -q 'ctx.mode !== "tui"' "$OTHER_TS" && grep -q 'ctx.mode === "tui"' "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts"; then
-  pass "usage/status 都有非 TUI 降级判定"
+if grep -q 'ctx.mode !== "tui"' "$OTHER_TS" && grep -q 'ctx.mode !== "tui"' "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts"; then
+  pass "usage / observe 都有非 TUI 降级判定"
 else
   fail "缺少非 TUI 降级判定"
 fi
 
-if grep -q "export class StatusPanel" "$SPANEL" 2>/dev/null \
-  && grep -q "new StatusPanel" "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts"; then
-  pass "/goo-status 用 ctx.ui.custom 渲染 StatusPanel"
+# venv: goo-status 与 goo-observe 必须共用同一个面板（合并回归）
+if grep -q "openObservePanel(ctx, \"steps\")" "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts" \
+  && grep -q "openObservePanel(ctx, \"env\")" "$ROOT/.pi/extensions/autogoo-plugin/commands/other.ts"; then
+  pass "goo-status 与 goo-observe 共用 ObservePanel（仅初始 tab 不同）"
+else
+  fail "两个命令未共用同一面板（合并失效）"
+fi
+
+if [[ ! -f "$ROOT/.pi/extensions/autogoo-plugin/utils/status-panel.ts" ]] \
+  && ! grep -rq "status-panel" "$ROOT/.pi/extensions/autogoo-plugin" --include=*.ts 2>/dev/null; then
+  pass "旧的 status-panel.ts 已移除且无残留引用"
+else
+  fail "status-panel.ts 仍存在或有残留引用（两套面板会再次分叉）"
+fi
+
+if grep -q 'TAB_ORDER: ObserveTab\[\] = \["steps", "overview", "env", "shell"\]' "$OPANEL"; then
+  pass "ObservePanel 提供 steps/overview/env/shell 四个 tab"
+else
+  fail "ObservePanel 缺少四个 tab"
+fi
+
+if grep -q "export class ObservePanel" "$OPANEL" 2>/dev/null \
+  && grep -q "new ObservePanel" "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts"; then
+  pass "/goo-status 用 ctx.ui.custom 渲染 ObservePanel"
 else
   fail "/goo-status 未接入 TUI 面板"
 fi
 
-if grep -q "dispose(): void" "$SPANEL" && grep -q "clearInterval" "$SPANEL"; then
-  pass "StatusPanel 在 dispose 中清理自动刷新定时器"
+if grep -q "dispose(): void" "$OPANEL" && grep -q "clearInterval" "$OPANEL"; then
+  pass "ObservePanel 在 dispose 中清理自动刷新定时器"
 else
-  fail "StatusPanel 未清理定时器（会泄漏）"
+  fail "ObservePanel 未清理定时器（会泄漏）"
 fi
 
-if grep -q "setInterval" "$SPANEL" && grep -q "requestRender" "$SPANEL"; then
-  pass "StatusPanel 具备自动刷新"
+if grep -q "setInterval" "$OPANEL" && grep -q "requestRender" "$OPANEL"; then
+  pass "ObservePanel 具备自动刷新"
 else
-  fail "StatusPanel 缺少自动刷新"
+  fail "ObservePanel 缺少自动刷新"
 fi
 
 # ── 结果汇总 ──

@@ -101,3 +101,18 @@ python3 "$auto_goo_root/skills/auto-goo/scripts/goo-observe.py" --root . --json
 - 不读取 secrets。
 - 不替代 `/auto-goo:goo-status`；它是观察入口，`goo-status` 是状态仪表盘。
 - `goo-publish` 的 `observe.html` 必须复用同一脚本生成的数据模型。
+
+## pi TUI 观察面板
+
+在 pi（TUI 模式）下，`/goo-observe` 打开**统一观察面板**并默认落在 `env` tab —— 与 `/goo-status` 是同一个面板（那边默认 `steps`）。
+
+合并原因：原先 `goo-status` 打印状态计数/槽位，`goo-observe` 打印路径/claude 版本/running 明细，**信息被劈成两半**，要跑两个命令才拼出全貌。
+
+| tab | 内容 |
+| --- | --- |
+| `steps` | 步骤列表 + 详情 + log 尾部 |
+| `overview` | 状态计数、进度、ready / waiting、Next |
+| `env` | 路径、claude 版本、Agent View、常用命令、shell tee 模板 |
+| `shell` | `logs/shell/*.log` 列表与尾部 |
+
+非 TUI 模式仍回退为 `goo-observe.py` 的文本快照。

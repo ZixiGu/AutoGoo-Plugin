@@ -27,21 +27,12 @@ export async function handleGooObserve(args: string, ctx: ExtensionContext): Pro
     return;
   }
 
-  try {
-    // Show running steps with heartbeat info
-    const result = execPython(
-      GOO_STATUS_PY,
-      ["--plan", planPath],
-      cwd,
-    );
-    ctx.ui.notify((result.stdout || "无运行中的步骤").slice(0, 500), "info");
-  } catch (err: any) {
-    ctx.ui.notify(`观察失败: ${err.message}`, "error");
-  }
+  // 与 /goo-status 共用同一个观察面板，只是默认落在 Env tab。
+  // 合并前 observe 打印路径/claude 版本/running 明细，status 打印计数/槽位，
+  // 用户要跑两个命令才能拼出全貌。
+  const { openObservePanel } = await import("./start.js");
+  await openObservePanel(ctx, "env");
 }
-
-// ── goo-publish ─────────────────────────────────────────────────────────────
-
 export async function handleGooPublish(args: string, ctx: ExtensionContext): Promise<void> {
   const cwd = ctx.cwd;
   const hasServe = args.includes("--serve");

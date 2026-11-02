@@ -5,94 +5,32 @@ description: 显示当前 AutoGoo-Plugin 任务执行进度 — 优先读取当�
 
 # /auto-goo:goo-status
 
-## pi TUI 仪表盘
+## pi TUI 观察面板
 
-在 pi（TUI 模式）下打开**实时仪表盘**（不再是一次性文本快照）：
+在 pi（TUI 模式）下打开**统一观察面板**（与 `/goo-observe` 是同一个面板，只是初始 tab 不同）：
 
 ```
- AutoGoo Status         <thread> · 2/4 · running
- ▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 50%
-  ✓ 1  审计          completed 100%
-  › ► 2  改造脚本    running    45%  hb 8s
-  · 3  验证          pending     0%
+ AutoGoo Observe         <thread> · 2/4 · running
+ [1] steps  [2] overview  [3] env  [4] shell
+──────────────────────────────────────────────────
+ █████░░░░░░░░░░░░░░░ 25%
+  ✓ 1   审计          completed  100%
+  › ► 2   改造脚本    running     45%  hb 8s
+  · 3   验证          pending      0%
+ ── 选中详情 ──
+ status=running  progress=45%  subagent=implementer  agent=agent-2
  ── log 尾部 ──
- ↑↓ 移动 · r 立即刷新 · q 退出 · 自动刷新 2s
 ```
 
-每 2 秒自动刷新心跳与进度；选中步骤即可看该 step 的 log 尾部。非 TUI 模式保持原文本快照。 — 执行仪表盘
+| tab | 内容 |
+| --- | --- |
+| `steps` | 全部步骤 + 选中详情 + log 尾部（`/goo-status` 默认） |
+| `overview` | 状态计数、进度、ready / waiting、Next 提示 |
+| `env` | root / thread / plan / logs / shell logs、claude 版本、常用命令、tee 模板（`/goo-observe` 默认） |
+| `shell` | `logs/shell/*.log` 列表与尾部 |
 
-以 plan.json 或 thread 为数据源，渲染简洁终端仪表盘。**少字，多看。**
-
-> **状态查看豁免**：本命令仅渲染状态，属「状态查看」主模型豁免范围，主模型可运行 `goo-status.py`，但只做「只看不做分析」——不得在本命令内做归因、根因定位、聚类或优化决策；需要分析时走 `/auto-goo:goo-usage-analyse` 或 `/auto-goo:goo-improve` 并派发 `researcher`。
-
-如果用户说“查看所有任务线 / threads / 多个 plan 状态”，运行：
-
-auto_goo_root="$(
-  python3 - <<'PY' 2>/dev/null || true
-import json
-from pathlib import Path
-
-home = Path.home()
-matches = []
-
-def usable(path):
-    return path.exists() and not (path / ".orphaned_at").exists()
-
-registry = home / ".claude/plugins/installed_plugins.json"
-if registry.exists():
-    data = json.loads(registry.read_text(encoding="utf-8"))
-    for key, entries in data.get("plugins", {}).items():
-        if key.split("@", 1)[0] != "autogoo-plugin":
-            continue
-        for entry in entries:
-            path = Path(entry.get("installPath", "")).expanduser()
-            if usable(path):
-                matches.append((entry.get("lastUpdated", ""), str(path)))
-
-if not matches:
-    settings = home / ".claude/settings.json"
-    if settings.exists():
-        data = json.loads(settings.read_text(encoding="utf-8"))
-        enabled = data.get("enabledPlugins", {})
-        marketplaces = data.get("extraKnownMarketplaces", {})
-        for key, is_enabled in enabled.items():
-            if not is_enabled or "@" not in key:
-                continue
-            plugin, marketplace = key.split("@", 1)
-            if plugin != "autogoo-plugin":
-                continue
-            source = marketplaces.get(marketplace, {}).get("source", {})
-            if source.get("source") != "directory":
-                continue
-            path_text = source.get("path")
-            if not path_text:
-                continue
-            path = Path(path_text).expanduser()
-            if usable(path):
-                matches.append(("settings:" + marketplace, str(path)))
-
-if matches:
-    print(sorted(matches)[-1][1])
-PY
-)"
-
-```bash
-python3 "$auto_goo_root/skills/auto-goo/scripts/goo-status.py" --threads
-```
-
-如果用户指定 thread id，读取 `.goo/threads/<thread_id>/plan.json`；没有指定时优先读取 `.goo/current_thread.json` 指向的 thread plan，缺失时回退 `.goo/plan.json`。
-
-必须优先运行插件脚本，而不是手写临时渲染逻辑：
-
-```bash
-if [ -z "$auto_goo_root" ] || [ ! -f "$auto_goo_root/skills/auto-goo/scripts/goo-status.py" ]; then
-  echo "AutoGoo-Plugin root not configured; install autogoo-plugin or enable a local directory marketplace in ~/.claude/settings.json" >&2
-  exit 127
-fi
-	python3 "$auto_goo_root/skills/auto-goo/scripts/goo-status.py"
-```
-
-如果当前 thread plan 或兼容 `.goo/plan.json` 中的 running step 没有更新 `heartbeat_at` 或 `progress`，必须显示告警；不要假装仍在正常执行。脚本还会检查当前 thread 的 `logs/`（兼容 `.goo/logs/`）和 step log：running / blocked / failed 缺少对应日志是告警，completed 缺少日志只作为留痕提示。
+`←→`/`1-4` 切 tab、`↑↓` 移动、`r` 立即刷新、`q` 退出。**每 2 秒自动刷新**，`dispose` 清理定时器。
+非 TUI 模式回退为 `goo-status.py` 的文本快照。
 
 ## 信息密度原则
 

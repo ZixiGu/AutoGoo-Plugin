@@ -17,9 +17,10 @@ import { uiSelect, uiInput } from "../utils/ui.js";
 import { updateStatusBar } from "../utils/status.js";
 import { generateWikiPacket, buildSubagentTaskPrompt, heartbeatTick } from "../utils/dispatch.js";
 import { existsSync } from "node:fs";
+import { GOO_OBSERVE_PY } from "../utils/paths.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { StatusPanel, type StatusAction, type StatusData } from "../utils/status-panel.js";
+import { ObservePanel, type ObserveAction, type ObserveSnapshot, type ObserveStep } from "../utils/observe-panel.js";
 import { checkPlanLocks, acquirePlanLocks, releasePlanLocks, describeConflicts } from "../utils/locks.js";
 
 // ── Global pi reference, set by setPi() from index.ts ───────────────────────
@@ -128,88 +129,110 @@ export async function handleGooStart(args: string, ctx: ExtensionContext): Promi
 // ── goo-status handler ──────────────────────────────────────────────────────
 
 export async function handleGooStatus(args: string, ctx: ExtensionContext): Promise<void> {
+  await openObservePanel(ctx, "steps");
+}
+
+/**
+ * 统一观察面板。`/goo-status` 默认落在 Steps，`/goo-observe` 默认落在 Env。
+ * 合并前两者是两套呈现（status 打印方框与 slots；observe 打印路径与 running
+ * 明细），信息被劈成两半 —— 这正是"混乱"的来源。
+ */
+export async function openObservePanel(
+  ctx: ExtensionContext,
+  initialTab: "steps" | "overview" | "env" | "shell",
+): Promise<void> {
   const cwd = ctx.cwd;
 
-  // TUI 模式：实时仪表盘（步骤列表 + 详情 + 2s 自动刷新 + log 尾部）。
-  // 非 TUI 模式保持原来的文本快照行为。
-  if (ctx.mode === "tui" && ctx.hasUI) {
-    const snapshot = (): StatusData | null => {
-      const planPath = projectPlanPath(cwd);
-      let plan: any = null;
-      try {
-        const raw = readFileSync(planPath, "utf-8");
-        plan = JSON.parse(raw);
-      } catch {
-        return null;
-      }
-      const steps = (plan?.steps ?? []).map((s: any) => ({
-        id: s.id,
-        name: String(s.name ?? ""),
-        status: String(s.status ?? "pending"),
-        progress: Number(s.progress ?? 0),
-        heartbeat_at: s.heartbeat_at ?? null,
-        started_at: s.started_at ?? null,
-        completed_at: s.completed_at ?? null,
-        agent_id: s.agent_id ?? null,
-        error: s.error ?? null,
-        log_path: s.log_path ?? null,
-        description: s.description ?? "",
-      }));
-      return {
-        threadId: plan?.thread?.id ?? null,
-        task: String(plan?.task ?? ""),
-        planStatus: String(plan?.status ?? "pending"),
-        steps,
-        updatedAt: plan?.updated_at ?? null,
-      };
-    };
-
-    const first = snapshot();
-    if (!first) {
-      ctx.ui.notify(`未找到可读的 plan：${projectPlanPath(cwd)}`, "warning");
-      return;
-    }
-
-    const loadLog = (step: StatusData["steps"][number]): string[] => {
-      const rel = step.log_path;
-      if (!rel) return [];
-      const candidates = [rel, join(cwd, rel)];
-      for (const candidate of candidates) {
-        try {
-          const text = readFileSync(candidate, "utf-8");
-          return text.split("\n").filter((l) => l.trim()).slice(-40);
-        } catch {
-          /* 尝试下一个候选路径 */
-        }
-      }
-      return [];
-    };
-
-    try {
-      await ctx.ui.custom<StatusAction>((tui, theme, keybindings, done) => {
-        return new StatusPanel(
-          first,
-          theme,
-          done,
-          () => {
-            try {
-              tui.requestRender();
-            } catch {
-              /* 渲染失败不阻塞 */
-            }
-          },
-          loadLog,
-          snapshot,
-          keybindings,
-        );
-      });
-    } catch (e: any) {
-      ctx.ui.notify(`状态面板异常：${e?.message ?? String(e)}`, "error");
-    }
+  if (ctx.mode !== "tui" || !ctx.hasUI) {
+    await showStatus(cwd, ctx);
     return;
   }
 
-  await showStatus(cwd, ctx);
+  const snapshot = (): ObserveSnapshot | null => {
+    // 步骤全量来自 plan；环境/路径/shell 来自 goo-observe.py --json
+    const planPath = projectPlanPath(cwd);
+    let plan: any = null;
+    try {
+      plan = JSON.parse(readFileSync(planPath, "utf-8"));
+    } catch {
+      return null;
+    }
+    const steps: ObserveStep[] = (plan?.steps ?? []).map((s: any) => ({
+      id: s.id,
+      name: String(s.name ?? ""),
+      status: String(s.status ?? "pending"),
+      progress: Number(s.progress ?? 0),
+      heartbeat_at: s.heartbeat_at ?? null,
+      agent_id: s.agent_id ?? null,
+      error: s.error ?? null,
+      log_path: s.log_path ?? null,
+      subagent: s.subagent ?? null,
+      task_agent: s.task_agent ?? null,
+    }));
+
+    let env: any = {};
+    try {
+      const r = execPython(GOO_OBSERVE_PY, ["--json"], cwd, { timeout: 20000 });
+      if (r.exitCode === 0) env = JSON.parse(r.stdout || "{}");
+    } catch {
+      /* 环境信息失败不影响步骤视图 */
+    }
+
+    return {
+      root: env.root ?? cwd,
+      threadId: plan?.thread?.id ?? env.current_thread?.thread_id ?? null,
+      planPath: env.plan_path ?? planPath,
+      logsDir: env.logs_dir ?? "",
+      shellLogDir: env.shell_log_dir ?? "",
+      claudeVersion: env.claude_version ?? "",
+      planStatus: String(plan?.status ?? "pending"),
+      task: String(plan?.task ?? ""),
+      steps,
+      shellLogs: Array.isArray(env.shell_logs) ? env.shell_logs : [],
+      commands: env.commands ?? {},
+    };
+  };
+
+  const first = snapshot();
+  if (!first) {
+    ctx.ui.notify(`未找到可读的 plan：${projectPlanPath(cwd)}`, "warning");
+    return;
+  }
+
+  const loadLog = (step: ObserveStep): string[] => {
+    if (!step.log_path) return [];
+    for (const candidate of [step.log_path, join(cwd, step.log_path)]) {
+      try {
+        return readFileSync(candidate, "utf-8").split("\n").filter((l) => l.trim()).slice(-40);
+      } catch {
+        /* 尝试下一个候选路径 */
+      }
+    }
+    return [];
+  };
+
+  try {
+    await ctx.ui.custom<ObserveAction>((tui, theme, keybindings, done) => {
+      return new ObservePanel(
+        first,
+        initialTab,
+        theme,
+        done,
+        () => {
+          try {
+            tui.requestRender();
+          } catch {
+            /* 渲染失败不阻塞 */
+          }
+        },
+        loadLog,
+        snapshot,
+        keybindings,
+      );
+    });
+  } catch (e: any) {
+    ctx.ui.notify(`观察面板异常：${e?.message ?? String(e)}`, "error");
+  }
 }
 
 async function showStatus(cwd: string, ctx: ExtensionContext): Promise<void> {

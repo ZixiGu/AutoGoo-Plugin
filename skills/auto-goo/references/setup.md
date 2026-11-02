@@ -340,7 +340,7 @@ pi 提供 `ctx.ui.custom()`：factory 返回 `{ render(width), invalidate(), han
 | --- | --- | --- |
 | `/goo-thread` | `ThreadManager` | 列表 + 详情，切换/重命名/归档/恢复/关闭 |
 | `/goo-usage` | `UsagePanel` | 4 个 tab（overview/projects/models/history） |
-| `/goo-status` | `StatusPanel` | 步骤列表 + **2 秒自动刷新** + 选中步骤 log 尾部，`dispose` 清理定时器 |
+| `/goo-status` · `/goo-observe` | `ObservePanel` | **同一个面板**，4 个 tab（steps / overview / env / shell）+ **2 秒自动刷新** + 选中步骤 log 尾部；两条命令只是初始 tab 不同（status→steps，observe→env） |
 
 约定：
 - 面板**只做渲染与导航**，写操作通过 `done(action)` 交回调用方，复用既有的确认/脚本逻辑；

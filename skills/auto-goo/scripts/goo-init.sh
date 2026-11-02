@@ -62,6 +62,8 @@ USER_POINTER_SEEN=0
 SERVER_SPECS=()
 REMOVE_SERVERS=()
 CLEAR_SERVERS=0
+PRINT_WIKI_DEFAULT=0
+PRINT_WIKI_JSON=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -169,6 +171,15 @@ while [[ $# -gt 0 ]]; do
       esac
       AGENT_TARGET="$2"
       shift 2
+      ;;
+    --print-wiki-default)
+      # A 项：给 agent 一个**可查询**的默认 wiki 路径入口（不需要 --user/--project）
+      PRINT_WIKI_DEFAULT=1
+      shift
+      ;;
+    --json)
+      PRINT_WIKI_JSON=1
+      shift
       ;;
     -h|--help)
       usage
@@ -632,6 +643,60 @@ for value in (name, host, user, port, server_type, purpose, workdir, setup, data
 PY
 }
 
+# 解析 wiki 目录默认值：已配置的用户级路径应被复用，而不是每个项目重新输入。
+# 优先级：--wiki-dir 显式传入 > AUTOGOO_PLUGIN_WIKI_DIR > 用户级 config.json.wiki_dir > ~/workspace/Goo-wiki
+#
+# 输出同时给出 source，使调用方（Claude Code / Codex 的 agent）能区分
+# 「用户真的配过」与「只是硬编码默认值」—— 后者不应被包装成推荐项。
+resolve_default_wiki_dir_json() {
+  local user_cfg="$HOME/.auto-goo/config.json"
+  python3 - "$user_cfg" "${AUTOGOO_PLUGIN_WIKI_DIR:-}" "$HOME/workspace/Goo-wiki" <<'PY'
+import json, sys
+from pathlib import Path
+
+user_cfg = Path(sys.argv[1])
+env_dir = sys.argv[2]
+hard_default = sys.argv[3]
+
+configured = ""
+try:
+    if user_cfg.is_file():
+        data = json.loads(user_cfg.read_text(encoding="utf-8"))
+        value = data.get("wiki_dir") if isinstance(data, dict) else None
+        if isinstance(value, str):
+            configured = value.strip()
+except (OSError, ValueError):
+    configured = ""
+
+if env_dir:
+    path, source = env_dir, "env"
+elif configured:
+    path, source = configured, "user-config"
+else:
+    path, source = hard_default, "default"
+
+print(json.dumps({
+    "path": path,
+    "source": source,
+    "env": env_dir or None,
+    "user_config": configured or None,
+    "hard_default": hard_default,
+    "config_file": str(user_cfg),
+}, ensure_ascii=False))
+PY
+}
+
+# A 项：查询入口必须在 scope 解析之前处理，否则调用方得先伪造一个作用域。
+if [[ "$PRINT_WIKI_DEFAULT" -eq 1 ]]; then
+  WIKI_DEFAULT_JSON="$(resolve_default_wiki_dir_json)"
+  if [[ "$PRINT_WIKI_JSON" -eq 1 ]]; then
+    printf '%s\n' "$WIKI_DEFAULT_JSON"
+  else
+    printf '%s\n' "$(printf '%s' "$WIKI_DEFAULT_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["path"])')"
+  fi
+  exit 0
+fi
+
 if [[ -z "$SCOPE" ]]; then
   if [[ ! -t 0 ]]; then
     echo "error: cannot choose init scope in non-interactive mode" >&2
@@ -657,48 +722,36 @@ case "$SCOPE" in
     ;;
 esac
 
-# 解析 wiki 目录默认值：已配置的用户级路径应被复用，而不是每个项目重新输入。
-# 优先级：--wiki-dir 显式传入 > AUTOGOO_PLUGIN_WIKI_DIR > 用户级 config.json.wiki_dir > ~/workspace/Goo-wiki
-resolve_default_wiki_dir() {
-  local user_cfg="$HOME/.auto-goo/config.json"
-  if [[ -n "${AUTOGOO_PLUGIN_WIKI_DIR:-}" ]]; then
-    printf '%s\n' "$AUTOGOO_PLUGIN_WIKI_DIR"
-    return
-  fi
-  if [[ -f "$user_cfg" ]]; then
-    local configured
-    configured="$(python3 - "$user_cfg" <<'PY'
-import json, sys
-from pathlib import Path
-try:
-    data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-    value = data.get("wiki_dir") if isinstance(data, dict) else None
-    print(value if isinstance(value, str) else "")
-except (OSError, ValueError):
-    print("")
-PY
-)"
-    if [[ -n "$configured" ]]; then
-      printf '%s\n' "$configured"
-      return
-    fi
-  fi
-  printf '%s\n' "$HOME/workspace/Goo-wiki"
-}
+# 预先算好默认值（含 source），供下面的默认值解析与 C 项警告复用。
+WIKI_DEFAULT_JSON="$(resolve_default_wiki_dir_json)"
 
 if [[ -z "$WIKI_DIR" ]]; then
-  DEFAULT_WIKI_DIR="$(resolve_default_wiki_dir)"
+  DEFAULT_WIKI_DIR="$(printf '%s' "$WIKI_DEFAULT_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["path"])')"
+  DEFAULT_WIKI_SOURCE="$(printf '%s' "$WIKI_DEFAULT_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["source"])')"
   if [[ ! -t 0 ]]; then
     # 非交互：直接采用解析出的默认值（用户级已配置则复用），不再报错退出。
     WIKI_DIR="$DEFAULT_WIKI_DIR"
     WIKI_DIR_PROVIDED=1
-    echo "wiki_dir: using $WIKI_DIR (from user config / env / default)"
+    echo "wiki_dir: using $WIKI_DIR (source: $DEFAULT_WIKI_SOURCE)"
   else
     WIKI_DIR="$(prompt "Goo-wiki directory (press Enter to use default)" "$DEFAULT_WIKI_DIR")"
     WIKI_DIR_PROVIDED=1
   fi
 elif [[ "$WIKI_DIR_PROVIDED" -eq 0 && -n "${AUTOGOO_PLUGIN_WIKI_DIR:-}" ]]; then
   WIKI_DIR_PROVIDED=1
+fi
+
+# C 项：显式传入的 --wiki-dir 若恰好等于硬编码默认值、而用户级已配置了别的路径，
+# 说明调用方（通常是 agent 自己填的“默认值”）把用户配置覆盖了。
+# 不改变入参（尊重显式传值），但必须让用户看见。
+if [[ "$WIKI_DIR_PROVIDED" -eq 1 && "$WIKI_DIR" != "" ]]; then
+  WIKI_DEFAULT_PATH="$(printf '%s' "$WIKI_DEFAULT_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["path"])')"
+  WIKI_DEFAULT_SRC="$(printf '%s' "$WIKI_DEFAULT_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["source"])')"
+  WIKI_HARD_DEFAULT="$(printf '%s' "$WIKI_DEFAULT_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["hard_default"])')"
+  if [[ "$WIKI_DEFAULT_SRC" != "default" && "$WIKI_DIR" == "$WIKI_HARD_DEFAULT" && "$WIKI_DEFAULT_PATH" != "$WIKI_HARD_DEFAULT" ]]; then
+    echo "warning: --wiki-dir=$WIKI_DIR 与硬编码默认值相同，但本机已配置 $WIKI_DEFAULT_PATH（source: $WIKI_DEFAULT_SRC）。" >&2
+    echo "warning: 已按显式传入的值执行；如需复用已配置路径，请去掉 --wiki-dir 或改传 $WIKI_DEFAULT_PATH。" >&2
+  fi
 fi
 
 if [[ "$SCOPE" == "project" && "$PROJECT_LAYOUT_PROVIDED" -eq 0 && "$PROJECT_DIRS_PROVIDED" -eq 0 && -t 0 && "$YES" -ne 1 ]]; then

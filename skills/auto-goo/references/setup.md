@@ -175,6 +175,39 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-plan-health.py --close --thr
 - **不篡改步骤状态**（不会把 `running` 伪装成 `completed`）；
 - **不删除任何文件**，并先在 `.goo/plans/history/` 留一份归档副本。
 
+### 查询 wiki 默认路径（`--print-wiki-default`）
+
+Claude Code / Codex 的 agent 在询问「用哪个 Goo-wiki 路径」之前，**必须查询实际生效的默认值**，不能靠自己读配置或拍脑袋用 `~/workspace/Goo-wiki`：
+
+```bash
+bash <auto_goo_root>/skills/auto-goo/scripts/goo-init.sh --print-wiki-default        # 只输出路径
+bash <auto_goo_root>/skills/auto-goo/scripts/goo-init.sh --print-wiki-default --json # 带元信息
+```
+
+```json
+{
+  "path": "/data/Goo-wiki",
+  "source": "user-config",
+  "env": null,
+  "user_config": "/data/Goo-wiki",
+  "hard_default": "/home/u/workspace/Goo-wiki",
+  "config_file": "/home/u/.auto-goo/config.json"
+}
+```
+
+`source` 取值：`env`（`AUTOGOO_PLUGIN_WIKI_DIR`）> `user-config`（`~/.auto-goo/config.json` 的 `wiki_dir`）> `default`（硬编码）。
+
+| `source` | 提问时该怎么给选项 |
+| --- | --- |
+| `env` / `user-config` | `path` 作为**首个 Recommended**，再给 `~/workspace/Goo-wiki` 与自定义 |
+| `default` | `~/workspace/Goo-wiki` (Recommended) + 自定义 |
+
+**为什么必须查询而不是"自己判断"**：实测中，agent 若按文档默认值显式传 `--wiki-dir ~/workspace/Goo-wiki`，会**完全覆盖用户本机已配好的路径**（`--wiki-dir` 优先级最高）。
+
+兜底提示：当显式传入的 `--wiki-dir` 恰好等于硬编码默认值、而本机另有配置时，`goo-init.sh` 会向 stderr 打印警告（不改变入参，只让用户看见）。
+
+**单一事实源**：优先级的实现只在 `goo-init.sh` 里一份。pi 扩展通过调用 `--print-wiki-default --json` 取用，**不在 TypeScript 里重写一遍** —— 双份实现必然漂移。
+
 ### thread 记录对账（`thread-doctor.py`）
 
 thread 状态存在**五处**，此前没有任何交叉校验：

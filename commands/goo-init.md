@@ -82,9 +82,18 @@ Agent 交互流程：
 
    请回复 1/2，或直接回复“项目级”/“用户级”。
    ```
-6. 第二个问题必须优先用 `AskUserQuestion` 呈现以下选项。**如果用户级 `~/.auto-goo/config.json` 已配置 `wiki_dir`（或环境变量 `AUTOGOO_PLUGIN_WIKI_DIR` 已设），必须把该已配置路径作为首个推荐选项**，避免每个项目重复输入；未配置时才用默认路径：
-   - 已配置时：`<已配置路径>` (Recommended) / `~/workspace/Goo-wiki` / 自定义路径（Other 输入）
-   - 未配置时：`~/workspace/Goo-wiki` (Recommended) / 自定义路径（选择后在 Other 输入）
+6. 第二个问题必须优先用 `AskUserQuestion` 呈现以下选项。**提问前必须先查询实际生效的默认值，不得拍脑袋用 `~/workspace/Goo-wiki`：**
+
+   ```bash
+   bash "$auto_goo_root/skills/auto-goo/scripts/goo-init.sh" --print-wiki-default --json
+   ```
+
+   输出字段：`path`（生效路径）、`source`（`env` / `user-config` / `default`）、`hard_default`、`config_file`。
+
+   - **`source` 不是 `default`**（即用户真的配过）：把 `path` 作为**首个推荐选项**，同时提供 `~/workspace/Goo-wiki` 与自定义路径；
+   - **`source` 是 `default`**（没配过）：才用 `~/workspace/Goo-wiki` (Recommended) + 自定义路径。
+
+   **不得跳过这一步直接给默认值** —— 跳过会把用户在本机已配好的路径覆盖掉（实测：显式传 `--wiki-dir ~/workspace/Goo-wiki` 时，用户配置会被完全忽略）。
 7. 如果无法渲染结构化选项，使用以下纯文本 fallback：
    ```text
    这是 fallback：结构化选择 UI 不可用。请选择 Goo-wiki 路径：
@@ -255,7 +264,7 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-md.py --ensure   # 从模板
 
 ### 复用已配置的 wiki 路径
 
-询问 Goo-wiki 路径时，若用户级 `~/.auto-goo/config.json` 已配置 `wiki_dir`（或设了 `AUTOGOO_PLUGIN_WIKI_DIR`），**必须把该路径作为首个推荐选项**，不要默认只给 `~/workspace/Goo-wiki`，否则用户每个项目都要重复输入。
+询问 Goo-wiki 路径时，**必须先运行 `goo-init.sh --print-wiki-default --json` 查询实际生效的默认值**（输出 `path` / `source` / `hard_default`），再根据 `source` 决定推荐项：`source` 不是 `default` 时，把 `path` 作为首选；否则用 `~/workspace/Goo-wiki`。不得跳过此步直接给默认值。
 
 - 不覆盖已有 `.goo/config.json`，除非用户明确确认；但保留 config 时仍可按 `--update-claude-md` 更新项目级 `goo.md` 与项目指针 `CLAUDE.md`/`AGENTS.md`
 - 不覆盖已有 `~/.auto-goo/config.json`，除非用户明确确认；`--user` 仍会生成或幂等更新 `~/.auto-goo/goo.md`（除非 `--skip-claude-md`）

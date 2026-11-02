@@ -1855,6 +1855,84 @@ else
   fail "session-start.py 未接入 thread 对账"
 fi
 
+# ── 17. wiki 默认路径查询入口 ──
+# 回归：Claude Code / Codex 侧问「用哪个 Goo-wiki 路径」时，必须能**查询**
+# 实际生效的默认值，而不是靠 agent 自己读配置或拍脑袋用 ~/workspace/Goo-wiki。
+# 一旦 agent 自己填了硬编码默认值，用户本机已配好的路径就会被覆盖。
+echo ""
+echo "── 17. wiki 默认路径查询入口 ──"
+
+GI="$ROOT/skills/auto-goo/scripts/goo-init.sh"
+WK_TMP="$(mktemp -d)"
+mkdir -p "$WK_TMP/home/.auto-goo" "$WK_TMP/proj" "$WK_TMP/custom-wiki"
+printf '{"wiki_dir":"%s"}' "$WK_TMP/custom-wiki" > "$WK_TMP/home/.auto-goo/config.json"
+
+# A) 未配置时 source=default，且 path 等于 hard_default
+WK_JSON="$(HOME="$WK_TMP/empty" bash "$GI" --print-wiki-default --json 2>/dev/null)"
+if echo "$WK_JSON" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["source"] == "default", d
+assert d["path"] == d["hard_default"], d
+'; then
+  pass "--print-wiki-default：未配置时 source=default"
+else
+  fail "--print-wiki-default 未配置时行为异常"
+fi
+
+# B) 用户级已配置 → source=user-config 且 path 指向它
+WK_JSON="$(HOME="$WK_TMP/home" bash "$GI" --print-wiki-default --json 2>/dev/null)"
+if echo "$WK_JSON" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["source"] == "user-config", d
+assert d["path"].endswith("custom-wiki"), d
+'; then
+  pass "--print-wiki-default：已配置时复用它（source=user-config）"
+else
+  fail "--print-wiki-default 未复用已配置路径"
+fi
+
+# C) env 优先级最高
+if HOME="$WK_TMP/home" AUTOGOO_PLUGIN_WIKI_DIR=/tmp/env-wiki bash "$GI" --print-wiki-default --json 2>/dev/null \
+  | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d["source"]=="env" and d["path"]=="/tmp/env-wiki", d'; then
+  pass "--print-wiki-default：AUTOGOO_PLUGIN_WIKI_DIR 优先级最高"
+else
+  fail "--print-wiki-default 环境变量优先级错误"
+fi
+
+# D) 不带 --json 时只输出路径（可直接拼进命令）
+WK_PLAIN="$(HOME="$WK_TMP/home" bash "$GI" --print-wiki-default 2>/dev/null)"
+if [[ "$WK_PLAIN" == "$WK_TMP/custom-wiki" ]]; then
+  pass "--print-wiki-default 不带 --json 时只输出路径"
+else
+  fail "--print-wiki-default 裸输出异常（got=$WK_PLAIN）"
+fi
+
+# E) C 项：显式传硬编码默认值但本机已配置 → 必须警告
+WK_WARN="$(cd "$WK_TMP/proj" && HOME="$WK_TMP/home" bash "$GI" --project --wiki-dir "$WK_TMP/home/workspace/Goo-wiki" --yes --force 2>&1 >/dev/null)"
+if echo "$WK_WARN" | grep -q "与硬编码默认值相同"; then
+  pass "显式传入硬编码默认值且本机有配置时给出警告"
+else
+  fail "覆盖用户配置时未给出任何警告"
+fi
+
+rm -rf "$WK_TMP"
+
+# F) 三端必须共用同一个入口（禁止 TS 里重写优先级逻辑）
+if grep -q "print-wiki-default" "$ROOT/.pi/extensions/autogoo-plugin/commands/init.ts"; then
+  pass "pi 扩展复用 --print-wiki-default（不另写一套优先级）"
+else
+  fail "pi 扩展未复用脚本入口，优先级逻辑存在双份漂移风险"
+fi
+
+# G) 文档必须要求先查询（否则 agent 又会拍脑袋给默认值）
+if grep -q "print-wiki-default" "$ROOT/commands/goo-init.md"; then
+  pass "commands/goo-init.md 要求先查询默认值"
+else
+  fail "commands/goo-init.md 未要求先查询默认值"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

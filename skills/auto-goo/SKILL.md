@@ -1,7 +1,7 @@
 ---
 name: goo-workflow
 description: "Use when the user says '/auto-goo:goo-init', '/auto-goo:goo-brainstorm', '/auto-goo:goo-plan', '/auto-goo:goo-start', '/auto-goo:goo-research', '/auto-goo:goo-daily-report', '/auto-goo:goo-usage', '/auto-goo:goo-usage-analyse', '/auto-goo:goo-observe', '/auto-goo:goo-publish', '找目标', '开始任务', 'run:', '日报', '周报', 'usage', 'token统计', 'token降本', '后台观察', '发布HTML', '自改进', or gives a goal-clear multi-step task that can be decomposed into sub-tasks. Runs Goo workflow: config init, wiki-based brainstorm, wiki recall, DAG planning, subagent execution, research material archiving, status/observe, HTML publishing, optimization, Goo-wiki archiving, usage monitor, usage cost analysis, daily reports, and plugin self-improvement. Compatible with Claude Code and Codex."
-version: 0.8.0
+version: 0.9.0
 tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent, wait_agent, request_user_input]
 ---
 
@@ -115,7 +115,7 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 7. 配置远程服务器后，通过 `goo-ssh.sh` 连接。用法：`bash "$auto_goo_root/skills/auto-goo/scripts/goo-ssh.sh" [--config .goo/config.json] [--server INDEX|HOST]`。脚本从 `secrets.json` 读取密码，不暴露在命令行；如果没有配置密码，则退回普通 `ssh`，支持 SSH key 或手动认证。有密码自动登录时才需要 `sshpass`（首次使用前 `sudo apt install sshpass`）。
 7. 确保目标目录存在：用户级 `~/.auto-goo/`，项目级 `.goo/`。
 8. 如果目标配置已存在，脚本内部自行检测并询问是否覆盖。用户保留 config 但传了 `--update-claude-md` 或交互确认更新 `CLAUDE.md` 时，仍必须继续更新项目级 `goo.md` / 用户级 `~/.auto-goo/goo.md` 及对应指针；`--skip-claude-md` 同时跳过正文与指针。
-9. 按优先级解析 wiki 路径：`AUTOGOO_PLUGIN_WIKI_DIR` → `.goo/config.json.wiki_dir` → `~/.auto-goo/config.json.wiki_dir` → `~/workspace/Goo-wiki`。
+9. 按优先级解析 wiki 路径：`AUTOGOO_PLUGIN_WIKI_DIR` → `.goo/config.json.wiki_dir` → `~/.auto-goo/config.json.wiki_dir` → `~/workspace/Goo-wiki`。**询问用户前必须用 `goo-init.sh --print-wiki-default --json` 查询实际生效的默认值**（返回 `path`/`source`/`hard_default`），`source` 不是 `default` 时把 `path` 作为首个推荐项；不得跳过查询直接给 `~/workspace/Goo-wiki`，否则会把用户本机已配好的路径覆盖掉。
 10. 确保 Goo-wiki 路径存在：如果用户确认或输入的 `<wiki_dir>` 不存在，脚本必须自动创建该目录，并补齐 `CLAUDE.md`、`log.md`、`wiki/projects/`、`wiki/concepts/`、`wiki/questions/`、`journal/daily/`、`journal/weekly/` 基础结构；不得因为路径不存在而改用 `.goo/obsidian/` fallback。
 11. 如果是 `--project`，确定 `project_slug`：默认用项目根目录名，可用 `--project-slug <slug>` 覆盖；创建或复用 `<wiki_dir>/wiki/projects/<project_slug>/` 作为项目归档根路径。
 12. 如果项目是 Git repo，读取 `origin` remote（没有 origin 时读取第一个 remote），写入 `.goo/config.json.archive.git_remote_url`，并同步到 `<wiki_dir>/wiki/projects/<project_slug>/<project_slug>.md` 的项目元信息块。

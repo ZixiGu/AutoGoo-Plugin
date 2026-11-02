@@ -266,6 +266,16 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-md.py --ensure   # 从模板
 
 `--ensure` 幂等且不覆盖已有内容，只写 `~/.auto-goo/goo.md`；需要重新写用户级/项目级指针时仍需跑 `/auto-goo:goo-init`。
 
+### 覆盖已有配置前必须确认
+
+脚本在 `--yes` 下**不会**覆盖已存在的 config（`confirm` 默认 `n`），必须显式传 `--force` 才会写入。因此：
+
+1. **写之前**：若目标 config 已存在，先用 `AskUserQuestion` 询问「是否覆盖写入本次选择（含 wiki 路径）？」；选「是」才追加 `--force`，否则保留旧配置、只更新 `goo.md` 与指针。
+2. **写之后**：以脚本输出为准汇报，不得假设"一定写进去了"：
+   - `config_write: written | skipped（…）`
+   - `wiki_dir_effective: <实际值>`
+   若 `wiki_dir_effective` 与本次选择的路径不一致，必须显式警告用户"配置未采用本次选择"，而不是报告成功。
+
 ### 复用已配置的 wiki 路径
 
 询问 Goo-wiki 路径时，**必须先运行 `goo-init.sh --print-wiki-default --json` 查询实际生效的默认值**（输出 `path` / `source` / `hard_default`），再根据 `source` 决定推荐项：`source` 不是 `default` 时，把 `path` 作为首选；否则用 `~/workspace/Goo-wiki`。不得跳过此步直接给默认值。

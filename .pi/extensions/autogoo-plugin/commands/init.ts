@@ -307,6 +307,27 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
   if (clearServers) {
     scriptArgs.push("--clear-servers");
   }
+  // 既有配置必须先问是否覆盖：脚本在 --yes 下**不会**覆盖已有 config
+  // （confirm 默认 n），若不显式传 --force，本次选择的 wiki 路径根本写不进去，
+  // 而旧实现仍会报告“已写入 + 目标 wiki”——报告与事实不符。
+  const configPath = scope === "user" ? userConfigPath() : projectConfigPath(cwd);
+  let overwriteConfirmed = false;
+  if (existsSync(configPath)) {
+    overwriteConfirmed = await uiConfirm(
+      ctx,
+      "已有配置",
+      `检测到已存在配置文件：\n${configPath}\n\n是否覆盖写入本次选择（含 wiki 路径）？\n否 = 保留现有配置，仅更新 goo.md 与指针。`,
+    );
+    if (overwriteConfirmed) {
+      scriptArgs.push("--force");
+      ctx.ui.notify("将覆盖已有配置。", "info");
+    } else {
+      ctx.ui.notify(
+        "保留现有配置：本次选择的 wiki 路径不会写入 config，仅更新 goo.md 与指针。",
+        "warning",
+      );
+    }
+  }
   scriptArgs.push("--yes");
 
   ctx.ui.notify("正在执行初始化脚本...", "info");
@@ -317,6 +338,13 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
     return;
   }
 
+  // 以脚本输出为准判断“到底写了没有”，而不是假设它一定写了。
+  const scriptOut = `${result.stdout || ""}\n${result.stderr || ""}`;
+  const configWritten = /config_write:\s*written/.test(scriptOut);
+  const effectiveMatch = scriptOut.match(/wiki_dir_effective:\s*(.+)/);
+  const effectiveWiki = effectiveMatch ? effectiveMatch[1].trim() : null;
+  const requestedWiki = wikiDir;
+
   const isUser = scope === "user";
   const gooMdExists = isUser ? existsSync(userGooMdPath()) : existsSync(join(cwd, "goo.md"));
   // **禁止用 `~` 代替真实路径**：跨环境下 HOME 可能不同，`~` 会把"写到别处"
@@ -325,14 +353,19 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
   const homeDir = process.env.HOME || "~";
   const target = isUser ? userConfigPath() : projectConfigPath(cwd);
   const gooMdPath = isUser ? userGooMdPath() : join(cwd, "goo.md");
-  const wikiInfo = wikiDir ? `\n  wiki:    ${wikiDir}` : "";
+  const wikiInfo = effectiveWiki ? `\n  wiki(实际): ${effectiveWiki}` : (wikiDir ? `\n  wiki(请求): ${wikiDir}` : "");
+  const mismatchNote =
+    effectiveWiki && requestedWiki && effectiveWiki !== requestedWiki
+      ? `\n\n⚠ 配置未采用本次选择的 wiki 路径：\n  请求 ${requestedWiki}\n  实际 ${effectiveWiki}\n` +
+        (configWritten ? "" : "  （配置未被覆盖；如需改写请重新运行并选择“覆盖”）")
+      : "";
   // Only claim the pointer was written when goo.md itself was generated (not --skip-claude-md).
   const gooMdInfo = gooMdExists ? `\n  goo.md:  ${gooMdPath}` : "";
   const pointerInfo = gooMdExists && isUser && userPointer !== false
     ? `\n  pointer: ${join(homeDir, ".claude/CLAUDE.md")}\n           ${join(homeDir, ".codex/AGENTS.md")}`
     : "";
   ctx.ui.notify(
-    `✅ AutoGoo-Plugin 初始化完成\n  HOME:    ${homeDir}\n  config:  ${target}${wikiInfo}${gooMdInfo}${pointerInfo}`,
+    `${configWritten ? "✅" : "⚠"} AutoGoo-Plugin 初始化完成${configWritten ? "" : "（配置未覆盖）"}\n  HOME:    ${homeDir}\n  config:  ${target}${wikiInfo}${gooMdInfo}${pointerInfo}${mismatchNote}`,
     "info"
   );
 }

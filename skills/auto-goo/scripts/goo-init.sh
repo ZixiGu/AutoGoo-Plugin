@@ -1280,10 +1280,29 @@ PY
   fi
 
   echo ""
+  echo "config_write: written"
   echo "Wrote $CONFIG_FILE"
 else
   echo ""
+  # 关键：既有 config 未被覆盖（--yes 不会自动覆盖，需显式 --force）。
+  # 调用方必须报告**实际生效值**，而不是它“打算写入”的值。
+  echo "config_write: skipped（已存在且未覆盖；如需覆盖请传 --force）"
   echo "Kept $CONFIG_FILE"
+fi
+
+# 回读实际生效的 wiki_dir，供调用方直接汇报，避免“显示了目标值、实际却没写进去”。
+if [[ -f "$CONFIG_FILE" ]]; then
+  EFFECTIVE_WIKI_DIR="$(python3 - "$CONFIG_FILE" <<'PY'
+import json, sys
+from pathlib import Path
+try:
+    data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    print(data.get("wiki_dir", "") if isinstance(data, dict) else "")
+except (OSError, ValueError):
+    print("")
+PY
+)"
+  echo "wiki_dir_effective: ${EFFECTIVE_WIKI_DIR:-（未记录）}"
 fi
 
 # ---------------------------------------------------------------------------

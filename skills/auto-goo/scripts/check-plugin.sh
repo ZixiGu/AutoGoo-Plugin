@@ -1979,6 +1979,34 @@ else
   pass "init 完成提示输出真实绝对路径与 HOME"
 fi
 
+# E6) 脚本必须如实报告 config 是否真的写入 + 回读实际生效 wiki_dir
+WK_TMP6="$(mktemp -d)"
+mkdir -p "$WK_TMP6/home/.auto-goo" "$WK_TMP6/new-wiki"
+printf '{"wiki_dir":"/old-wiki"}' > "$WK_TMP6/home/.auto-goo/config.json"
+WK_SKIP_OUT="$(HOME="$WK_TMP6/home" bash "$GI" --user --wiki-dir "$WK_TMP6/new-wiki" --yes 2>&1)"
+if echo "$WK_SKIP_OUT" | grep -q "config_write: skipped" \
+  && echo "$WK_SKIP_OUT" | grep -q "wiki_dir_effective: /old-wiki"; then
+  pass "既有 config 未覆盖时如实报告 skipped + 实际 wiki_dir"
+else
+  fail "既有 config 未覆盖时报告不实（会误导用户以为已写入）"
+fi
+WK_WRITE_OUT="$(HOME="$WK_TMP6/home" bash "$GI" --user --wiki-dir "$WK_TMP6/new-wiki" --yes --force 2>&1)"
+if echo "$WK_WRITE_OUT" | grep -q "config_write: written" \
+  && echo "$WK_WRITE_OUT" | grep -q "wiki_dir_effective: $WK_TMP6/new-wiki"; then
+  pass "--force 时报告 written + 新的实际 wiki_dir"
+else
+  fail "--force 时报告不实"
+fi
+rm -rf "$WK_TMP6"
+
+# E7) pi 扩展必须先询问是否覆盖，并报告实际生效值
+if grep -q "overwriteConfirmed" "$ROOT/.pi/extensions/autogoo-plugin/commands/init.ts" \
+  && grep -q "wiki_dir_effective" "$ROOT/.pi/extensions/autogoo-plugin/commands/init.ts"; then
+  pass "pi 扩展先询问覆盖并回读实际生效 wiki_dir"
+else
+  fail "pi 扩展未处理覆盖确认或未回读实际值"
+fi
+
 # F) 三端必须共用同一个入口（禁止 TS 里重写优先级逻辑）
 if grep -q "print-wiki-default" "$ROOT/.pi/extensions/autogoo-plugin/commands/init.ts"; then
   pass "pi 扩展复用 --print-wiki-default（不另写一套优先级）"

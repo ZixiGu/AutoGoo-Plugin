@@ -175,6 +175,36 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-plan-health.py --close --thr
 - **不篡改步骤状态**（不会把 `running` 伪装成 `completed`）；
 - **不删除任何文件**，并先在 `.goo/plans/history/` 留一份归档副本。
 
+### 覆盖已有配置：`--yes` 不等于 `--force`
+
+`goo-init.sh` 在配置已存在时**不会**自动覆盖：
+
+```bash
+$ goo-init.sh --user --wiki-dir /new/path --yes
+config_write: skipped（已存在且未覆盖；如需覆盖请传 --force）
+Kept /home/u/.auto-goo/config.json
+wiki_dir_effective: /old/path        # ← 实际生效值
+```
+
+只有显式 `--force` 才会写入：
+
+```bash
+$ goo-init.sh --user --wiki-dir /new/path --yes --force
+config_write: written
+Wrote /home/u/.auto-goo/config.json
+wiki_dir_effective: /new/path
+```
+
+**调用方必须按脚本输出汇报**，不能假设"一定写进去了"：
+
+| 输出行 | 含义 |
+| --- | --- |
+| `config_write: written` | 配置已写入 |
+| `config_write: skipped（…）` | 保留旧配置，本次选择**未生效** |
+| `wiki_dir_effective: <path>` | 回读的实际生效 wiki 路径 |
+
+pi 扩展已接入：覆盖前用结构化确认询问，结束后回读 `wiki_dir_effective` 并在与请求不一致时给出警告。
+
 ### 查询 wiki 默认路径（`--print-wiki-default`）
 
 Claude Code / Codex 的 agent 在询问「用哪个 Goo-wiki 路径」之前，**必须查询实际生效的默认值**，不能靠自己读配置或拍脑袋用 `~/workspace/Goo-wiki`：

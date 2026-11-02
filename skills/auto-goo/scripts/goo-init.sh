@@ -651,13 +651,21 @@ PY
 resolve_default_wiki_dir_json() {
   local user_cfg="$HOME/.auto-goo/config.json"
   python3 - "$user_cfg" "${AUTOGOO_PLUGIN_WIKI_DIR:-}" "$HOME/workspace/Goo-wiki" "$HOME" <<'PY'
-import json, os, sys
+import json, os, pwd, sys
 from pathlib import Path
 
 user_cfg = Path(sys.argv[1])
 env_dir = sys.argv[2]
 hard_default = sys.argv[3]
 home = sys.argv[4]
+
+# HOME 被环境变量覆盖是跨环境问题的头号根源：pi 子进程继承到不同的 HOME
+# 时，会读到另一份 ~/.auto-goo/config.json，看起来“配置不对”，其实是读错了文件。
+try:
+    passwd_home = pwd.getpwuid(os.getuid()).pw_dir
+except (KeyError, OSError):
+    passwd_home = None
+home_mismatch = bool(passwd_home and os.path.realpath(home) != os.path.realpath(passwd_home))
 
 configured = ""
 cfg_error = None
@@ -687,7 +695,7 @@ chosen = candidates[0] if candidates else {"source": "default", "path": hard_def
 # recommend 语义：调用方拿到的路径是否适合直接推荐给用户。
 #  - 路径存在 → 可以推荐
 #  - source=default（约定路径，goo-init 会创建）→ 可以推荐
-#  - 其余（env/user-config 但目录不存在）→ **不推荐**，多半是另一台机器的配置或已删除
+#  - 其余（env/user-config 但目录不存在）→ **不推荐**
 if chosen["exists"]:
     recommend, reason = True, "path exists on this machine"
 elif chosen["source"] == "default":
@@ -697,6 +705,13 @@ else:
     reason = (
         f"{chosen['source']} 指向的目录在本机不存在"
         f"（HOME={home}）；可能是另一台机器的配置或已被删除"
+    )
+
+# HOME 被覆盖时必须让调用方看见 —— 否则会“查对了字段、读错了文件”。
+if home_mismatch:
+    reason = (
+        f"HOME 与环境预期不一致（当前 {home}，passwd 记录 {passwd_home}）："
+        f"可能读到另一份 ~/.auto-goo/config.json。{reason}"
     )
 
 alternatives = [c for c in candidates[1:]]
@@ -711,6 +726,8 @@ print(json.dumps({
     "recommend_reason": reason,
     "alternatives": alternatives,
     "home": home,
+    "passwd_home": passwd_home,
+    "home_mismatch": home_mismatch,
     "env": env_dir or None,
     "user_config": configured or None,
     "user_config_file": str(user_cfg),

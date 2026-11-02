@@ -319,19 +319,20 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
 
   const isUser = scope === "user";
   const gooMdExists = isUser ? existsSync(userGooMdPath()) : existsSync(join(cwd, "goo.md"));
-  const target = isUser ? "~/.auto-goo/config.json" : ".goo/config.json";
-  const wikiInfo = wikiDir ? `（wiki: ${wikiDir}）` : "";
+  // **禁止用 `~` 代替真实路径**：跨环境下 HOME 可能不同，`~` 会把"写到别处"
+  // 这个最关键的信息藏起来（实际踩过：init 写到 /mnt/nasn/... 的配置，
+  // 终端里读的却是 /home/... 的另一份，输出看起来一切正常）。
+  const homeDir = process.env.HOME || "~";
+  const target = isUser ? userConfigPath() : projectConfigPath(cwd);
+  const gooMdPath = isUser ? userGooMdPath() : join(cwd, "goo.md");
+  const wikiInfo = wikiDir ? `\n  wiki:    ${wikiDir}` : "";
   // Only claim the pointer was written when goo.md itself was generated (not --skip-claude-md).
-  const gooMdInfo = gooMdExists
-    ? isUser
-      ? "，用户级 goo.md 已生成（~/.auto-goo/goo.md）"
-      : "，项目级 goo.md 已生成（<项目根>/goo.md）"
-    : "";
+  const gooMdInfo = gooMdExists ? `\n  goo.md:  ${gooMdPath}` : "";
   const pointerInfo = gooMdExists && isUser && userPointer !== false
-    ? "，用户级指针已更新（~/.claude/CLAUDE.md、~/.codex/AGENTS.md）"
+    ? `\n  pointer: ${join(homeDir, ".claude/CLAUDE.md")}\n           ${join(homeDir, ".codex/AGENTS.md")}`
     : "";
   ctx.ui.notify(
-    `✅ AutoGoo-Plugin 初始化完成！配置已写入 ${target} ${wikiInfo}${gooMdInfo}${pointerInfo}`,
+    `✅ AutoGoo-Plugin 初始化完成\n  HOME:    ${homeDir}\n  config:  ${target}${wikiInfo}${gooMdInfo}${pointerInfo}`,
     "info"
   );
 }

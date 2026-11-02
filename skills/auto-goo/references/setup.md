@@ -211,7 +211,17 @@ bash <auto_goo_root>/skills/auto-goo/scripts/goo-init.sh --print-wiki-default --
 | `recommend: true` 且 `source == default` | 约定路径，初始化时会创建 | `path` 作为推荐项 |
 | `recommend: false` | **配置指向的目录在本机不存在**（多半来自另一台机器或已删除） | **绝不标 Recommended**；展示 `recommend_reason` / `home` / `alternatives` 让用户选 |
 
-`home` 字段用于诊断 HOME 不一致：如果它与你预期的家目录不同，说明当前进程的 `$HOME` 与用户终端不是同一个，配置文件和 `~/workspace/Goo-wiki` 都会落在别处。
+`home` / `passwd_home` / `home_mismatch` 用于诊断 HOME 不一致：
+
+| 字段 | 含义 |
+| --- | --- |
+| `home` | 当前进程的 `$HOME` |
+| `passwd_home` | `passwd` 记录的真实家目录（`pwd.getpwuid`） |
+| `home_mismatch` | 两者是否不同 —— **为 true 时说明 `$HOME` 被环境变量覆盖**，很可能读到了另一份 `~/.auto-goo/config.json` |
+
+`home_mismatch=true` 时 `recommend_reason` 会直接写明这一点。**跨环境问题的头号根源就是 HOME 不一致**（实测：init 把配置写到 `/mnt/nasn/...` 的家目录，终端里读的却是 `/home/...` 的另一份）。
+
+**输出真实绝对路径，禁止用 `~` 掩盖**：`goo-init` 的完成提示会打印 `HOME`、`config`、`wiki`、`goo.md`、`pointer` 的**完整路径**。用 `~` 会把"写到别处"这个最关键的信息藏起来，让两个 HOME 的问题看起来一切正常。
 
 **为什么必须查询而不是"自己判断"**：实测中，agent 若按文档默认值显式传 `--wiki-dir ~/workspace/Goo-wiki`，会**完全覆盖用户本机已配好的路径**（`--wiki-dir` 优先级最高）。
 

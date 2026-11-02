@@ -1954,6 +1954,31 @@ else
 fi
 rm -rf "$WK_TMP3"
 
+# E4) HOME 被环境变量覆盖时必须可诊断（跨环境问题的头号根源）
+WK_TMP4="$(mktemp -d)"
+mkdir -p "$WK_TMP4/fakehome/.auto-goo"
+printf '{"wiki_dir":"/nonexistent-goo-wiki-xyz"}' > "$WK_TMP4/fakehome/.auto-goo/config.json"
+if HOME="$WK_TMP4/fakehome" bash "$GI" --print-wiki-default --json 2>/dev/null | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["home_mismatch"] is True, d
+assert d["passwd_home"], d
+assert d["recommend"] is False, d
+assert "HOME" in d["recommend_reason"], d
+'; then
+  pass "HOME 被覆盖时 home_mismatch=true 且原因包含 HOME"
+else
+  fail "未检测 HOME 不一致（跨环境会读错配置文件）"
+fi
+rm -rf "$WK_TMP4"
+
+# E5) init 的输出不得用 ~ 掩盖真实路径（否则看不出写到了哪个 HOME）
+if grep -q 'const target = isUser ? "~/.auto-goo/config.json"' "$ROOT/.pi/extensions/autogoo-plugin/commands/init.ts"; then
+  fail "init 完成提示仍用 ~ 掩盖真实配置路径"
+else
+  pass "init 完成提示输出真实绝对路径与 HOME"
+fi
+
 # F) 三端必须共用同一个入口（禁止 TS 里重写优先级逻辑）
 if grep -q "print-wiki-default" "$ROOT/.pi/extensions/autogoo-plugin/commands/init.ts"; then
   pass "pi 扩展复用 --print-wiki-default（不另写一套优先级）"

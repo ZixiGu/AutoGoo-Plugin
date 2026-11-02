@@ -2338,6 +2338,49 @@ else
 fi
 rm -rf "$GT2_TMP"
 
+# ── 21. 初始化环境自检与失败可诊断 ──
+# 回归：「初始化失败 (exit 1)」曾无任何可读信息 —— 脚本开了 set -u，
+# HOME 未设置就直接退出；扩展又把 stderr 丢了。两者都必须修住。
+echo ""
+echo "── 21. 初始化环境自检 ──"
+
+# 1) HOME 未设置时不能崩，且要给出合法 JSON
+if OUT="$(env -u HOME bash "$GI" --print-wiki-default --json 2>/dev/null)" \
+  && echo "$OUT" | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d["path"] and "home" in d'; then
+  pass "HOME 未设置时仍能输出合法 JSON（不再 exit 1）"
+else
+  fail "HOME 未设置时初始化失败——这正是 exit 1 的常见成因"
+fi
+
+# 2) HOME 未设置时要给出 warning，而不是静默回退
+if env -u HOME bash "$GI" --print-wiki-default --json 2>&1 >/dev/null | grep -q "HOME 未设置"; then
+  pass "HOME 回退时给出 warning"
+else
+  fail "HOME 回退无提示（用户不知道读到了哪个家目录）"
+fi
+
+# 3) python3 缺失要有明确提示与用法
+if grep -q "未找到 python3" "$GI" && grep -q "exit 2" "$GI"; then
+  pass "python3 缺失时给出明确报错"
+else
+  fail "python3 缺失时无明确提示"
+fi
+
+# 4) 解析器失败必须有兜底 JSON（否则后续 json.load 抛错 → exit 1）
+if grep -q "resolver fallback" "$GI"; then
+  pass "默认值解析器失败时有兜底 JSON"
+else
+  fail "解析器失败会连锁导致 exit 1"
+fi
+
+# 5) 扩展失败时必须暴露 stderr/stdout，而不是只报 exit code
+INIT_TS="$ROOT/.pi/extensions/autogoo-plugin/commands/init.ts"
+if grep -q "result.stderr" "$INIT_TS" && grep -q "复现命令" "$INIT_TS"; then
+  pass "初始化失败时暴露 stderr/stdout 与复现命令"
+else
+  fail "初始化失败只报 exit code（无从判断原因）"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

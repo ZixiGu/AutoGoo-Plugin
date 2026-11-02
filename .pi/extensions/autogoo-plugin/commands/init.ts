@@ -334,7 +334,21 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
 
   const result = execBash(scriptPath, scriptArgs, cwd, { timeout: 120000 });
   if (result.exitCode !== 0) {
-    ctx.ui.notify(`❌ 初始化失败 (exit ${result.exitCode})`, "error");
+    // 失败时必须把脚本的真实输出抛出来。之前只报 "exit 1"，用户和我们都
+    // 无从判断原因（HOME 未设置 / python3 缺失 / 权限不足 全都一个样）。
+    const tail = (text: string) =>
+      text.trim().split("\n").slice(-12).join("\n").slice(-1200);
+    const stdout = tail(result.stdout || "");
+    const stderr = tail(result.stderr || "");
+    const repro = `bash ${scriptPath} ${scriptArgs.join(" ")}`;
+    ctx.ui.notify(
+      `❌ 初始化失败 (exit ${result.exitCode})\n` +
+        (stderr ? `\nstderr:\n${stderr}\n` : "") +
+        (stdout ? `\nstdout:\n${stdout}\n` : "") +
+        (stderr || stdout ? "" : "\n（脚本没有输出，可能是解释器或环境问题）\n") +
+        `\n复现命令:\n${repro}`,
+      "error",
+    );
     return;
   }
 

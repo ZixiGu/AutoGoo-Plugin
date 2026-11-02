@@ -175,6 +175,27 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-plan-health.py --close --thr
 - **不篡改步骤状态**（不会把 `running` 伪装成 `completed`）；
 - **不删除任何文件**，并先在 `.goo/plans/history/` 留一份归档副本。
 
+### 初始化失败怎么排查
+
+`goo-init.sh` 开启 `set -euo pipefail`，任何一步失败都会中断。最常见的两类环境问题：
+
+| 现象 | 原因 | 现在如何处理 |
+| --- | --- | --- |
+| `exit 1` 且无输出 | **`HOME` 未设置**（systemd / 精简容器 / `sudo` 未继承环境），脚本里大量 `$HOME` 在 `set -u` 下直接触发未绑定变量 | 启动时自检：从 `passwd` 反查家目录，失败依次退到 `~` 展开、`/tmp`，并打印 `warning: 环境变量 HOME 未设置，已回退为 …` |
+| `exit 2` + `未找到 python3` | 缺少 Python 3.10+ | 明确报错并给出安装提示 |
+| 默认值解析异常 | 解析器子进程失败 → 后续 `json.load` 抛错 → 连锁 `exit 1` | 解析器失败时输出**兜底 JSON**（`recommend_reason: resolver fallback`），不再连锁失败 |
+
+**扩展侧**：初始化失败时会打印 **stderr / stdout 的尾部**与一条**可直接复制的复现命令**，不再只报 `exit N`。
+
+手动复现：
+
+```bash
+bash <auto_goo_root>/skills/auto-goo/scripts/goo-init.sh --user --wiki-dir ~/workspace/Goo-wiki --yes
+echo "exit=$?"
+env | grep -E '^HOME=|^PATH='     # 确认 HOME / PATH
+command -v python3 && python3 -V   # 确认解释器
+```
+
 ### 覆盖已有配置：`--yes` 不等于 `--force`
 
 `goo-init.sh` 在配置已存在时**不会**自动覆盖：

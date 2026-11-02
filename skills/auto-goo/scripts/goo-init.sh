@@ -2,6 +2,31 @@
 # AutoGoo-Plugin: interactive configuration initializer
 set -euo pipefail
 
+# ── 环境自检 ────────────────────────────────────────────────────────────────
+# 下面这两项在精简容器 / systemd / sudo 未继承环境 / 自建镜像里经常缺失，
+# 而脚本开了 set -u 且大量使用 $HOME —— 缺一个就会立刻 exit 1，且没有任何
+# 可读信息（这正是「初始化失败 (exit 1)」最常见的成因）。
+
+# 1) HOME 未设置：从 passwd 反查，再退到当前目录的父级，最后 /tmp。
+if [[ -z "${HOME:-}" ]]; then
+  HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6 || true)"
+  if [[ -z "$HOME" ]]; then
+    HOME="$(cd ~ 2>/dev/null && pwd || true)"
+  fi
+  if [[ -z "$HOME" ]]; then
+    HOME="/tmp"
+  fi
+  export HOME
+  echo "warning: 环境变量 HOME 未设置，已回退为 $HOME" >&2
+fi
+
+# 2) python3 缺失：脚本多处依赖它解析/生成 JSON。
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "error: 未找到 python3（AutoGoo-Plugin 需要 Python 3.10+）" >&2
+  echo "hint: 安装 python3 后重试，例如 sudo apt install python3" >&2
+  exit 2
+fi
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -650,7 +675,8 @@ PY
 # 「用户真的配过」与「只是硬编码默认值」—— 后者不应被包装成推荐项。
 resolve_default_wiki_dir_json() {
   local user_cfg="$HOME/.auto-goo/config.json"
-  python3 - "$user_cfg" "${AUTOGOO_PLUGIN_WIKI_DIR:-}" "$HOME/workspace/Goo-wiki" "$HOME" <<'PY'
+  local out=""
+  out="$(python3 - "$user_cfg" "${AUTOGOO_PLUGIN_WIKI_DIR:-}" "$HOME/workspace/Goo-wiki" "$HOME" <<'PY'
 import json, os, pwd, sys
 from pathlib import Path
 
@@ -736,6 +762,15 @@ print(json.dumps({
     "hard_default": hard_default,
 }, ensure_ascii=False))
 PY
+)" || out=""
+  # 解析器失败时也必须给出合法 JSON，否则后续 json.load 会抛错 → 整个脚本 exit 1。
+  if [[ -z "$out" ]]; then
+    local fallback="$HOME/workspace/Goo-wiki"
+    printf '{"path":"%s","source":"default","exists":false,"recommend":true,"recommend_reason":"resolver fallback","alternatives":[],"home":"%s","passwd_home":null,"home_mismatch":false,"env":null,"user_config":null,"user_config_file":null,"user_config_file_exists":false,"user_config_error":"python3 resolver failed","hard_default":"%s"}\n' \
+      "$fallback" "$HOME" "$fallback"
+    return
+  fi
+  printf '%s\n' "$out"
 }
 
 # A 项：查询入口必须在 scope 解析之前处理，否则调用方得先伪造一个作用域。

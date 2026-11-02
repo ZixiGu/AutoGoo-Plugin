@@ -343,7 +343,7 @@ REMOTE_CMD+=( "$@" )
 run_key_first() {
   local errf msg ec
   errf="$(mktemp "${TMPDIR:-/tmp}/autogoo-plugin-ssh-err.XXXXXX")"
-  if ssh -o BatchMode=yes "${SSH_BASE_ARGS[@]}" -p "$PORT" "$SSH_TARGET" "${REMOTE_CMD[@]}" 2>"$errf"; then
+  if ssh -o BatchMode=yes ${SSH_BASE_ARGS[@]+"${SSH_BASE_ARGS[@]}"} -p "$PORT" "$SSH_TARGET" ${REMOTE_CMD[@]+"${REMOTE_CMD[@]}"} 2>"$errf"; then
     rm -f "$errf"
     exit 0
   else
@@ -360,9 +360,9 @@ run_key_first() {
 
 if [[ -z "$PASSWORD" ]]; then
   if [[ ! -t 0 ]]; then
-    exec ssh -o BatchMode=yes "${SSH_BASE_ARGS[@]}" -p "$PORT" "$SSH_TARGET" "${REMOTE_CMD[@]}"
+    exec ssh -o BatchMode=yes ${SSH_BASE_ARGS[@]+"${SSH_BASE_ARGS[@]}"} -p "$PORT" "$SSH_TARGET" ${REMOTE_CMD[@]+"${REMOTE_CMD[@]}"}
   fi
-  exec ssh "${SSH_BASE_ARGS[@]}" -p "$PORT" "$SSH_TARGET" "${REMOTE_CMD[@]}"
+  exec ssh ${SSH_BASE_ARGS[@]+"${SSH_BASE_ARGS[@]}"} -p "$PORT" "$SSH_TARGET" ${REMOTE_CMD[@]+"${REMOTE_CMD[@]}"}
 fi
 
 # 有密码：密钥优先，认证/连接失败（rc=2）再回退 sshpass
@@ -399,4 +399,4 @@ fi
 # StrictHostKeyChecking=accept-new：新主机密钥自动加入 known_hosts，
 # 避免 ssh 输出 "Are you sure you want to continue connecting (yes/no)?"
 # 后 sshpass 匹配不到 password 提示而长时间无响应（旧行为：无输出直到超时）。
-exec sshpass -f "$PASS_FILE" ssh -o StrictHostKeyChecking=accept-new "${SSH_BASE_ARGS[@]}" -p "$PORT" "$SSH_TARGET" "${REMOTE_CMD[@]}"
+exec sshpass -f "$PASS_FILE" ssh -o StrictHostKeyChecking=accept-new ${SSH_BASE_ARGS[@]+"${SSH_BASE_ARGS[@]}"} -p "$PORT" "$SSH_TARGET" ${REMOTE_CMD[@]+"${REMOTE_CMD[@]}"}

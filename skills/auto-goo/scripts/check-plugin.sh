@@ -63,7 +63,7 @@ echo ""
 echo "── 2. SKILL 定义 ──"
 
 SKILLS=("auto-goo")
-for skill_dir in "${SKILLS[@]}"; do
+for skill_dir in ${SKILLS[@]+"${SKILLS[@]}"}; do
   SKILL="$ROOT/skills/$skill_dir/SKILL.md"
   if [[ -f "$SKILL" ]]; then
     pass "skills/$skill_dir/SKILL.md 存在"
@@ -137,7 +137,7 @@ REFS=(
   "task-parsing.md"
 )
 
-for ref in "${REFS[@]}"; do
+for ref in ${REFS[@]+"${REFS[@]}"}; do
   f="$ROOT/skills/auto-goo/references/$ref"
   if [[ -f "$f" ]]; then
     pass "references/$ref"
@@ -246,7 +246,7 @@ echo ""
 echo "── 4. 命令文件 ──"
 
 CMDS=("goo-init" "goo-brainstorm" "goo-plan" "goo-start" "goo-research" "goo-benchmark" "goo-continue" "goo-improve" "goo-status" "goo-observe" "goo-daily-report" "goo-usage" "goo-usage-analyse" "goo-publish")
-for cmd in "${CMDS[@]}"; do
+for cmd in ${CMDS[@]+"${CMDS[@]}"}; do
   f="$ROOT/commands/$cmd.md"
   if [[ -f "$f" ]]; then
     pass "commands/$cmd.md"
@@ -301,7 +301,7 @@ TASK_AGENTS=(
   "tasks/recording/execution-summarizer"
   "tasks/recording/lesson-extractor"
 )
-for agent in "${ROLE_AGENTS[@]}"; do
+for agent in ${ROLE_AGENTS[@]+"${ROLE_AGENTS[@]}"}; do
   f="$ROOT/agents/roles/$agent.md"
   if [[ -f "$f" ]]; then
     pass "agents/roles/$agent.md"
@@ -315,7 +315,7 @@ for agent in "${ROLE_AGENTS[@]}"; do
   fi
 done
 
-for agent in "${TASK_AGENTS[@]}"; do
+for agent in ${TASK_AGENTS[@]+"${TASK_AGENTS[@]}"}; do
   f="$ROOT/agents/$agent.md"
   if [[ -f "$f" ]]; then
     pass "agents/$agent.md"
@@ -334,7 +334,7 @@ echo ""
 echo "── 6. 脚本文件 ──"
 
 SCRIPTS=("goo-init.sh" "init-plan.sh" "goo-status.py" "goo-observe.py" "update-step.py" "thread-state.py" "thread-locks.py" "goo-thread.py" "thread-doctor.py" "goo-plan-health.py" "goo-md.py" "goo-update-check.py" "bump-version.py" "change-requests.py" "brainstorm-validate.py" "wiki-graph-assist.py" "daily-report-sessions.py" "goo-usage.py" "goo-publish.py" "goo-ssh.sh" "remote-resources.py" "resolve-root.sh" "resolve-root.py" "session-start.py" "check-plugin.sh")
-for s in "${SCRIPTS[@]}"; do
+for s in ${SCRIPTS[@]+"${SCRIPTS[@]}"}; do
   f="$ROOT/skills/auto-goo/scripts/$s"
   if [[ -f "$f" ]]; then
     pass "scripts/$s"
@@ -786,7 +786,7 @@ echo ""
 echo "── 6b. 模板文件 ──"
 
 TEMPLATES=("config.example.json" "user-config.example.json" "publish/workflow-shell.html" "publish/workflow-theme.css")
-for tmpl in "${TEMPLATES[@]}"; do
+for tmpl in ${TEMPLATES[@]+"${TEMPLATES[@]}"}; do
   f="$ROOT/skills/auto-goo/templates/$tmpl"
   if [[ -f "$f" ]]; then
     pass "templates/$tmpl"
@@ -1237,7 +1237,7 @@ echo ""
 echo "── 7. 示例文件 ──"
 
 EXAMPLES=("csv-analysis-workflow" "optimization-workflow" "multi-step-orchestration")
-for ex in "${EXAMPLES[@]}"; do
+for ex in ${EXAMPLES[@]+"${EXAMPLES[@]}"}; do
   f="$ROOT/skills/auto-goo/examples/$ex.md"
   if [[ -f "$f" ]]; then
     pass "examples/$ex.md"
@@ -2373,7 +2373,57 @@ else
   fail "解析器失败会连锁导致 exit 1"
 fi
 
-# 5) 扩展失败时必须暴露 stderr/stdout，而不是只报 exit code
+# 5) 禁止裸数组展开：bash 4.2/4.3 在 set -u 下对空数组执行
+#    "${ARR[@]}" 会报 unbound variable（bash 4.4+ 才修）。
+#    必须写成 ${ARR[@]+"${ARR[@]}"}。本地 bash 5.x 测不出来，只能静态校验。
+if python3 - "$ROOT" <<'PY2'
+import pathlib
+import re
+import sys
+
+pattern = re.compile(r'"\$\{([A-Za-z_][A-Za-z0-9_]*)\[@\]\}"')
+bad = []
+for path in pathlib.Path(sys.argv[1]).rglob("*.sh"):
+    if "node_modules" in path.parts:
+        continue
+    text = path.read_text(encoding="utf-8")
+    for match in pattern.finditer(text):
+        name = match.group(1)
+        if text[: match.start()].endswith(f"${{{name}[@]+"):
+            continue
+        start_of_line = text.rfind("\n", 0, match.start()) + 1
+        end_of_line = text.find("\n", match.start())
+        line_text = text[start_of_line : end_of_line if end_of_line != -1 else len(text)]
+        # 注释里的示例不执行，不算问题（本文件的解释文字就含有示例）
+        if line_text.lstrip().startswith("#"):
+            continue
+        line = text[: match.start()].count("\n") + 1
+        bad.append(f"{path.relative_to(sys.argv[1])}:{line} ${{{name}[@]}}")
+if bad:
+    raise SystemExit("bare array expansion (breaks on bash 4.2 + set -u): " + "; ".join(bad[:5]))
+PY2
+then
+  pass "无裸数组展开（兼容 bash 4.2 + set -u）"
+else
+  fail "存在裸 \"\${ARR[@]}\"，在 bash 4.2/4.3 上会 unbound variable"
+fi
+
+# 6) 空数组场景端到端：--user 初始化不带任何 --server/--remove-server
+AE_TMP="$(mktemp -d)"
+mkdir -p "$AE_TMP/home" "$AE_TMP/work"
+if HOME="$AE_TMP/home" bash "$GI" --user --wiki-dir "$AE_TMP/work/Goo-wiki" --write-user-pointer --yes >/dev/null 2>&1; then
+  pass "空 SERVER_SPECS / REMOVE_SERVERS 下 --user 初始化成功"
+else
+  fail "空数组场景初始化失败（bash 4.2 上会 unbound variable）"
+fi
+if [[ -f "$AE_TMP/home/.auto-goo/goo.md" && -f "$AE_TMP/home/.claude/CLAUDE.md" ]]; then
+  pass "空数组场景仍生成 goo.md 与用户级指针"
+else
+  fail "空数组场景缺少产物"
+fi
+rm -rf "$AE_TMP"
+
+# 7) 扩展失败时必须暴露 stderr/stdout，而不是只报 exit code
 INIT_TS="$ROOT/.pi/extensions/autogoo-plugin/commands/init.ts"
 if grep -q "result.stderr" "$INIT_TS" && grep -q "复现命令" "$INIT_TS"; then
   pass "初始化失败时暴露 stderr/stdout 与复现命令"

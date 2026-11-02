@@ -953,7 +953,7 @@ PY
   fi
   echo "Removed ALL existing servers."
 fi
-for remove_name in "${REMOVE_SERVERS[@]}"; do
+for remove_name in ${REMOVE_SERVERS[@]+"${REMOVE_SERVERS[@]}"}; do
   remove_name_trimmed="$(echo "$remove_name" | xargs)"
   if [[ -z "$remove_name_trimmed" ]]; then
     continue
@@ -963,7 +963,7 @@ for remove_name in "${REMOVE_SERVERS[@]}"; do
   echo "Removed server: $remove_name_trimmed"
 done
 
-for spec in "${SERVER_SPECS[@]}"; do
+for spec in ${SERVER_SPECS[@]+"${SERVER_SPECS[@]}"}; do
   if ! mapfile -t SERVER_FIELDS < <(parse_server_spec "$spec"); then
     exit 2
   fi

@@ -175,6 +175,22 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-plan-health.py --close --thr
 - **不篡改步骤状态**（不会把 `running` 伪装成 `completed`）；
 - **不删除任何文件**，并先在 `.goo/plans/history/` 留一份归档副本。
 
+### 兼容旧版 bash（4.2 / 4.3）
+
+`goo-init.sh` 开启 `set -u`。在 **bash 4.2/4.3**（CentOS 7 / RHEL 7 等）上，对**空数组**做 `"${ARR[@]}"` 展开会直接报错：
+
+```
+goo-init.sh: line 964: REMOVE_SERVERS[@]: unbound variable
+```
+
+bash 4.4+ 才修掉这个行为，所以本地（bash 5.x）测不出来。所有数组展开必须写成保护形式：
+
+```bash
+for x in ${ARR[@]+"${ARR[@]}"}; do ...; done
+```
+
+`check-plugin.sh` §21 静态校验全仓 `.sh` 文件，禁止裸 `"${ARR[@]}"`（跳过注释行），并用「空 `--server` / `--remove-server` 的 `--user` 初始化」做端到端验证。
+
 ### 初始化失败怎么排查
 
 `goo-init.sh` 开启 `set -euo pipefail`，任何一步失败都会中断。最常见的两类环境问题：

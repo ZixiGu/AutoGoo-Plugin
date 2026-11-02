@@ -2179,6 +2179,82 @@ else
   fail "pi 扩展未注册 goo-thread"
 fi
 
+# ── 19. thread-locks 真正接入派发 ──
+# 回归：规则一直写在 SKILL.md 里（"并发执行前必须使用 thread-locks.py"），
+# 但在 2026-10-08 之前**没有任何代码调用它** —— 两个会话可同时写同一批文件。
+# 这里断言调度代码真的调用了 check/acquire/release，且配对释放。
+echo ""
+echo "── 19. thread-locks 接入派发 ──"
+
+LOCKS_TS="$ROOT/.pi/extensions/autogoo-plugin/utils/locks.ts"
+DISPATCH_TS="$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts"
+EXECUTE_TS="$ROOT/.pi/extensions/autogoo-plugin/tools/execute.ts"
+
+if [[ -f "$LOCKS_TS" ]]; then
+  pass "utils/locks.ts 存在"
+else
+  fail "utils/locks.ts 缺失（thread-locks 无法接入派发）"
+fi
+
+for sym in checkPlanLocks acquirePlanLocks releasePlanLocks describeConflicts; do
+  if grep -q "export function $sym" "$LOCKS_TS" 2>/dev/null; then
+    pass "locks.ts 导出 $sym"
+  else
+    fail "locks.ts 未导出 $sym"
+  fi
+done
+
+for f in "$DISPATCH_TS" "$EXECUTE_TS"; do
+  base="$(basename "$f")"
+  if grep -q "checkPlanLocks(" "$f" && grep -q "acquirePlanLocks(" "$f" && grep -q "releasePlanLocks(" "$f"; then
+    pass "$base 同时调用 check/acquire/release（配对加锁）"
+  else
+    fail "$base 未完整接入 thread-locks（check/acquire/release 必须配对）"
+  fi
+  if grep -q "资源冲突" "$f" && grep -q '"--block"' "$f"; then
+    pass "$base 冲突时标记 blocked（按 SKILL 规则）"
+  else
+    fail "$base 冲突时未标记 blocked"
+  fi
+done
+
+# 冲突语义的端到端验证（脚本层）
+LT_TMP="$(mktemp -d)"
+mkdir -p "$LT_TMP/.goo/threads/a" "$LT_TMP/.goo/threads/b"
+printf '{"task":"A","status":"running","thread":{"id":"a"},"steps":[{"id":"s1","status":"pending","allowed_write_paths":["shared/out.txt"]}]}' > "$LT_TMP/.goo/threads/a/plan.json"
+printf '{"task":"B","status":"running","thread":{"id":"b"},"steps":[{"id":"s1","status":"pending","allowed_write_paths":["shared/out.txt"]}]}' > "$LT_TMP/.goo/threads/b/plan.json"
+TL="$ROOT/skills/auto-goo/scripts/thread-locks.py"
+python3 "$TL" --goo-dir "$LT_TMP/.goo" acquire-plan --plan "$LT_TMP/.goo/threads/a/plan.json" >/dev/null 2>&1
+if python3 "$TL" --goo-dir "$LT_TMP/.goo" check-plan --plan "$LT_TMP/.goo/threads/b/plan.json" >/dev/null 2>&1; then
+  fail "跨 thread 同资源未报冲突"
+else
+  pass "跨 thread 同资源判定为冲突（exit 2）"
+fi
+if python3 "$TL" --goo-dir "$LT_TMP/.goo" acquire-plan --plan "$LT_TMP/.goo/threads/b/plan.json" >/dev/null 2>&1; then
+  fail "冲突时仍抢到了锁"
+else
+  pass "冲突时不会抢占对方的锁"
+fi
+python3 "$TL" --goo-dir "$LT_TMP/.goo" release-plan --plan "$LT_TMP/.goo/threads/a/plan.json" >/dev/null 2>&1
+if python3 "$TL" --goo-dir "$LT_TMP/.goo" check-plan --plan "$LT_TMP/.goo/threads/b/plan.json" >/dev/null 2>&1; then
+  pass "释放后冲突消失"
+else
+  fail "释放后仍报冲突"
+fi
+# thread 自己的锁不算冲突
+if python3 "$TL" --goo-dir "$LT_TMP/.goo" check-plan --plan "$LT_TMP/.goo/threads/a/plan.json" >/dev/null 2>&1; then
+  pass "同 thread 自己的锁不构成冲突（可重入）"
+else
+  fail "同 thread 自检误报冲突"
+fi
+rm -rf "$LT_TMP"
+
+if grep -q "THREAD_LOCKS_PY" "$ROOT/.pi/extensions/autogoo-plugin/utils/paths.ts"; then
+  pass "paths.ts 定义 THREAD_LOCKS_PY"
+else
+  fail "paths.ts 未定义 THREAD_LOCKS_PY"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

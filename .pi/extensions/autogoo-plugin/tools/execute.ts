@@ -18,6 +18,7 @@ import { execPython, execShell } from "../utils/exec.js";
 import { runSubagent, resolveSubagentModel, resolveOrPromptSubagentModel } from "../utils/subagent.js";
 import { getRolePrompt, getTaskAgentPrompt } from "../utils/prompts.js";
 import { updateStatusBar, formatStatusLine, snapshotPlan } from "../utils/status.js";
+import { checkPlanLocks, acquirePlanLocks, releasePlanLocks, describeConflicts } from "../utils/locks.js";
 import {
   loadPlan,
   savePlan,
@@ -365,6 +366,42 @@ async function runSchedule(
       details: { blocked: true, reason: "Subagent 模型未配置", pendingSteps: [] as string[] },
     };
   }
+  // ── 资源冲突检查（plan 级，thread-locks）────────────────────────────
+  // 规则一直写在 SKILL.md 里，但此前没有任何代码调用它 → 两个会话可以同时写
+  // 同一批文件 / wiki 页 / 端口 / 远程服务器。这里补上真正的强制点。
+  // 并行派发用 plan 级 acquire/release（release-plan 会释放该 thread 的全部锁，
+  // 因此不能放在单步回调里）。
+  const lockCheck = checkPlanLocks(cwd, planPath);
+  if (!lockCheck.ok) {
+    const detail = describeConflicts(lockCheck.conflicts) || lockCheck.error || "未知冲突";
+    for (const step of toDispatch) {
+      execPython(
+        UPDATE_STEP_PY,
+        ["--plan", planPath, "--step-id", String(step.id), "--block", "--error", `资源冲突：${detail}`],
+        cwd,
+        { timeout: 10000 },
+      );
+      lines.push(`🚧 #${step.id} 资源冲突已 blocked：${detail}`);
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `blocked: 检测到资源冲突，本批 ${toDispatch.length} 步均未派发。\n` +
+            `冲突：${detail}\n` +
+            `处理：释放对方 thread 的锁，或调整这些 step 的写入范围后重试。\n` +
+            `查看锁：python3 skills/auto-goo/scripts/thread-locks.py list`,
+        },
+      ],
+      details: { blocked: true, conflicts: lockCheck.conflicts ?? [], steps: toDispatch.map((s) => s.id) },
+    };
+  }
+  const acquired = acquirePlanLocks(cwd, planPath);
+  if (!acquired.ok) {
+    lines.push(`⚠ 获取资源锁失败：${acquired.error || describeConflicts(acquired.conflicts)}`);
+  }
+
   const subagentResults = await Promise.all(
     toDispatch.map(async (step: any) => {
       const agentId = agentIds.get(String(step.id)) ?? `agent-${step.id}-${Date.now()}`;
@@ -497,6 +534,12 @@ async function runSchedule(
       return { stepId: step.id, status: stepNow?.status, result };
     }),
   );
+
+  // 释放本 thread 的资源锁（与上面的 acquirePlanLocks 配对；无锁时安全 no-op）
+  const released = releasePlanLocks(cwd, planPath);
+  if (!released.ok) {
+    lines.push(`⚠ 释放资源锁失败：${released.error}`);
+  }
 
   for (const { stepId, status, result } of subagentResults) {
     const usage = result.usage;

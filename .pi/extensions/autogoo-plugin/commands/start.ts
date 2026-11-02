@@ -17,6 +17,7 @@ import { uiSelect, uiInput } from "../utils/ui.js";
 import { updateStatusBar } from "../utils/status.js";
 import { generateWikiPacket, buildSubagentTaskPrompt, heartbeatTick } from "../utils/dispatch.js";
 import { existsSync } from "node:fs";
+import { checkPlanLocks, acquirePlanLocks, releasePlanLocks, describeConflicts } from "../utils/locks.js";
 
 // ── Global pi reference, set by setPi() from index.ts ───────────────────────
 let _pi: ExtensionAPI | null = null;
@@ -451,6 +452,47 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
         setProgressStatus(`⏳ #${params.stepId} ${fmtElapsed()} · ${lastActivity.slice(0, 40)}`);
       }, 8000);
 
+      // ── 资源冲突检查（thread-locks）────────────────────────────────────
+      // 规则一直写在 SKILL.md 里，但此前没有任何代码调用 → 两个会话可以同时写
+      // 同一批文件 / wiki 页 / 端口 / 远程服务器。这里补上真正的强制点。
+      // 冲突时按规则「标记 blocked 并前台询问用户」，默认不派发。
+      const lockCheck = checkPlanLocks(cwd, planPath);
+      if (!lockCheck.ok) {
+        const detail = describeConflicts(lockCheck.conflicts) || lockCheck.error || "未知冲突";
+        execPython(
+          UPDATE_STEP_PY,
+          ["--plan", planPath, "--step-id", String(params.stepId), "--block",
+           "--error", `资源冲突：${detail}`],
+          cwd,
+          { timeout: 10000 },
+        );
+        const force = await uiConfirm(
+          ctx,
+          "资源冲突",
+          `step ${params.stepId} 与其它 thread 存在资源冲突：\n${detail}\n\n是否强制继续派发？\n（强制会绕过并发保护，可能导致两边同时写同一份文件）`,
+          { defaultOnTimeout: false },
+        );
+        if (!force) {
+          ctx.ui.notify(
+            `[AutoGoo-Plugin] step ${params.stepId} 因资源冲突已标记 blocked，未派发。\n` +
+              `  冲突：${detail}\n  处理：释放对方 thread 的锁或调整 step 的写入范围后重试。`,
+            "warning",
+          );
+          return {
+            content: [{ type: "text", text: `blocked: 资源冲突（${detail}），未派发 step ${params.stepId}` }],
+            details: { stepId: params.stepId, blocked: true, conflicts: lockCheck.conflicts ?? [] },
+          };
+        }
+        ctx.ui.notify("已按用户选择强制继续（绕过资源锁）。", "warning");
+      }
+      const acquired = acquirePlanLocks(cwd, planPath);
+      if (!acquired.ok) {
+        ctx.ui.notify(
+          `[AutoGoo-Plugin] 获取资源锁失败：${acquired.error || describeConflicts(acquired.conflicts)}`,
+          "warning",
+        );
+      }
+
       let subagentResult;
       try {
         subagentResult = await runSubagent({
@@ -491,6 +533,11 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
       } finally {
         clearInterval(progressTimer);
         setProgressStatus(undefined);
+        // 释放本 thread 的资源锁（与 acquirePlanLocks 配对；无锁时也是安全 no-op）
+        const released = releasePlanLocks(cwd, planPath);
+        if (!released.ok) {
+          console.warn("[AutoGoo-Plugin] release-plan 失败:", released.error);
+        }
       }
 
       // 4. 兕底状态：子进程退出后 step 可能已被 Subagent 调 auto_goo_update_step

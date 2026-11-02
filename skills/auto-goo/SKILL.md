@@ -1,7 +1,7 @@
 ---
 name: goo-workflow
 description: "Use when the user says '/auto-goo:goo-init', '/auto-goo:goo-brainstorm', '/auto-goo:goo-plan', '/auto-goo:goo-start', '/auto-goo:goo-research', '/auto-goo:goo-daily-report', '/auto-goo:goo-usage', '/auto-goo:goo-usage-analyse', '/auto-goo:goo-observe', '/auto-goo:goo-publish', '找目标', '开始任务', 'run:', '日报', '周报', 'usage', 'token统计', 'token降本', '后台观察', '发布HTML', '自改进', or gives a goal-clear multi-step task that can be decomposed into sub-tasks. Runs Goo workflow: config init, wiki-based brainstorm, wiki recall, DAG planning, subagent execution, research material archiving, status/observe, HTML publishing, optimization, Goo-wiki archiving, usage monitor, usage cost analysis, daily reports, and plugin self-improvement. Compatible with Claude Code and Codex."
-version: 0.14.0
+version: 0.15.0
 tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent, wait_agent, request_user_input]
 ---
 
@@ -88,7 +88,7 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 
 **Thread 任务线**：AutoGoo-Plugin thread 是一条 brainstorm/plan/execution 任务线，保存在 `.goo/threads/<thread_id>/`，包含 `thread.json`、`brainstorm.json`、`plan.json`、`logs/`、`artifacts/` 和 `reports/`。`.goo/current_thread.json` 记录默认 thread；`.goo/plan.json` 是兼容入口，指向或复制当前 thread 的 active plan。用户启动新 plan 时，如果当前 thread/plan 未完成，必须优先用 `AskUserQuestion`（Claude Code）/ `request_user_input`（Codex）复用 `references/interaction-templates.md` 的 `id=thread_action` 模板询问：新建 thread、继续当前 thread、取消。用户未明确选择前，不得覆盖当前 thread 的 plan。每个 plan 顶层必须写入 `thread.id`、`thread.plan_path`、`thread.logs_dir` 和 `thread.artifacts_dir`；每次执行状态变化后必须同步 `.goo/threads/<thread_id>/thread.json.status` 和 `.goo/threads/index.json`。
 
-**Thread 一致性与锁**：从 brainstorm 生成 plan 时，必须校验 `brainstorm.thread.id == plan.thread.id`，并保持 `archive.task_archive_root` 一致。并发执行前必须使用 `skills/auto-goo/scripts/thread-locks.py` 检查资源冲突；写同一文件、同一 wiki 页面、同一端口或同一远程长任务资源时不得并行，冲突 step 标记 `blocked` 并前台询问用户。只读同一资源不冲突。
+**Thread 一致性与锁**：从 brainstorm 生成 plan 时，必须校验 `brainstorm.thread.id == plan.thread.id`，并保持 `archive.task_archive_root` 一致。并发执行前必须使用 `skills/auto-goo/scripts/thread-locks.py` 检查资源冲突；写同一文件、同一 wiki 页面、同一端口或同一远程长任务资源时不得并行，冲突 step 标记 `blocked` 并前台询问用户。只读同一资源不冲突。**该约束已由代码强制**：`auto_goo_dispatch` 与 `auto_goo_execute` 在派发前调用 `checkPlanLocks`，冲突时标记 `blocked` 并询问是否强制继续（默认否），成功后 `acquirePlanLocks`，结束在 `finally`/批次末尾 `releasePlanLocks` 配对释放。
 
 **Web 修改请求**：`goo-publish --serve` 的 Web 表单只写 `.goo/change-requests/*.json`，不得直接改 plan、业务文件或 Goo-wiki。主 Agent 用 `skills/auto-goo/scripts/change-requests.py list/claim/status` 管理请求状态；claim 后必须把用户修改点同步进 thread plan 或 context artifact，再派发模型修改和审计。修改完成后必须把对应请求状态更新为 `completed`；审计失败时改为 `needs_revision` 并记录原因。
 

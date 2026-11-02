@@ -56,6 +56,9 @@ export const RESOLVE_ROOT_SH = scriptPath("resolve-root.sh");
 /** Thread-state.py path. */
 export const THREAD_STATE_PY = scriptPath("thread-state.py");
 
+/** Thread-locks.py path. */
+export const THREAD_LOCKS_PY = scriptPath("thread-locks.py");
+
 /** Remote-resources.py path. */
 export const REMOTE_RESOURCES_PY = scriptPath("remote-resources.py");
 

@@ -2,7 +2,7 @@
 
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-Plugin-blue)
 ![Codex](https://img.shields.io/badge/Codex-Compatible-purple)
-![Version](https://img.shields.io/badge/version-0.14.0-green)
+![Version](https://img.shields.io/badge/version-0.15.0-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 AutoGoo-Plugin 是一个同时兼容 Claude Code 和 Codex 的智能体编排插件，用来把开放式任务拆成可执行计划、并行调用 subagent、记录运行状态，并把结果同步到 Goo-wiki / Obsidian。
@@ -102,7 +102,7 @@ pi install /path/to/AutoGoo-Plugin        # 仓库根即 pi 包
 }
 ```
 
-> Pi 扩展版本：**v0.14.0**。使用 Pi 原生 API（`ctx.ui`、自定义工具、事件系统）。卸载：`pi remove git:github.com/ZixiGu/AutoGoo-Plugin`。
+> Pi 扩展版本：**v0.15.0**。使用 Pi 原生 API（`ctx.ui`、自定义工具、事件系统）。卸载：`pi remove git:github.com/ZixiGu/AutoGoo-Plugin`。
 
 ## 在 Claude Code 中使用
 
@@ -224,6 +224,7 @@ Pi 扩展使用原生 API 注册 17 个自定义工具（`auto_goo_execute`、`a
 - **约定缺失可检测可恢复**：插件内置备份模板 `skills/auto-goo/templates/goo.md`。`goo-md.py --check` 报告当前生效的 goo.md（`project` / `user` / `missing`，missing 时 exit 1）；`goo-md.py --ensure` 在缺失时从模板恢复用户级 `~/.auto-goo/goo.md`（幂等，不覆盖已有内容，**不写 `~/.claude`/`~/.codex`**）。会话启动（`session-start.py` 与 pi `session_start`）在缺失时会给出可操作提示。
 - **更新自动提醒**：`goo-update-check.py` 比对本地 git HEAD 与远端分支 HEAD，有新提交时在会话启动时提醒并给出更新命令（只提醒，不自动更新）。只读（仅 `git ls-remote`）、带 24h 缓存、失败静默降级、`exit 0` 从不阻断启动；可用 `AUTOGOO_SKIP_UPDATE_CHECK` / `PI_SKIP_VERSION_CHECK` / `PI_OFFLINE` / `AUTOGOO_OFFLINE` 或 `update_check.enabled=false` 关闭。
 - **wiki 默认路径可查询**：`goo-init.sh --print-wiki-default [--json]` 输出实际生效的 wiki 路径与 `source`（`env` / `user-config` / `default`）。三个平台的初始化都必须先查询再提问，避免 agent 按默认值显式传参从而覆盖用户已配置的路径；pi 扩展与 CC/Codex 共用这一个入口，优先级逻辑只有一份实现。
+- **并发保护**：派发前用 `thread-locks.py` 检查跨 thread 的资源冲突（文件 / wiki 页 / 端口 / 远程服务器），冲突则标记 `blocked` 并询问用户，默认不派发；加锁/释放成对出现在 `auto_goo_dispatch` 与 `auto_goo_execute` 中。
 - **thread 统一管理**：`/goo-thread`（`list` / `show` / `switch` / `new` / `close` / `doctor` / `health`）收口原先分散在四个脚本里的 thread 操作。`switch` **同时同步** `current_thread.json` 与兼容入口 `.goo/plan.json` —— 只切前者会让 `/goo-status`、`/goo-continue` 继续作用于旧 thread。
 - **thread 记录对账**：`thread-doctor.py` 交叉校验 `thread.json` / `plan.json` / `threads/index.json` / `current_thread.json` / 文件系统五处的一致性，检出幽灵索引、状态漂移、`plan_path` 越界、时间戳倒置等静默腐坏。`--fix` 只做幂等安全修复（不删文件、不改步骤状态、先备份 index），反向漂移只报告不修。
 - **中断 plan 主动确认**：`goo-plan-health.py` 按 **thread 维度**检查可能已中断/搬置的 DAG：心跳停滞的 `running` 步骤、`failed`/`interrupted`/`blocked` 步骤、多日未更新，以及 **plan 与 thread 状态不一致**（如 plan 已完成但 `thread.json` 仍为 `running`）。会话启动时分别提问：当前 thread → 继续/结束/稍后；历史 thread → 暂不处理/全部结束。`--close` 会归档副本并把 plan 与 thread 一并标为 `abandoned`，**不篡改步骤状态、不删文件**。
@@ -328,7 +329,7 @@ bash skills/auto-goo/scripts/check-plugin.sh
 
 ## 版本
 
-当前版本：**v0.14.0**。
+当前版本：**v0.15.0**。
 
 ### 发版约定：每次提交都 bump
 

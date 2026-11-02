@@ -259,6 +259,33 @@ bash <auto_goo_root>/skills/auto-goo/scripts/goo-init.sh --print-wiki-default --
 
 **单一事实源**：优先级的实现只在 `goo-init.sh` 里一份。pi 扩展通过调用 `--print-wiki-default --json` 取用，**不在 TypeScript 里重写一遍** —— 双份实现必然漂移。
 
+### 并发保护：`thread-locks` 已接入派发
+
+规则一直写在 `SKILL.md` 里（"并发执行前必须使用 thread-locks.py"），但在 2026-10-08 之前**没有任何代码调用它** —— 两个会话可以同时写同一批文件 / wiki 页 / 端口 / 远程服务器，毫无保护。
+
+现在 `auto_goo_dispatch` 与 `auto_goo_execute` 都会：
+
+1. 派发前 `check-plan`：与**其它 thread** 的锁比对（同 thread 自己的锁不冲突，可重入）；
+2. 有冲突 → 把 step 标记 `blocked`，`ctx.ui.notify` 报出冲突项（`files:shared/out.txt (held by a)`），并用结构化确认询问「是否强制继续」（**默认否，超时也否**）；
+3. 放行后 `acquire-plan`；
+4. `finally` / 批次末尾 `release-plan` 配对释放。
+
+| 锁类型 | 来源字段 |
+| --- | --- |
+| `files` | `allowed_write_paths` / `outputs` / `output` |
+| `wiki` | `wiki_resources` / `wiki_pages` |
+| `servers` | `servers` / `server_resources` / `remote_server` |
+| `ports` | `ports` / `port` |
+
+手动排查与清理：
+
+```bash
+python3 <auto_goo_root>/skills/auto-goo/scripts/thread-locks.py list
+python3 <auto_goo_root>/skills/auto-goo/scripts/thread-locks.py release-plan --plan .goo/threads/<id>/plan.json
+```
+
+僵尸锁超过 10 分钟（`STALE_LOCK_AGE_SECONDS`）会被视为陈旧。
+
 ### thread 统一管理（`goo-thread.py`）
 
 thread 操作原先散在四个脚本里（`thread-state.py` / `init-plan.sh` / `goo-plan-health.py` / `thread-doctor.py`），现收口成一个入口：

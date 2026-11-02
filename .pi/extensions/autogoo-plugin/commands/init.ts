@@ -73,14 +73,38 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
     // 统一走 goo-init.sh --print-wiki-default，**不在 TS 里重写一遍优先级逻辑**。
     // 双份实现必然漂移（本项目已多次踩坑），且 Claude Code / Codex 侧也用同一入口。
     const def = readWikiDefault();
-    const configured = def.source === "default" ? null : def.path;
+
+    // 关键：只有「推荐」（路径存在，或 source=default 会被创建）时才把它当推荐项。
+    // 否则会把另一台机器的配置当成本机路径推荐给用户。
+    const recommendable = def.recommend && def.exists !== undefined ? def.recommend : def.source !== "default";
+    const configured = def.source !== "default" && recommendable ? def.path : null;
+
+    if (def.source !== "default" && !recommendable) {
+      ctx.ui.notify(
+        `⚠ 已配置的 wiki 路径在本机不存在：${def.path}\n` +
+          `  （HOME=${def.home ?? process.env.HOME ?? "?"}，source=${def.source}）\n` +
+          `  可能是另一台机器的配置或已被删除；下面不将它标为推荐项。`,
+        "warning",
+      );
+    }
+
+    const altLabels = (def.alternatives || [])
+      .filter((a) => a.path !== def.path)
+      .map((a) => `${a.path}${a.exists ? "" : "（不存在，将创建）"}`);
+
     const options = configured
       ? [
-          { label: `已配置：${configured} (Recommended)`, description: `复用本机已配置的 wiki_dir（source: ${def.source}）。`, value: "__configured__" },
+          { label: `已配置：${configured} (Recommended)`, description: `复用本机已配置的 wiki_dir（source: ${def.source}，目录存在）。`, value: "__configured__" },
           { label: "~/workspace/Goo-wiki", description: "改用默认 Goo-wiki 路径。", value: "__default__" },
           { label: "自定义路径", description: "选择后在输入框中输入路径。", value: "__custom__" },
         ]
-      : TEMPLATE_WIKI_DIR.options;
+      : [
+          { label: `${def.path} (Recommended)`, description: `生效默认值（source: ${def.source}${def.exists ? "，目录存在" : "，目录不存在，初始化时会创建"}）。`, value: "__resolved__" },
+          ...altLabels
+            .filter((label) => !label.startsWith(def.path))
+            .map((label) => ({ label: `备选：${label}`, description: "脚本给出的备选路径。", value: `__alt__:${label.split("（")[0]}` })),
+          { label: "自定义路径", description: "选择后在输入框中输入路径。", value: "__custom__" },
+        ];
 
     const choice = await uiSelect(ctx, TEMPLATE_WIKI_DIR.header, options);
     if (!choice) {
@@ -90,11 +114,18 @@ export async function handleGooInit(args: string, ctx: ExtensionContext): Promis
     if (choice === "__configured__" && configured) {
       wikiDir = configured;
       ctx.ui.notify(`复用已配置 wiki 路径：${configured}（source: ${def.source}）`, "info");
+    } else if (choice === "__resolved__") {
+      wikiDir = def.path;
     } else if (choice === "__default__") {
       wikiDir = def.hard_default;
+    } else if (choice.startsWith("__alt__:")) {
+      wikiDir = choice.slice("__alt__:".length);
     } else if (choice === "__custom__") {
       const input = await uiInput(ctx, "Goo-wiki 路径", configured ?? def.path);
       wikiDir = input ? resolve(input.replace(/^~/, process.env.HOME || "~")) : (configured ?? def.path);
+    } else {
+      // 兼容：某些 UI 在无匹配 label 时回传原始 label
+      wikiDir = configured ?? def.path;
     }
   }
 
@@ -425,7 +456,18 @@ async function collectServers(ctx: ExtensionContext): Promise<ServerInfo[]> {
  * Re-implementing it here would drift from the CLI — and Claude Code / Codex
  * consume the same flag, so all three platforms stay consistent.
  */
-function readWikiDefault(): { path: string; source: string; hard_default: string } {
+interface WikiDefault {
+  path: string;
+  source: string;
+  exists: boolean;
+  recommend: boolean;
+  recommend_reason?: string;
+  alternatives?: Array<{ path: string; source: string; exists: boolean }>;
+  home?: string;
+  hard_default: string;
+}
+
+function readWikiDefault(): WikiDefault {
   const hardDefault = resolve(process.env.HOME || "~", "workspace/Goo-wiki");
   try {
     const result = execBash(
@@ -439,13 +481,26 @@ function readWikiDefault(): { path: string; source: string; hard_default: string
       return {
         path: parsed.path,
         source: typeof parsed.source === "string" ? parsed.source : "default",
+        exists: !!parsed.exists,
+        // 脚本未提供 recommend 时按保守规则回退：只有 source=default 才当作可推荐
+        recommend: typeof parsed.recommend === "boolean" ? parsed.recommend : parsed.source === "default",
+        recommend_reason: parsed.recommend_reason,
+        alternatives: Array.isArray(parsed.alternatives) ? parsed.alternatives : [],
+        home: typeof parsed.home === "string" ? parsed.home : undefined,
         hard_default: typeof parsed.hard_default === "string" ? parsed.hard_default : hardDefault,
       };
     }
   } catch {
     /* 查询失败不阻断初始化，回退到硬编码默认值 */
   }
-  return { path: hardDefault, source: "default", hard_default: hardDefault };
+  return {
+    path: hardDefault,
+    source: "default",
+    exists: false,
+    recommend: true,
+    alternatives: [],
+    hard_default: hardDefault,
+  };
 }
 
 interface ExistingServer {

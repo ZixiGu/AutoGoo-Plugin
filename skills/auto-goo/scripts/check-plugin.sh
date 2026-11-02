@@ -1919,11 +1919,53 @@ fi
 
 rm -rf "$WK_TMP"
 
+# E2) 配置指向不存在路径时：recommend 必须为 false，并给出 alternatives
+WK_TMP2="$(mktemp -d)"
+mkdir -p "$WK_TMP2/home/.auto-goo"
+printf '{"wiki_dir":"/nonexistent-goo-wiki-xyz"}' > "$WK_TMP2/home/.auto-goo/config.json"
+if HOME="$WK_TMP2/home" bash "$GI" --print-wiki-default --json 2>/dev/null | python3 -c '
+import json, sys
+## 配置指向不存在的目录时绝不能推荐，否则会把另一台机器的路径推给用户
+d = json.load(sys.stdin)
+assert d["source"] == "user-config", d
+assert d["exists"] is False, d
+assert d["recommend"] is False, d
+assert d["alternatives"], d
+assert d["home"], d
+'; then
+  pass "配置路径不存在时 recommend=false 且给出 alternatives/home"
+else
+  fail "配置路径不存在时仍被当作可推荐路径"
+fi
+rm -rf "$WK_TMP2"
+
+# E3) 配置路径存在时 recommend 必须为 true
+WK_TMP3="$(mktemp -d)"
+mkdir -p "$WK_TMP3/home/.auto-goo" "$WK_TMP3/real-wiki"
+printf '{"wiki_dir":"%s"}' "$WK_TMP3/real-wiki" > "$WK_TMP3/home/.auto-goo/config.json"
+if HOME="$WK_TMP3/home" bash "$GI" --print-wiki-default --json 2>/dev/null | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["exists"] is True and d["recommend"] is True, d
+'; then
+  pass "配置路径存在时 recommend=true"
+else
+  fail "配置路径存在时未标记为可推荐"
+fi
+rm -rf "$WK_TMP3"
+
 # F) 三端必须共用同一个入口（禁止 TS 里重写优先级逻辑）
 if grep -q "print-wiki-default" "$ROOT/.pi/extensions/autogoo-plugin/commands/init.ts"; then
   pass "pi 扩展复用 --print-wiki-default（不另写一套优先级）"
 else
   fail "pi 扩展未复用脚本入口，优先级逻辑存在双份漂移风险"
+fi
+
+# F2) pi 扩展必须尊重 recommend 字段，不能只按 source 判断
+if grep -q "def.recommend" "$ROOT/.pi/extensions/autogoo-plugin/commands/init.ts"; then
+  pass "pi 扩展按 recommend 决定是否标 Recommended"
+else
+  fail "pi 扩展未使用 recommend，会把不存在的路径推荐给用户"
 fi
 
 # G) 文档必须要求先查询（否则 agent 又会拍脑袋给默认值）

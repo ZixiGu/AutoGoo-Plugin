@@ -88,12 +88,16 @@ Agent 交互流程：
    bash "$auto_goo_root/skills/auto-goo/scripts/goo-init.sh" --print-wiki-default --json
    ```
 
-   输出字段：`path`（生效路径）、`source`（`env` / `user-config` / `default`）、`hard_default`、`config_file`。
+   输出字段：`path`（生效路径）、`source`（`env` / `user-config` / `default`）、**`exists`**、**`recommend`**、`recommend_reason`、`alternatives`、`home`、`hard_default`、`user_config`、`user_config_file`。
 
-   - **`source` 不是 `default`**（即用户真的配过）：把 `path` 作为**首个推荐选项**，同时提供 `~/workspace/Goo-wiki` 与自定义路径；
-   - **`source` 是 `default`**（没配过）：才用 `~/workspace/Goo-wiki` (Recommended) + 自定义路径。
+   **推荐判据（必须遵守）**：
+   - `recommend === true` **且** `source !== "default"` → 把 `path` 作为**首个推荐选项**，并注明目录存在；
+   - `recommend === true` **且** `source === "default"` → 用 `path` 作为推荐项（初始化时会创建该目录）；
+   - `recommend === false` → **绝不要把它标成 Recommended**。这通常意味着配置来自另一台机器、或目录已被删除。应把 `recommend_reason`、`home` 与 `alternatives` 展示给用户，让用户自己选。
 
-   **不得跳过这一步直接给默认值** —— 跳过会把用户在本机已配好的路径覆盖掉（实测：显式传 `--wiki-dir ~/workspace/Goo-wiki` 时，用户配置会被完全忽略）。
+   **`home` 字段用于诊断 HOME 不一致**：如果 `home` 与你预期的家目录不同，说明当前进程的 `$HOME` 与用户终端不是同一个，配置文件和 `~/workspace/Goo-wiki` 都会落在别处 —— 此时应显式提示用户，不要静默采用。
+
+   **不得跳过这一步直接给默认值** —— 跳过会把用户在本机已配好的路径覆盖掉（实测：显式传 `--wiki-dir ~/workspace/Goo-wiki` 时，用户配置会被完全忽略）；反过来，`recommend=false` 时照搬配置也会推荐一个并不存在的路径。
 7. 如果无法渲染结构化选项，使用以下纯文本 fallback：
    ```text
    这是 fallback：结构化选择 UI 不可用。请选择 Goo-wiki 路径：

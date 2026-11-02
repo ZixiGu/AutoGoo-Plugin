@@ -188,19 +188,30 @@ bash <auto_goo_root>/skills/auto-goo/scripts/goo-init.sh --print-wiki-default --
 {
   "path": "/data/Goo-wiki",
   "source": "user-config",
+  "exists": true,
+  "recommend": true,
+  "recommend_reason": "path exists on this machine",
+  "alternatives": [{"source": "default", "path": "/home/u/workspace/Goo-wiki", "exists": false}],
+  "home": "/home/u",
   "env": null,
   "user_config": "/data/Goo-wiki",
-  "hard_default": "/home/u/workspace/Goo-wiki",
-  "config_file": "/home/u/.auto-goo/config.json"
+  "user_config_file": "/home/u/.auto-goo/config.json",
+  "user_config_file_exists": true,
+  "hard_default": "/home/u/workspace/Goo-wiki"
 }
 ```
 
 `source` 取值：`env`（`AUTOGOO_PLUGIN_WIKI_DIR`）> `user-config`（`~/.auto-goo/config.json` 的 `wiki_dir`）> `default`（硬编码）。
 
-| `source` | 提问时该怎么给选项 |
-| --- | --- |
-| `env` / `user-config` | `path` 作为**首个 Recommended**，再给 `~/workspace/Goo-wiki` 与自定义 |
-| `default` | `~/workspace/Goo-wiki` (Recommended) + 自定义 |
+**能否推荐由 `recommend` 决定，不能只看 `source`**：
+
+| 条件 | 含义 | 提问时 |
+| --- | --- | --- |
+| `recommend: true` 且 `source != default` | 用户配过，且目录在本机存在 | `path` 作为**首个 Recommended** |
+| `recommend: true` 且 `source == default` | 约定路径，初始化时会创建 | `path` 作为推荐项 |
+| `recommend: false` | **配置指向的目录在本机不存在**（多半来自另一台机器或已删除） | **绝不标 Recommended**；展示 `recommend_reason` / `home` / `alternatives` 让用户选 |
+
+`home` 字段用于诊断 HOME 不一致：如果它与你预期的家目录不同，说明当前进程的 `$HOME` 与用户终端不是同一个，配置文件和 `~/workspace/Goo-wiki` 都会落在别处。
 
 **为什么必须查询而不是"自己判断"**：实测中，agent 若按文档默认值显式传 `--wiki-dir ~/workspace/Goo-wiki`，会**完全覆盖用户本机已配好的路径**（`--wiki-dir` 优先级最高）。
 

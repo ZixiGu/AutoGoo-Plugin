@@ -650,38 +650,73 @@ PY
 # 「用户真的配过」与「只是硬编码默认值」—— 后者不应被包装成推荐项。
 resolve_default_wiki_dir_json() {
   local user_cfg="$HOME/.auto-goo/config.json"
-  python3 - "$user_cfg" "${AUTOGOO_PLUGIN_WIKI_DIR:-}" "$HOME/workspace/Goo-wiki" <<'PY'
-import json, sys
+  python3 - "$user_cfg" "${AUTOGOO_PLUGIN_WIKI_DIR:-}" "$HOME/workspace/Goo-wiki" "$HOME" <<'PY'
+import json, os, sys
 from pathlib import Path
 
 user_cfg = Path(sys.argv[1])
 env_dir = sys.argv[2]
 hard_default = sys.argv[3]
+home = sys.argv[4]
 
 configured = ""
+cfg_error = None
 try:
     if user_cfg.is_file():
         data = json.loads(user_cfg.read_text(encoding="utf-8"))
         value = data.get("wiki_dir") if isinstance(data, dict) else None
         if isinstance(value, str):
             configured = value.strip()
-except (OSError, ValueError):
-    configured = ""
+except (OSError, ValueError) as exc:
+    cfg_error = f"{type(exc).__name__}: {exc}"
 
-if env_dir:
-    path, source = env_dir, "env"
-elif configured:
-    path, source = configured, "user-config"
+# 候选按优先级排列（同值只保留最高优先级的一次）
+candidates = []
+for source, raw in (("env", env_dir), ("user-config", configured), ("default", hard_default)):
+    if not raw:
+        continue
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(home, expanded)
+    if any(c["path"] == expanded for c in candidates):
+        continue
+    candidates.append({"source": source, "path": expanded, "exists": os.path.isdir(expanded)})
+
+chosen = candidates[0] if candidates else {"source": "default", "path": hard_default, "exists": False}
+
+# recommend 语义：调用方拿到的路径是否适合直接推荐给用户。
+#  - 路径存在 → 可以推荐
+#  - source=default（约定路径，goo-init 会创建）→ 可以推荐
+#  - 其余（env/user-config 但目录不存在）→ **不推荐**，多半是另一台机器的配置或已删除
+if chosen["exists"]:
+    recommend, reason = True, "path exists on this machine"
+elif chosen["source"] == "default":
+    recommend, reason = True, "conventional path; goo-init will create it"
 else:
-    path, source = hard_default, "default"
+    recommend = False
+    reason = (
+        f"{chosen['source']} 指向的目录在本机不存在"
+        f"（HOME={home}）；可能是另一台机器的配置或已被删除"
+    )
+
+alternatives = [c for c in candidates[1:]]
+if not alternatives and chosen["source"] != "default":
+    alternatives = [{"source": "default", "path": hard_default, "exists": os.path.isdir(hard_default)}]
 
 print(json.dumps({
-    "path": path,
-    "source": source,
+    "path": chosen["path"],
+    "source": chosen["source"],
+    "exists": chosen["exists"],
+    "recommend": recommend,
+    "recommend_reason": reason,
+    "alternatives": alternatives,
+    "home": home,
     "env": env_dir or None,
     "user_config": configured or None,
+    "user_config_file": str(user_cfg),
+    "user_config_file_exists": user_cfg.is_file(),
+    "user_config_error": cfg_error,
     "hard_default": hard_default,
-    "config_file": str(user_cfg),
 }, ensure_ascii=False))
 PY
 }

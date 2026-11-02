@@ -1,5 +1,5 @@
 /**
- * AutoGoo-Plugin Pi Extension v0.9.0 — 主入口
+ * AutoGoo-Plugin Pi Extension v0.10.0 — 主入口
  *
  * DAG 驱动的多智能体编排框架，从 Claude Code 插件迁移。
  *
@@ -636,5 +636,5 @@ export default function (pi: ExtensionAPI) {
 
   // ── Startup banner ────────────────────────────────────────────────────────
   // Use stderr to avoid interfering with Pi's TUI rendering
-  process.stderr.write(`[AutoGoo-Plugin] ✅ 扩展已加载 (v0.9.0)\n`);
+  process.stderr.write(`[AutoGoo-Plugin] ✅ 扩展已加载 (v0.10.0)\n`);
 }

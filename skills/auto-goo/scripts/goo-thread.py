@@ -134,12 +134,35 @@ MARK = {
 }
 
 
-def cmd_list(root: Path) -> int:
+def cmd_list(root: Path, as_json: bool = False, status_filter: str | None = None,
+             only_active: bool = False) -> int:
     rows = thread_rows(root)
+    health = health_by_id(root)
+    for row in rows:
+        row["flag"] = needs_attention(row, health)
+        entry = health.get(row["id"]) or {}
+        row["health_state"] = entry.get("state")
+        row["health_reasons"] = entry.get("reasons") or []
+        row["age_hours"] = entry.get("age_hours")
+
+    if status_filter:
+        wanted = {s.strip() for s in status_filter.split(",") if s.strip()}
+        rows = [r for r in rows if r["status"] in wanted]
+    if only_active:
+        rows = [r for r in rows if r["status"] not in FINISHED_THREAD_STATES]
+
+    if as_json:
+        print(json.dumps({
+            "root": str(root),
+            "current_thread_id": read_json(goo_dir(root) / "current_thread.json").get("thread_id"),
+            "count": len(rows),
+            "threads": rows,
+        }, ensure_ascii=False, indent=2))
+        return 0
+
     if not rows:
         print("AutoGoo: 还没有任何 thread（用 goo-thread.py new \"<标题>\" 创建）")
         return 0
-    health = health_by_id(root)
     # 当前 thread 置顶
     rows.sort(key=lambda r: (not r["is_current"], r["updated_at"]), reverse=False)
     rows.sort(key=lambda r: r["is_current"], reverse=True)
@@ -156,7 +179,7 @@ def cmd_list(root: Path) -> int:
     return 0
 
 
-def cmd_show(root: Path, thread_id: str) -> int:
+def cmd_show(root: Path, thread_id: str, as_json: bool = False) -> int:
     threads_dir = goo_dir(root) / "threads"
     target = threads_dir / thread_id
     if not target.is_dir():
@@ -168,6 +191,30 @@ def cmd_show(root: Path, thread_id: str) -> int:
     steps = [s for s in (plan.get("steps") or []) if isinstance(s, dict)]
     current = read_json(goo_dir(root) / "current_thread.json").get("thread_id")
     health = health_by_id(root).get(thread_id) or {}
+
+    if as_json:
+        row = next((r for r in thread_rows(root) if r["id"] == thread_id), {})
+        print(json.dumps({
+            "id": thread_id,
+            "is_current": current == thread_id,
+            "meta": meta,
+            "plan": {"status": plan.get("status"), "steps": steps},
+            "row": row,
+            "health": health,
+            "paths": {
+                "dir": str(target),
+                "plan": str(plan_path),
+                "logs": str(target / "logs"),
+                "artifacts": str(target / "artifacts"),
+                "reports": str(target / "reports"),
+            },
+            "counts": {
+                "logs": len(list((target / "logs").glob("*"))) if (target / "logs").is_dir() else 0,
+                "artifacts": len(list((target / "artifacts").rglob("*"))) if (target / "artifacts").is_dir() else 0,
+                "reports": len(list((target / "reports").glob("*"))) if (target / "reports").is_dir() else 0,
+            },
+        }, ensure_ascii=False, indent=2))
+        return 0
 
     print(f"thread:  {thread_id}{'  * 当前' if current == thread_id else ''}")
     print(f"title:   {meta.get('title') or '(无标题)'}")
@@ -263,6 +310,76 @@ def cmd_new(root: Path, title: str, steps: int | None) -> int:
     return 0
 
 
+def _update_thread_meta(root: Path, thread_id: str, mutate) -> bool:
+    """Load thread.json, apply *mutate*, write back, and mirror into index.json."""
+    threads_dir = goo_dir(root) / "threads"
+    meta_path = threads_dir / thread_id / "thread.json"
+    if not meta_path.is_file():
+        return False
+    meta = read_json(meta_path)
+    mutate(meta)
+    meta["updated_at"] = now_iso()
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    index_path = threads_dir / "index.json"
+    index = read_json(index_path)
+    entries = index.get("threads") if isinstance(index.get("threads"), list) else []
+    for entry in entries:
+        if isinstance(entry, dict) and str(entry.get("id")) == thread_id:
+            entry["title"] = meta.get("title", entry.get("title"))
+            entry["status"] = meta.get("status", entry.get("status"))
+            entry["updated_at"] = meta.get("updated_at")
+    index["threads"] = entries
+    index_path.write_text(json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
+def now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def cmd_rename(root: Path, thread_id: str, title: str) -> int:
+    if not (goo_dir(root) / "threads" / thread_id / "thread.json").is_file():
+        print(f"error: thread 不存在: {thread_id}", file=sys.stderr)
+        return 1
+    _update_thread_meta(root, thread_id, lambda m: m.__setitem__("title", title))
+    print(f"已重命名 thread {thread_id} → {title}")
+    return 0
+
+
+def cmd_archive(root: Path, thread_id: str) -> int:
+    if not (goo_dir(root) / "threads" / thread_id / "thread.json").is_file():
+        print(f"error: thread 不存在: {thread_id}", file=sys.stderr)
+        return 1
+
+    def mutate(meta: dict) -> None:
+        meta["previous_status"] = meta.get("status")
+        meta["status"] = "archived"
+
+    _update_thread_meta(root, thread_id, mutate)
+    print(f"已归档 thread {thread_id}（恢复：goo-thread.py restore {thread_id}）")
+    return 0
+
+
+def cmd_restore(root: Path, thread_id: str) -> int:
+    meta_path = goo_dir(root) / "threads" / thread_id / "thread.json"
+    if not meta_path.is_file():
+        print(f"error: thread 不存在: {thread_id}", file=sys.stderr)
+        return 1
+    meta = read_json(meta_path)
+    restored = str(meta.get("previous_status") or "running")
+
+    def mutate(m: dict) -> None:
+        m["status"] = restored
+        m.pop("previous_status", None)
+
+    _update_thread_meta(root, thread_id, mutate)
+    print(f"已恢复 thread {thread_id} → {restored}")
+    return 0
+
+
 def cmd_close(root: Path, thread_id: str, reason: str) -> int:
     code, out, err = run_script(
         "goo-plan-health.py",
@@ -304,14 +421,25 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=Path.cwd(), help="项目根（默认当前目录）")
     sub = parser.add_subparsers(dest="cmd")
 
-    sub.add_parser("list", help="列出所有 thread（含健康状态）")
+    list_cmd = sub.add_parser("list", help="列出所有 thread（含健康状态）")
+    list_cmd.add_argument("--json", action="store_true", help="机器可读输出")
+    list_cmd.add_argument("--status", default=None, help="按状态过滤，逗号分隔，如 running,archived")
+    list_cmd.add_argument("--active", action="store_true", help="只显示未结束的 thread")
     show = sub.add_parser("show", help="查看单个 thread 详情")
     show.add_argument("thread_id")
+    show.add_argument("--json", action="store_true", help="机器可读输出")
     switch = sub.add_parser("switch", help="切换当前 thread（同时同步兼容入口）")
     switch.add_argument("thread_id")
     new = sub.add_parser("new", help="新建 thread")
     new.add_argument("title")
     new.add_argument("--steps", type=int, default=None, help="同时生成 N 步计划骨架")
+    rename = sub.add_parser("rename", help="重命名 thread 标题")
+    rename.add_argument("thread_id")
+    rename.add_argument("title")
+    archive = sub.add_parser("archive", help="归档 thread（可 restore 恢复）")
+    archive.add_argument("thread_id")
+    restore = sub.add_parser("restore", help="从归档恢复 thread")
+    restore.add_argument("thread_id")
     close = sub.add_parser("close", help="归档并关闭 thread")
     close.add_argument("thread_id")
     close.add_argument("--reason", default="closed via goo-thread")
@@ -323,13 +451,24 @@ def main() -> int:
     root = args.root.expanduser().resolve()
 
     if args.cmd in (None, "list"):
-        return cmd_list(root)
+        return cmd_list(
+            root,
+            as_json=getattr(args, "json", False),
+            status_filter=getattr(args, "status", None),
+            only_active=getattr(args, "active", False),
+        )
     if args.cmd == "show":
-        return cmd_show(root, args.thread_id)
+        return cmd_show(root, args.thread_id, as_json=getattr(args, "json", False))
     if args.cmd == "switch":
         return cmd_switch(root, args.thread_id)
     if args.cmd == "new":
         return cmd_new(root, args.title, args.steps)
+    if args.cmd == "rename":
+        return cmd_rename(root, args.thread_id, args.title)
+    if args.cmd == "archive":
+        return cmd_archive(root, args.thread_id)
+    if args.cmd == "restore":
+        return cmd_restore(root, args.thread_id)
     if args.cmd == "close":
         return cmd_close(root, args.thread_id, args.reason)
     if args.cmd == "doctor":

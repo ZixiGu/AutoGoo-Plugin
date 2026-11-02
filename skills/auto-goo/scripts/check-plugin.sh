@@ -2255,6 +2255,89 @@ else
   fail "paths.ts 未定义 THREAD_LOCKS_PY"
 fi
 
+# ── 20. goo-thread 交互式管理界面 ──
+# 回归：`/goo-thread` 无参数时必须是**键盘驱动的 TUI**（ctx.ui.custom），
+# 而不是 print 一张表；非 TUI 模式要能优雅降级到脚本输出。
+echo ""
+echo "── 20. thread 交互式界面 ──"
+
+TUI_TS="$ROOT/.pi/extensions/autogoo-plugin/utils/thread-ui.ts"
+THREAD_CMD="$ROOT/.pi/extensions/autogoo-plugin/commands/thread.ts"
+
+if [[ -f "$TUI_TS" ]] && grep -q "export class ThreadManager" "$TUI_TS"; then
+  pass "utils/thread-ui.ts 导出 ThreadManager"
+else
+  fail "utils/thread-ui.ts 缺失或未导出 ThreadManager"
+fi
+
+for sym in "render(width" "handleInput(data" "matchesKey" "truncateToWidth"; do
+  if grep -q "$sym" "$TUI_TS" 2>/dev/null; then
+    pass "ThreadManager 实现 $sym"
+  else
+    fail "ThreadManager 缺少 $sym"
+  fi
+done
+
+if grep -q "ctx.ui.custom" "$THREAD_CMD" && grep -q "new ThreadManager" "$THREAD_CMD"; then
+  pass "/goo-thread 无参数时打开 ctx.ui.custom 交互界面"
+else
+  fail "/goo-thread 仍是纯打印输出（未使用 ctx.ui.custom）"
+fi
+
+if grep -q 'ctx.mode === "tui"' "$THREAD_CMD"; then
+  pass "非 TUI 模式有降级判定（ctx.mode === tui）"
+else
+  fail "缺少非 TUI 模式的降级判定"
+fi
+
+# 危险动作必须走确认（关闭 thread）
+if grep -q 'uiConfirm' "$THREAD_CMD" && grep -q 'defaultOnTimeout: false' "$THREAD_CMD"; then
+  pass "关闭 thread 走结构化确认（超时不动作）"
+else
+  fail "关闭 thread 缺少确认或超时安全默认"
+fi
+
+# 脚本层：--json / rename / archive / restore
+GT2_TMP="$(mktemp -d)"
+mkdir -p "$GT2_TMP/.goo/threads/t1"
+printf '{"id":"t1","title":"原名","status":"running","updated_at":"2026-01-01T00:00:00Z"}' > "$GT2_TMP/.goo/threads/t1/thread.json"
+printf '{"status":"running","thread":{"id":"t1"},"steps":[{"id":"s1","status":"pending"}]}' > "$GT2_TMP/.goo/threads/t1/plan.json"
+printf '{"threads":[{"id":"t1","title":"原名","status":"running"}]}' > "$GT2_TMP/.goo/threads/index.json"
+printf '{"thread_id":"t1"}' > "$GT2_TMP/.goo/current_thread.json"
+cp "$GT2_TMP/.goo/threads/t1/plan.json" "$GT2_TMP/.goo/plan.json"
+
+if python3 "$GT" --root "$GT2_TMP" list --json 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d["count"]==1 and d["threads"][0]["id"]=="t1"'; then
+  pass "goo-thread list --json 可用（供 TUI 消费）"
+else
+  fail "goo-thread list --json 异常"
+fi
+
+python3 "$GT" --root "$GT2_TMP" rename t1 "新标题" >/dev/null 2>&1
+if python3 -c 'import json,sys;assert json.load(open("'"$GT2_TMP"'/.goo/threads/t1/thread.json"))["title"]=="新标题"'; then
+  pass "rename 同时更新 thread.json"
+else
+  fail "rename 未生效"
+fi
+if python3 -c 'import json,sys;d=json.load(open("'"$GT2_TMP"'/.goo/threads/index.json"));assert d["threads"][0]["title"]=="新标题"'; then
+  pass "rename 同步 index.json"
+else
+  fail "rename 未同步 index"
+fi
+
+python3 "$GT" --root "$GT2_TMP" archive t1 >/dev/null 2>&1
+if python3 -c 'import json,sys;m=json.load(open("'"$GT2_TMP"'/.goo/threads/t1/thread.json"));assert m["status"]=="archived" and m["previous_status"]=="running"'; then
+  pass "archive 记录 previous_status（可恢复）"
+else
+  fail "archive 未记录 previous_status"
+fi
+python3 "$GT" --root "$GT2_TMP" restore t1 >/dev/null 2>&1
+if python3 -c 'import json,sys;m=json.load(open("'"$GT2_TMP"'/.goo/threads/t1/thread.json"));assert m["status"]=="running"'; then
+  pass "restore 恢复到归档前状态"
+else
+  fail "restore 未恢复原状态"
+fi
+rm -rf "$GT2_TMP"
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

@@ -12,15 +12,50 @@ thread 是一整条任务线（`.goo/threads/<id>/`：`thread.json` + `plan.json
 
 ## 用法
 
-```text
-/goo-thread                 列出所有 thread（* = 当前，⚠ = 需处理）
-/goo-thread show <id>       查看单个 thread 详情
-/goo-thread switch <id>     切换当前 thread
-/goo-thread new <标题>      新建 thread（加 --steps N 同时生成计划骨架）
-/goo-thread close <id>      归档并关闭
-/goo-thread doctor [--fix]  对账并修复记录不一致
-/goo-thread health          按 thread 的健康检查
+**无参数**时（pi TUI 模式）打开**键盘驱动的交互式管理界面**，而不是打印表格：
+
 ```
+─────────────────────────────────────────────────────────────
+ AutoGoo Threads · 11 个 · 当前 2026-10-08-goo-md-detection-backup
+ ↑↓/jk 移动   ⏎ 切换   r 重命名   a 归档   u 恢复   c 关闭   d 对账   q 退出
+─────────────────────────────────────────────────────────────
+ ›* 2026-10-08-goo-md-detection-backup · completed  completed/5/5  goo.md 检测…
+   2026-10-05-pi-interaction-timeout  · completed  completed/4/4  pi 交互…
+   demo-thread                        · archived   —              thread sync smoke
+─────────────────────────────────────────────────────────────
+ * 当前: goo.md 检测与备份恢复
+   id: 2026-10-08-…　状态: completed　计划: completed (5/5)
+   健康: completed
+─────────────────────────────────────────────────────────────
+```
+
+| 按键 | 动作 |
+| --- | --- |
+| `↑` `↓` / `j` `k` | 移动选择 |
+| `g` / `G` | 跳到首 / 尾 |
+| `⏎` | 切换到选中 thread（**同时同步兼容入口**） |
+| `r` | 重命名 |
+| `a` | 归档（archived，可 `u` 恢复） |
+| `u` | 从归档恢复 |
+| `c` | 关闭（归档 + abandoned，**需确认**） |
+| `d` | 对账（thread-doctor） |
+| `q` / `Esc` | 退出 |
+
+带参数时仍走脚本，便于自动化：
+
+```text
+/goo-thread list [--json] [--active] [--status running,archived]
+/goo-thread show <id> [--json]
+/goo-thread switch <id>
+/goo-thread new <标题> [--steps N]
+/goo-thread rename <id> <新标题>
+/goo-thread archive <id> / restore <id>
+/goo-thread close <id>
+/goo-thread doctor [--fix]
+/goo-thread health
+```
+
+非 TUI 模式（`json` / `print`）自动降级为脚本输出。
 
 ## 执行方式
 

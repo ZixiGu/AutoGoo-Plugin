@@ -290,6 +290,12 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/thread-locks.py release-plan --p
 
 thread 操作原先散在四个脚本里（`thread-state.py` / `init-plan.sh` / `goo-plan-health.py` / `thread-doctor.py`），现收口成一个入口：
 
+在 **pi TUI 模式**下，`/goo-thread`（无参数）打开键盘驱动的交互式管理界面：
+`↑↓/jk` 移动、`⏎` 切换、`r` 重命名、`a` 归档、`u` 恢复、`c` 关闭、`d` 对账、`q` 退出。
+界面本身**只做导航**，所有写操作交回调用方用确认对话框 + 脚本执行 —— 危险动作仍走既有安全边界。
+
+命令行仍可用（便于脚本化与非 TUI 环境）：
+
 ```bash
 python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py            # = list
 python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py show <id>
@@ -298,6 +304,10 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py new "<标题>" [--
 python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py close <id>
 python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py doctor [--fix]
 python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py health
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py list --json    # 机器可读
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py rename <id> "<新标题>"
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py archive <id>   # 记 previous_status
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py restore <id>
 ```
 
 **`switch` 的关键行为**：同时更新两处——

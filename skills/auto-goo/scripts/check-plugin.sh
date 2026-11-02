@@ -1840,13 +1840,81 @@ else
 fi
 
 # --fix 必须先备份 index
-if ls "$TD_TMP/.goo/plans/history/"threads-index-*.json >/dev/null 2>&1; then
+if find "$TD_TMP/.goo/plans/history" -path "*thread-fix-*" -name "index.json" 2>/dev/null | grep -q .; then
   pass "--fix 修改前备份 threads/index.json"
 else
   fail "--fix 未备份 index"
 fi
 
 rm -rf "$TD_TMP"
+
+# ── 扩展可修复项（plan_path / thread 块 / 时间戳）必须安全且幂等 ──
+TD2="$(mktemp -d)"
+mkdir -p "$TD2/.goo/threads/arc" "$TD2/.goo/threads/bad" "$TD2/.goo/threads/nothr"
+# arc: 已归档、无本地 plan、plan_path 指向已消失的位置
+printf '{"id":"arc","title":"A","status":"archived","created_at":"2026-01-01T00:00:00Z","plan_path":"/tmp/gone/plan.json"}' > "$TD2/.goo/threads/arc/thread.json"
+# bad: plan 完成但 thread 仍在跑，且 completed_at 早于 created_at
+printf '{"id":"bad","title":"B","status":"running","created_at":"2026-02-01T10:00:00Z","completed_at":"2026-02-01T08:00:00Z"}' > "$TD2/.goo/threads/bad/thread.json"
+printf '{"status":"completed","thread":{"id":"bad"},"completed_at":"2026-02-01T07:00:00Z","steps":[{"id":1,"status":"completed","completed_at":"2026-02-01T07:00:00Z"}]}' > "$TD2/.goo/threads/bad/plan.json"
+# nothr: plan 缺 thread 块
+printf '{"id":"nothr","title":"C","status":"completed","created_at":"2026-03-01T00:00:00Z"}' > "$TD2/.goo/threads/nothr/thread.json"
+printf '{"status":"completed","steps":[{"id":1,"status":"completed"}]}' > "$TD2/.goo/threads/nothr/plan.json"
+printf '{"threads":[{"id":"arc"},{"id":"bad"},{"id":"nothr"}]}' > "$TD2/.goo/threads/index.json"
+
+TD2_BEFORE_DIRS="$(find "$TD2/.goo/threads" -maxdepth 1 -type d | wc -l)"
+python3 "$TD" --root "$TD2" --fix >/dev/null 2>&1
+TD2_AFTER_DIRS="$(find "$TD2/.goo/threads" -maxdepth 1 -type d | wc -l)"
+
+if python3 - "$TD2" <<'PY2'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+arc = json.loads((root / ".goo/threads/arc/thread.json").read_text())
+bad = json.loads((root / ".goo/threads/bad/thread.json").read_text())
+nothr_plan = json.loads((root / ".goo/threads/nothr/plan.json").read_text())
+# 归档且无本地 plan → 清空悬空引用
+assert arc.get("plan_path") in (None, ""), arc
+# thread 状态跟随 plan
+assert bad["status"] == "completed", bad
+# 不可信时间戳必须被移除，而不是伪造成 now
+assert "completed_at" not in bad, bad
+# plan 补上 thread 块
+assert isinstance(nothr_plan.get("thread"), dict) and nothr_plan["thread"]["id"] == "nothr", nothr_plan
+PY2
+then
+  pass "扩展修复：清空悬空 plan_path、同步 thread 状态、不伪造时间戳、补齐 thread 块"
+else
+  fail "扩展修复行为不正确"
+fi
+
+if [[ "$TD2_BEFORE_DIRS" == "$TD2_AFTER_DIRS" ]]; then
+  pass "扩展修复不删除任何 thread 目录"
+else
+  fail "扩展修复删除了目录（$TD2_BEFORE_DIRS -> $TD2_AFTER_DIRS）"
+fi
+
+TD2_CHANGED="$(python3 "$TD" --root "$TD2" --fix --json 2>/dev/null | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["fix"]["changed"]))' 2>/dev/null)"
+if [[ "$TD2_CHANGED" == "0" ]]; then
+  pass "扩展修复幂等（第二次 0 变更）"
+else
+  fail "扩展修复非幂等（第二次仍变更 $TD2_CHANGED 项）"
+fi
+
+# 失败不得伪装成「无问题」
+if python3 -c '
+import re, sys
+from pathlib import Path
+src = Path("'"$TD"'").read_text()
+# 异常分支必须标记 failed 且 issue_count 不得为 0
+assert "\"failed\": True" in src, "exception path missing failed flag"
+assert "\"issue_count\": None" in src, "exception path must not report 0"
+' 2>/dev/null; then
+  pass "对账异常时标记 failed（不会把崩溃伪装成“无问题”）"
+else
+  fail "对账异常会被误报为 issue_count=0"
+fi
+
+rm -rf "$TD2"
 
 # session-start 必须接入
 if grep -q "thread-doctor.py" "$ROOT/skills/auto-goo/scripts/session-start.py"; then

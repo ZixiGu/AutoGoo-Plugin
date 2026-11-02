@@ -1,7 +1,7 @@
 ---
 name: goo-workflow
 description: "Use when the user says '/auto-goo:goo-init', '/auto-goo:goo-brainstorm', '/auto-goo:goo-plan', '/auto-goo:goo-start', '/auto-goo:goo-research', '/auto-goo:goo-daily-report', '/auto-goo:goo-usage', '/auto-goo:goo-usage-analyse', '/auto-goo:goo-observe', '/auto-goo:goo-publish', '找目标', '开始任务', 'run:', '日报', '周报', 'usage', 'token统计', 'token降本', '后台观察', '发布HTML', '自改进', or gives a goal-clear multi-step task that can be decomposed into sub-tasks. Runs Goo workflow: config init, wiki-based brainstorm, wiki recall, DAG planning, subagent execution, research material archiving, status/observe, HTML publishing, optimization, Goo-wiki archiving, usage monitor, usage cost analysis, daily reports, and plugin self-improvement. Compatible with Claude Code and Codex."
-version: 0.13.0
+version: 0.14.0
 tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent, wait_agent, request_user_input]
 ---
 
@@ -80,6 +80,7 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 - `/auto-goo:goo-daily-report [日期|范围]`：扫描 Claude Code / Codex 会话，生成 Goo-wiki 日报或周报素材。
 - `/auto-goo:goo-usage [参数]`：扫描 Claude Code usage 日志，参考 Claude-Code-Usage-Monitor 的终端界面风格渲染今天总 token、项目分布、模型分布和可选 cost 面板。
 - `/auto-goo:goo-usage-analyse [项目|范围]`：结合 usage 热点和 Goo-wiki 项目知识，归因 token 开销并生成可落地节省方案。
+- `/auto-goo:goo-thread [list|show|switch|new|close|doctor|health]`：thread 统一管理。`switch` 会**同时**同步 `.goo/current_thread.json` 与兼容入口 `.goo/plan.json`（只切前者是经典陷阱：`/goo-status`、`/goo-continue`、`/goo-observe` 读的是兼容入口）；`close` 先留归档副本再标 `abandoned`，不篡改步骤状态、不删文件；`doctor --fix` 只做幂等安全修复。
 - `/auto-goo:goo-observe`：观察 Agent View 入口、当前 thread running step、heartbeat、step log 尾部和 shell 长任务日志模板。
 - `/auto-goo:goo-publish`：无需 config，把 `.goo/` 工作流状态发布成静态多页 HTML，包含活动热力图、头脑风暴、计划、任务流程图、DAG、运行状态和产物索引。
 

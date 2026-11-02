@@ -1,5 +1,5 @@
 /**
- * AutoGoo-Plugin Pi Extension v0.13.0 — 主入口
+ * AutoGoo-Plugin Pi Extension v0.14.0 — 主入口
  *
  * DAG 驱动的多智能体编排框架，从 Claude Code 插件迁移。
  *
@@ -18,6 +18,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // Commands
 import { handleGooInit } from "./commands/init.js";
+import { handleGooThread } from "./commands/thread.js";
 import { handleGooPlan } from "./commands/plan.js";
 import { handleGooBrainstorm } from "./commands/brainstorm.js";
 import {
@@ -241,6 +242,10 @@ const COMMANDS: Record<string, CommandEntry> = {
   "goo-continue": {
     description: "恢复中断的执行（检测僵尸步骤 → 继续调度）",
     handler: handleGooContinue,
+  },
+  "goo-thread": {
+    description: "统一管理 thread：列出/详情/切换/新建/关闭/对账",
+    handler: handleGooThread,
   },
   "goo-status": {
     description: "查看工作流状态仪表盘",
@@ -636,5 +641,5 @@ export default function (pi: ExtensionAPI) {
 
   // ── Startup banner ────────────────────────────────────────────────────────
   // Use stderr to avoid interfering with Pi's TUI rendering
-  process.stderr.write(`[AutoGoo-Plugin] ✅ 扩展已加载 (v0.13.0)\n`);
+  process.stderr.write(`[AutoGoo-Plugin] ✅ 扩展已加载 (v0.14.0)\n`);
 }

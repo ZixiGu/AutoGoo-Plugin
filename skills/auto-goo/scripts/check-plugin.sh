@@ -333,7 +333,7 @@ done
 echo ""
 echo "── 6. 脚本文件 ──"
 
-SCRIPTS=("goo-init.sh" "init-plan.sh" "goo-status.py" "goo-observe.py" "update-step.py" "thread-state.py" "thread-locks.py" "change-requests.py" "brainstorm-validate.py" "wiki-graph-assist.py" "daily-report-sessions.py" "goo-usage.py" "goo-publish.py" "goo-ssh.sh" "remote-resources.py" "resolve-root.sh" "resolve-root.py" "session-start.py" "check-plugin.sh")
+SCRIPTS=("goo-init.sh" "init-plan.sh" "goo-status.py" "goo-observe.py" "update-step.py" "thread-state.py" "thread-locks.py" "goo-thread.py" "thread-doctor.py" "goo-plan-health.py" "goo-md.py" "goo-update-check.py" "bump-version.py" "change-requests.py" "brainstorm-validate.py" "wiki-graph-assist.py" "daily-report-sessions.py" "goo-usage.py" "goo-publish.py" "goo-ssh.sh" "remote-resources.py" "resolve-root.sh" "resolve-root.py" "session-start.py" "check-plugin.sh")
 for s in "${SCRIPTS[@]}"; do
   f="$ROOT/skills/auto-goo/scripts/$s"
   if [[ -f "$f" ]]; then
@@ -2094,6 +2094,89 @@ if grep -q "print-wiki-default" "$ROOT/commands/goo-init.md"; then
   pass "commands/goo-init.md 要求先查询默认值"
 else
   fail "commands/goo-init.md 未要求先查询默认值"
+fi
+
+# ── 18. thread 统一命令（goo-thread）──
+# 回归：switch 必须同时同步 current_thread.json 与兼容入口 .goo/plan.json；
+# 反向：内部 sync 不得把陈旧的 thread plan 回写覆盖刚更新的兼容入口。
+echo ""
+echo "── 18. thread 统一命令 ──"
+
+GT="$ROOT/skills/auto-goo/scripts/goo-thread.py"
+
+if [[ -f "$GT" ]] && python3 -m py_compile "$GT" 2>/dev/null; then
+  pass "goo-thread.py 存在且可编译"
+else
+  fail "goo-thread.py 缺失或无法编译"
+fi
+
+GT_TMP="$(mktemp -d)"
+mkdir -p "$GT_TMP/.goo/threads/aaa" "$GT_TMP/.goo/threads/bbb" "$GT_TMP/.goo/threads/noplan"
+for tid in aaa bbb; do
+  printf '{"id":"%s","title":"T-%s","status":"running","updated_at":"2026-01-01T00:00:00Z"}' "$tid" "$tid" > "$GT_TMP/.goo/threads/$tid/thread.json"
+  printf '{"status":"running","thread":{"id":"%s"},"steps":[{"id":"s1","status":"pending"}]}' "$tid" > "$GT_TMP/.goo/threads/$tid/plan.json"
+done
+printf '{"id":"noplan","title":"T-noplan","status":"archived","updated_at":"2026-01-01T00:00:00Z"}' > "$GT_TMP/.goo/threads/noplan/thread.json"
+printf '{"threads":[{"id":"aaa"},{"id":"bbb"},{"id":"noplan"}]}' > "$GT_TMP/.goo/threads/index.json"
+printf '{"thread_id":"aaa"}' > "$GT_TMP/.goo/current_thread.json"
+cp "$GT_TMP/.goo/threads/aaa/plan.json" "$GT_TMP/.goo/plan.json"
+
+# list 可用
+if python3 "$GT" --root "$GT_TMP" list 2>/dev/null | grep -q "\* aaa"; then
+  pass "goo-thread list 标出当前 thread"
+else
+  fail "goo-thread list 异常"
+fi
+
+# switch 必须同时同步两处
+python3 "$GT" --root "$GT_TMP" switch bbb >/dev/null 2>&1
+if python3 - "$GT_TMP" <<'PY2'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+cur = json.loads((root / ".goo/current_thread.json").read_text())["thread_id"]
+compat_owner = json.loads((root / ".goo/plan.json").read_text())["thread"]["id"]
+assert cur == "bbb", cur
+assert compat_owner == "bbb", compat_owner
+PY2
+then
+  pass "switch 同时同步 current_thread 与兼容入口（经典陷阱已消除）"
+else
+  fail "switch 只切了 current_thread，兼容入口未跟随"
+fi
+
+# 切到无 plan 的 thread：指针切换，兼容入口保持原样
+GT_BEFORE="$(python3 -c "import json;print(json.load(open('$GT_TMP/.goo/plan.json'))['thread']['id'])")"
+python3 "$GT" --root "$GT_TMP" switch noplan >/dev/null 2>&1
+GT_AFTER="$(python3 -c "import json;print(json.load(open('$GT_TMP/.goo/plan.json'))['thread']['id'])")"
+if [[ "$GT_BEFORE" == "$GT_AFTER" ]]; then
+  pass "切到无 plan 的 thread 时兼容入口保持原样（不制造空指针）"
+else
+  fail "切到无 plan 的 thread 时错误改写了兼容入口"
+fi
+
+# 反向回归：update-step 写兼容入口后，内部 sync 不得把旧 thread plan 盖回去
+python3 "$GT" --root "$GT_TMP" switch aaa >/dev/null 2>&1
+(cd "$GT_TMP" && python3 "$ROOT/skills/auto-goo/scripts/update-step.py" --step-id s1 --start >/dev/null 2>&1)
+GT_STEP="$(python3 -c "import json;print(json.load(open('$GT_TMP/.goo/plan.json'))['steps'][0]['status'])")"
+if [[ "$GT_STEP" == "running" ]]; then
+  pass "update-step 后兼容入口状态未被内部 sync 回滚"
+else
+  fail "内部 sync 用陈旧 thread plan 覆盖了兼容入口（状态回滚）"
+fi
+
+rm -rf "$GT_TMP"
+
+# 文档与 pi 注册
+if [[ -f "$ROOT/commands/goo-thread.md" ]]; then
+  pass "commands/goo-thread.md 存在"
+else
+  fail "commands/goo-thread.md 缺失"
+fi
+if grep -q '"goo-thread"' "$ROOT/.pi/extensions/autogoo-plugin/index.ts"; then
+  pass "pi 扩展已注册 goo-thread"
+else
+  fail "pi 扩展未注册 goo-thread"
 fi
 
 # ── 结果汇总 ──

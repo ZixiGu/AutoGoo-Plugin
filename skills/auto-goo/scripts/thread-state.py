@@ -17,6 +17,7 @@ from _paths import (
 import argparse
 import json
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -127,7 +128,18 @@ def create_thread(goo_dir: Path, title: str, runtime: str = "claude-code", threa
     return meta
 
 
-def set_current(goo_dir: Path, thread_id: str) -> None:
+def set_current(goo_dir: Path, thread_id: str, *, sync_compat: bool = True) -> None:
+    """Point current_thread.json at *thread_id*.
+
+    When *sync_compat* is true (the `set-current` CLI path), also copy the
+    thread's own plan into the compat entry `.goo/plan.json`, because
+    /goo-status, /goo-continue and /goo-observe read the compat entry — switching
+    only current_thread.json leaves them driving the *previous* thread.
+
+    `sync_from_plan()` passes sync_compat=False: it manages the compat entry
+    itself, and letting set_current copy the (possibly stale) thread plan over a
+    freshly written compat entry would silently revert DAG progress.
+    """
     tdir = thread_dir(goo_dir, thread_id)
     meta_path = tdir / "thread.json"
     if not meta_path.exists():
@@ -141,6 +153,25 @@ def set_current(goo_dir: Path, thread_id: str) -> None:
             "plan_path": meta.get("plan_path") or display_path(goo_dir, tdir / "plan.json"),
             "updated_at": now(),
         },
+    )
+    if not sync_compat:
+        return
+    # 兼容入口 .goo/plan.json 必须跟着切，否则读兼容入口的命令会继续推旧计划。
+    compat = workspace_path(goo_dir, "compat_plan_file")
+    own_plan = tdir / "plan.json"
+    if own_plan.is_file():
+        try:
+            plan = load_json(own_plan, {})
+        except (OSError, ValueError):
+            plan = {}
+        if plan:
+            dump_json(compat, plan)
+            return
+    # 没有自己的 plan（例如已归档）：不动兼容入口，但要说清楚。
+    print(
+        f"warning: thread {thread_id} 没有自己的 plan.json，已切换 current_thread，"
+        f"但兼容入口 {display_path(goo_dir, compat)} 保持原样",
+        file=sys.stderr,
     )
 
 
@@ -224,7 +255,8 @@ def sync_from_plan(
         index["current_thread_id"] = resolved
     write_index(goo_dir, index)
     if should_update_current:
-        set_current(goo_dir, resolved)
+        # sync_compat=False：本函数自己负责写完兼容入口，见 set_current 的注释
+        set_current(goo_dir, resolved, sync_compat=False)
         sync_compat_plan(goo_dir, plan_path, plan)
         # 当入参是 compat plan 时,把最新 plan 状态同步回 thread plan(真正的源),
         # 避免 thread plan 的 steps 停留在早期状态。

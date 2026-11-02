@@ -259,6 +259,31 @@ bash <auto_goo_root>/skills/auto-goo/scripts/goo-init.sh --print-wiki-default --
 
 **单一事实源**：优先级的实现只在 `goo-init.sh` 里一份。pi 扩展通过调用 `--print-wiki-default --json` 取用，**不在 TypeScript 里重写一遍** —— 双份实现必然漂移。
 
+### thread 统一管理（`goo-thread.py`）
+
+thread 操作原先散在四个脚本里（`thread-state.py` / `init-plan.sh` / `goo-plan-health.py` / `thread-doctor.py`），现收口成一个入口：
+
+```bash
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py            # = list
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py show <id>
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py switch <id>
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py new "<标题>" [--steps N]
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py close <id>
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py doctor [--fix]
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py health
+```
+
+**`switch` 的关键行为**：同时更新两处——
+
+1. `.goo/current_thread.json`（当前 thread 指针）
+2. `.goo/plan.json`（**兼容入口**，`/goo-status`、`/goo-continue`、`/goo-observe` 读的是它）
+
+> 只切指针是经典陷阱：以为切到了 A，实际 `/goo-continue` 仍在推 B 的计划。
+
+目标 thread 没有自己的 `plan.json` 时（例如已归档），`switch` 只切指针、**保留兼容入口原样**并给出提示。
+
+**反向约束（易被忽略）**：`sync_from_plan()` 内部调用 `set_current` 时传 `sync_compat=False`。否则它会把（可能陈旧的）thread plan 复制回兼容入口，**静默回滚掉 `update-step.py` 刚写入的进度**。这条已写成 §18 断言。
+
 ### thread 记录对账（`thread-doctor.py`）
 
 thread 状态存在**五处**，此前没有任何交叉校验：

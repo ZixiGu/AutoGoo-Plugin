@@ -6,6 +6,7 @@
  */
 
 import { existsSync } from "node:fs";
+import { logWarn } from "./log.js";
 import { readFile, access, writeFile } from "node:fs/promises";
 import { resolve, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -119,7 +120,7 @@ export async function writeExecutionModelConfig(
     await writeFile(p, JSON.stringify(config, null, 2) + "\n", "utf-8");
     return true;
   } catch (e) {
-    console.warn(`[AutoGoo-Plugin] 写入 subagent 模型配置失败: ${(e as Error)?.message ?? String(e)}`);
+    logWarn(`[AutoGoo-Plugin] 写入 subagent 模型配置失败: ${(e as Error)?.message ?? String(e)}`);
     return false;
   }
 }

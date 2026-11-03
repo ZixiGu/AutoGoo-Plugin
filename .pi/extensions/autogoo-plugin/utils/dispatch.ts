@@ -10,6 +10,7 @@
  */
 
 import { basename, join } from "node:path";
+import { logWarn } from "./log.js";
 import { writeFile, mkdir } from "node:fs/promises";
 import { execPython } from "./exec.js";
 import { loadPlan, buildDispatchPacket, type DispatchPacket } from "./plan.js";
@@ -78,10 +79,10 @@ export async function generateWikiPacket(
       await writeFile(fullPath, r.stdout);
       packetGenerated = true;
     } else {
-      console.warn(`[AutoGoo-Plugin] wiki-graph-assist.py 失败 (exit=${r.exitCode}): ${(r.stderr || "").slice(0, 200)}`);
+      logWarn(`[AutoGoo-Plugin] wiki-graph-assist.py 失败 (exit=${r.exitCode}): ${(r.stderr || "").slice(0, 200)}`);
     }
   } catch (e: any) {
-    console.warn(`[AutoGoo-Plugin] wiki-graph-assist.py 异常: ${(e?.message ?? String(e)).slice(0, 200)}`);
+    logWarn(`[AutoGoo-Plugin] wiki-graph-assist.py 异常: ${(e?.message ?? String(e)).slice(0, 200)}`);
   }
   return { packet, packetGenerated };
 }

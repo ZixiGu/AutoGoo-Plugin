@@ -323,6 +323,30 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/thread-locks.py release-plan --p
 
 僵尸锁超过 10 分钟（`STALE_LOCK_AGE_SECONDS`）会被视为陈旧。
 
+### 扩展禁止直写终端（乱码根因）
+
+pi 的 TUI **独占屏幕**。扩展里任何 `console.log` / `console.error` / `process.stderr.write`
+都会直接插进渲染流，绕过 TUI 的宽度与光标计算 —— 表现为**乱码、残影、界面错位**。
+
+历史问题：`index.ts` 曾有一行
+
+```ts
+// Use stderr to avoid interfering with Pi's TUI rendering   ← 注释完全说反了
+process.stderr.write(`[AutoGoo-Plugin] ✅ 扩展已加载 (v${VERSION})\n`);
+```
+
+进入 pi 时的乱码就来自这里（叠加 emoji 的双宽字符更明显）。
+
+**约定**：
+
+| 目的 | 正确做法 |
+| --- | --- |
+| 告诉用户发生了什么 | `ctx.ui.notify(...)` |
+| 诊断 / 异常记录 | `logInfo` / `logWarn` / `logError`（`utils/log.ts` → `~/.auto-goo/logs/plugin.log`） |
+| 加载状态 | 不需要写 —— pi 自己的 `[Extensions]` 列表已经显示 |
+
+`check-plugin.sh` §23 静态校验：扩展内（除 `log.ts` 自身）不得出现 `console.*` 或 `process.std*.write`（跳过注释行）。
+
 ### pi TUI 面板（`tui-kit` + 各面板）
 
 pi 提供 `ctx.ui.custom()`：factory 返回 `{ render(width), invalidate(), handleInput(data), dispose?() }` 的组件，由 pi 接管交互区。共享渲染原语在 `.pi/extensions/autogoo-plugin/utils/tui-kit.ts`：

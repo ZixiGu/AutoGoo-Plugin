@@ -13,6 +13,7 @@
  */
 
 import { Type } from "typebox";
+import { logWarn } from "../utils/log.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execPython, execShell } from "../utils/exec.js";
 import { runSubagent, resolveSubagentModel, resolveOrPromptSubagentModel } from "../utils/subagent.js";
@@ -227,7 +228,7 @@ async function runSchedule(
         { defaultOnTimeout: false },
       )).value ?? false;
     } catch (e: any) {
-      console.warn(`[AutoGoo-Plugin] confirm #${step.id} 失败，默认拒绝:`, e?.message ?? String(e));
+      logWarn(`[AutoGoo-Plugin] confirm #${step.id} 失败，默认拒绝:`, e?.message ?? String(e));
       answer = false;
     }
     if (answer) {

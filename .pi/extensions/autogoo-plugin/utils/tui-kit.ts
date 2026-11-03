@@ -8,6 +8,7 @@
  */
 
 import type { Theme } from "@earendil-works/pi-tui";
+import { logError } from "./log.js";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 export interface KeyHelpItem {
@@ -215,7 +216,7 @@ export function guardRender<T extends { render(width: number): string[] }>(
     } catch (e: any) {
       const msg = e?.message ?? String(e);
       try {
-        console.error(`[AutoGoo-Plugin] ${label} render error:`, e);
+        logError(`[AutoGoo-Plugin] ${label} render error:`, e);
       } catch {
         /* 日志失败不阻塞 */
       }

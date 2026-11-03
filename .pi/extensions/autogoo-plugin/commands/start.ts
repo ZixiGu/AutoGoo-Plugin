@@ -6,6 +6,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { logWarn } from "../utils/log.js";
 import { Type } from "typebox";
 import { TEMPLATE_CONTEXT_SYNC_CONFIRM, TEMPLATE_WORKTREE } from "../constants.js";
 import { loadPlan, savePlan, getCurrentThreadId, archiveOldPlan, type Plan, type Step } from "../utils/plan.js";
@@ -55,7 +56,7 @@ function registerBusyTracking(pi: any): void {
       wakeupPending = false;
     });
   } catch (e) {
-    console.warn("[AutoGoo-Plugin] agent 忙闲跟踪注册失败:", e);
+    logWarn("[AutoGoo-Plugin] agent 忙闲跟踪注册失败:", e);
   }
 }
 
@@ -344,7 +345,7 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
         //   update 失败仍发"step X 已完成"唤醒消息 → 用户看到"声称完成但状态没更新"。
         if (result.exitCode !== 0) {
           const errMsg = (result.stderr || result.stdout || "update-step.py 失败").trim().slice(0, 200);
-          console.warn(`[AutoGoo-Plugin] update_step ${params.action} 失败: ${errMsg}`);
+          logWarn(`[AutoGoo-Plugin] update_step ${params.action} 失败: ${errMsg}`);
           return {
             content: [{ type: "text", text: `❌ 步骤更新失败 (exit=${result.exitCode}): ${errMsg}` }],
             details: { stepId: params.stepId, action: params.action, error: errMsg },
@@ -393,7 +394,7 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
               }
             }
           } catch (e: any) {
-            console.warn("[AutoGoo-Plugin] update_step 唤醒主 Agent 失败:", e?.message ?? String(e));
+            logWarn("[AutoGoo-Plugin] update_step 唤醒主 Agent 失败:", e?.message ?? String(e));
           }
         }
 
@@ -648,7 +649,7 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
         // 释放本 thread 的资源锁（与 acquirePlanLocks 配对；无锁时也是安全 no-op）
         const released = releasePlanLocks(cwd, planPath);
         if (!released.ok) {
-          console.warn("[AutoGoo-Plugin] release-plan 失败:", released.error);
+          logWarn("[AutoGoo-Plugin] release-plan 失败:", released.error);
         }
       }
 

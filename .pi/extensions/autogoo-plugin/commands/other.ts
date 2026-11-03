@@ -3,6 +3,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { logWarn } from "../utils/log.js";
 
 // ── Global pi reference ─────────────────────────────────────────────────────
 let _pi: ExtensionAPI | null = null;
@@ -269,7 +270,7 @@ export async function handleGooContinue(args: string, ctx: ExtensionContext): Pr
     const { updateStatusBar } = await import("../utils/status.js");
     await updateStatusBar(ctx);
   } catch (e: any) {
-    console.warn("[AutoGoo-Plugin] goo-continue updateStatusBar error:", e?.message ?? String(e));
+    logWarn("[AutoGoo-Plugin] goo-continue updateStatusBar error:", e?.message ?? String(e));
   }
 
   if (_pi) {

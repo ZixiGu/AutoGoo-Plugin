@@ -2567,6 +2567,73 @@ else
   fail "ObservePanel 缺少自动刷新"
 fi
 
+# ── 23. 扩展不得直写终端 ──
+# pi 的 TUI 独占屏幕：console.* / process.std*.write 会插进渲染流，绕过宽度与
+# 光标计算，表现为乱码、残影、界面错位。曾有一行
+# process.stderr.write("✅ 扩展已加载 …") 导致进入 pi 时出现乱码。
+echo ""
+echo "── 23. 扩展不得直写终端 ──"
+
+EXT_DIR="$ROOT/.pi/extensions/autogoo-plugin"
+
+if python3 - "$EXT_DIR" <<'PY2'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+offenders = []
+for path in root.rglob("*.ts"):
+    if "__tests__" in path.parts or path.name == "log.ts":
+        continue
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        stripped = line.lstrip()
+        if stripped.startswith("//") or stripped.startswith("*"):
+            continue
+        for needle in ("console.", "process.stdout.write", "process.stderr.write"):
+            if needle in line:
+                offenders.append(f"{path.relative_to(root)}:{lineno} {needle}")
+if offenders:
+    raise SystemExit("terminal writes (corrupt pi TUI): " + "; ".join(offenders[:5]))
+PY2
+then
+  pass "扩展内无 console.* / process.std*.write（不会污染 TUI）"
+else
+  fail "扩展直接写终端，会导致 pi 界面乱码"
+fi
+
+if python3 - "$EXT_DIR/utils/log.ts" <<'PY2'
+import sys
+from pathlib import Path
+
+src = Path(sys.argv[1]).read_text(encoding="utf-8")
+if "appendFileSync" not in src:
+    raise SystemExit("log.ts does not append to a file")
+for lineno, line in enumerate(src.splitlines(), 1):
+    stripped = line.lstrip()
+    if stripped.startswith("//") or stripped.startswith("*") or stripped.startswith("/*"):
+        continue  # 注释里说明"禁止写终端"是正常的，不是实现
+    if "console." in line or "process.stdout.write" in line or "process.stderr.write" in line:
+        raise SystemExit(f"log.ts writes to terminal at line {lineno}")
+PY2
+then
+  pass "utils/log.ts 只写日志文件，不写终端"
+else
+  fail "utils/log.ts 可能写终端"
+fi
+
+if grep -q "logError\|logWarn\|logInfo" "$EXT_DIR/index.ts"; then
+  pass "index.ts 的诊断信息已走 log.ts"
+else
+  fail "index.ts 未使用 log.ts"
+fi
+
+# 启动 banner 不得残留（它会直接打在 TUI 上）
+if grep -q "扩展已加载" "$EXT_DIR/index.ts"; then
+  fail "启动 banner 仍往终端写（会乱码）"
+else
+  pass "启动 banner 已移除（加载状态由 pi 的 [Extensions] 展示）"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

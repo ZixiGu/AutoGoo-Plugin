@@ -1,5 +1,5 @@
 /**
- * AutoGoo-Plugin Pi Extension v0.19.1 — 主入口
+ * AutoGoo-Plugin Pi Extension v0.19.2 — 主入口
  *
  * DAG 驱动的多智能体编排框架，从 Claude Code 插件迁移。
  *
@@ -15,6 +15,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { logError, logWarn } from "./utils/log.js";
 
 // Commands
 import { handleGooInit } from "./commands/init.js";
@@ -133,7 +134,7 @@ async function checkThreadRecords(ctx: any): Promise<void> {
       "warning",
     );
   } catch (e) {
-    console.error("[AutoGoo-Plugin] thread doctor error:", e);
+    logError("[AutoGoo-Plugin] thread doctor error:", e);
   }
 }
 
@@ -211,7 +212,7 @@ async function promptPlanHealth(ctx: any): Promise<void> {
       }
     }
   } catch (e) {
-    console.error("[AutoGoo-Plugin] plan health prompt error:", e);
+    logError("[AutoGoo-Plugin] plan health prompt error:", e);
   }
 }
 
@@ -319,7 +320,7 @@ export default function (pi: ExtensionAPI) {
 
   // ── Validate AutoGoo-Plugin repo ─────────────────────────────────────────────────
   if (!isRepoValid()) {
-    console.warn(
+    logWarn(
       "[AutoGoo-Plugin] ⚠️ AutoGoo-Plugin repo structure not found at",
       REPO_ROOT,
       "- some features may not work"
@@ -574,7 +575,7 @@ export default function (pi: ExtensionAPI) {
           );
         }
       } catch (e) {
-        console.error("[AutoGoo-Plugin] session_start chat hook error:", e);
+        logError("[AutoGoo-Plugin] session_start chat hook error:", e);
       }
 
       const { loadPlan } = await import("./utils/plan.js");
@@ -585,7 +586,7 @@ export default function (pi: ExtensionAPI) {
           const { updateStatusBar } = await import("./utils/status.js");
           await updateStatusBar(ctx);
         } catch (e) {
-          console.error("[AutoGoo-Plugin] session_start updateStatusBar error:", e);
+          logError("[AutoGoo-Plugin] session_start updateStatusBar error:", e);
         }
 
         // 中断/搁置 plan 确认：区分当前 thread 与历史 thread 分别问（见函数注释）。
@@ -610,7 +611,7 @@ export default function (pi: ExtensionAPI) {
             );
           }
         } catch (e) {
-          console.error("[AutoGoo-Plugin] session_start goo.md check error:", e);
+          logError("[AutoGoo-Plugin] session_start goo.md check error:", e);
         }
 
         // 插件更新提醒（2026-10-08）：**异步**执行，绝不阻塞启动。
@@ -618,7 +619,7 @@ export default function (pi: ExtensionAPI) {
         void checkForPluginUpdate(ctx);
       }
     } catch (e) {
-      console.error("[AutoGoo-Plugin] session_start outer error:", e);
+      logError("[AutoGoo-Plugin] session_start outer error:", e);
     }
   });
 
@@ -640,6 +641,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ── Startup banner ────────────────────────────────────────────────────────
-  // Use stderr to avoid interfering with Pi's TUI rendering
-  process.stderr.write(`[AutoGoo-Plugin] ✅ 扩展已加载 (v0.19.1)\n`);
+  // **不要往终端写任何东西。** pi 的 TUI 独占屏幕，裸写 stderr 会插进渲染流，
+  // 破坏宽度/光标计算 —— 表现为乱码、残影、界面错位。原注释写的
+  // "Use stderr to avoid interfering with Pi's TUI rendering" 恰好说反了。
+  // 加载状态由 pi 自己在 [Extensions] 列表里显示；诊断信息写 .auto-goo/logs/plugin.log。
+  logInfo("extension loaded", { version: "0.19.2" });
 }

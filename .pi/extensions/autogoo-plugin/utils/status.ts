@@ -10,6 +10,7 @@
  * running/pending/blocked 步骤时，每 15s 重新 snapshot plan.json 并重渲染。
  */
 import { access } from "node:fs/promises";
+import { logError } from "./log.js";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadPlan, getCurrentThreadId, loadThreadMeta, type Plan, type Step } from "./plan.js";
@@ -94,7 +95,7 @@ async function refreshStatusBarTick(ctx: ExtensionContext): Promise<void> {
     const hasActive = snap.running > 0 || snap.pending > 0 || snap.blocked > 0;
     if (!hasActive) stopStatusBarAutoRefresh(ctx.cwd);
   } catch (e) {
-    console.error("[AutoGoo-Plugin] status bar auto-refresh error:", e);
+    logError("[AutoGoo-Plugin] status bar auto-refresh error:", e);
     stopStatusBarAutoRefresh(ctx.cwd);
   }
 }

@@ -2522,6 +2522,45 @@ else
   fail "ObservePanel 未清理定时器（会泄漏）"
 fi
 
+# 渲染兜底：面板 render 抛异常不得杀死 pi 进程
+if grep -q "export function guardRender" "$KIT" \
+  && grep -q "guardRender" "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts" \
+  && grep -q "guardRender" "$ROOT/.pi/extensions/autogoo-plugin/commands/other.ts" \
+  && grep -q "guardRender" "$ROOT/.pi/extensions/autogoo-plugin/commands/thread.ts"; then
+  pass "三个面板均经 guardRender 兜底（渲染异常不会让 pi 崩掉）"
+else
+  fail "面板 render 未兜底——一个渲染 bug 会让 pi uncaughtException 退出"
+fi
+
+# ready/waiting 必须按 depends_on 计算（曾错误地恒为 pending 数 / 0）
+if grep -q "computeReady" "$OPANEL" && grep -q "depends_on" "$OPANEL"; then
+  pass "ObservePanel 按 depends_on 计算 ready/waiting"
+else
+  fail "ObservePanel 未按依赖计算就绪步数"
+fi
+
+# renderBody 不得引用 render() 的局部变量（曾因 total 未定义导致崩溃）
+if python3 - "$OPANEL" <<'PY2'
+import re, sys
+from pathlib import Path
+
+src = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = src.find("private renderBody(")
+if start < 0:
+    raise SystemExit("renderBody not found")
+end = src.find("\n  invalidate(", start)
+body = src[start:end] if end > start else src[start:]
+for name in ("total", "doneCount"):
+    # 函数体内必须自己声明，否则运行时 ReferenceError
+    if re.search(rf"\b{name}\b", body) and not re.search(rf"const {name}\s*=", body):
+        raise SystemExit(f"renderBody references `{name}` without declaring it")
+PY2
+then
+  pass "renderBody 自行声明 total/doneCount（不再引用 render() 的局部变量）"
+else
+  fail "renderBody 引用了未声明的变量（会 ReferenceError 崩掉 pi）"
+fi
+
 if grep -q "setInterval" "$OPANEL" && grep -q "requestRender" "$OPANEL"; then
   pass "ObservePanel 具备自动刷新"
 else

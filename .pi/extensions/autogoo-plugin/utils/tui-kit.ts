@@ -196,6 +196,40 @@ export class ListState {
   }
 }
 
+/**
+ * 渲染兜底：任何面板的 render 抛异常时，降级成一行错误提示，而不是让
+ * pi 整个进程 uncaughtException 退出。
+ *
+ * 背景：observe-panel 曾因引用了 render() 的局部变量而抛 ReferenceError，
+ * pi 直接 "exiting due to uncaughtException" —— 一个界面 bug 不该杀死编辑器。
+ */
+export function guardRender<T extends { render(width: number): string[] }>(
+  inner: T,
+  theme: Theme | undefined,
+  label: string,
+): T {
+  const original = inner.render.bind(inner);
+  (inner as any).render = (width: number) => {
+    try {
+      return original(width);
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      try {
+        console.error(`[AutoGoo-Plugin] ${label} render error:`, e);
+      } catch {
+        /* 日志失败不阻塞 */
+      }
+      const w = Math.max(20, width);
+      return [
+        color(theme, "error", fit(` ${label} 渲染失败`, w, false)),
+        color(theme, "dim", fit(`  ${msg}`, w, false)),
+        color(theme, "dim", fit("  已降级显示；按 q 退出后可用 CLI（goo-status.py / goo-observe.py）查看。", w, false)),
+      ];
+    }
+  };
+  return inner;
+}
+
 /** 多行文本块裁剪：把 tail 列表裁到 budget 行。 */
 export function clip(lines: string[], budget: number): string[] {
   if (budget <= 0) return [];

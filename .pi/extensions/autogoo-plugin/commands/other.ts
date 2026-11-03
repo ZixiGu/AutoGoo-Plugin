@@ -12,6 +12,7 @@ export function setPi(pi: ExtensionAPI): void {
 }
 import { REPO_ROOT, GOO_STATUS_PY, GOO_PUBLISH_PY, projectPlanPath, scriptsDir } from "../utils/paths.js";
 import { execPython, execShell } from "../utils/exec.js";
+import { guardRender } from "../utils/tui-kit.js";
 import { UsagePanel, type UsageAction, type UsageData } from "../utils/usage-panel.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -140,13 +141,23 @@ export async function handleGooUsage(args: string, ctx: ExtensionContext): Promi
     if (!data) return;
 
     const action = await ctx.ui.custom<UsageAction>((tui, theme, keybindings, done) => {
-      return new UsagePanel(data, theme, done, () => {
-        try {
-          tui.requestRender();
-        } catch {
-          /* 渲染失败不阻塞 */
-        }
-      }, keybindings);
+      return guardRender(
+        new UsagePanel(
+          data,
+          theme,
+          done,
+          () => {
+            try {
+              tui.requestRender();
+            } catch {
+              /* 渲染失败不阻塞 */
+            }
+          },
+          keybindings,
+        ),
+        theme,
+        "UsagePanel",
+      );
     });
 
     if (!action || action.action === "quit") return;

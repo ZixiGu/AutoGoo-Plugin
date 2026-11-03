@@ -202,6 +202,11 @@ export class ObservePanel implements Component {
 
   private renderBody(w: number, counts: Record<string, number>, pct: number): string[] {
     const d = this.data;
+    // 注意：这里的 total / doneCount 必须在函数内计算。
+    // 曾经直接引用 render() 的局部变量 —— 因为 overview 的 Next 分支是短路求值，
+    // 只有"没有 pending 步骤"时才会执行到，于是测试数据里恰好有 pending 就掩盖了崩溃。
+    const total = d.steps.length;
+    const doneCount = counts.completed ?? 0;
     const L: string[] = [];
     const kv = (k: string, v: string) =>
       L.push(fit(`  ${color(this.theme, "dim", k.padEnd(16))}${v}`, w));
@@ -259,10 +264,18 @@ export class ObservePanel implements Component {
           ),
         );
       }
-      const ready = counts.pending ?? 0;
-      const waiting = Math.max(0, (counts.pending ?? 0) - ready);
-      kv("ready / waiting", `${ready} / ${waiting}`);
-      kv("Next", ready > 0 ? `${ready} 步可派发` : total > 0 && doneCount === total ? "全部完成" : "无就绪步骤");
+      const computed = this.computeReady();
+      kv("ready / waiting", `${computed.ready} / ${computed.waiting}`);
+      kv(
+        "Next",
+        total === 0
+          ? "当前 thread 没有 plan 步骤"
+          : doneCount === total
+            ? "全部完成"
+            : computed.ready > 0
+              ? `${computed.ready} 步可派发`
+              : "无就绪步骤（依赖未满足）",
+      );
       return L;
     }
 
@@ -309,6 +322,23 @@ export class ObservePanel implements Component {
       for (const line of clip(sel.tail, 6)) L.push(fit(`   ${line}`, w));
     }
     return L;
+  }
+
+  /** 按 depends_on 计算真正"就绪"（依赖全部完成）与"等待中"的步数。 */
+  private computeReady(): { ready: number; waiting: number } {
+    const completed = new Set(
+      this.data.steps.filter((s) => s.status === "completed").map((s) => String(s.id)),
+    );
+    let ready = 0;
+    let waiting = 0;
+    for (const step of this.data.steps) {
+      if (step.status !== "pending") continue;
+      const deps = ((step as any).depends_on ?? []) as Array<number | string>;
+      const satisfied = deps.every((d) => completed.has(String(d)));
+      if (satisfied) ready += 1;
+      else waiting += 1;
+    }
+    return { ready, waiting };
   }
 
   invalidate(): void {

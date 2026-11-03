@@ -20,6 +20,7 @@ import { existsSync } from "node:fs";
 import { GOO_OBSERVE_PY } from "../utils/paths.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { guardRender } from "../utils/tui-kit.js";
 import { ObservePanel, type ObserveAction, type ObserveSnapshot, type ObserveStep } from "../utils/observe-panel.js";
 import { checkPlanLocks, acquirePlanLocks, releasePlanLocks, describeConflicts } from "../utils/locks.js";
 
@@ -213,21 +214,25 @@ export async function openObservePanel(
 
   try {
     await ctx.ui.custom<ObserveAction>((tui, theme, keybindings, done) => {
-      return new ObservePanel(
-        first,
-        initialTab,
+      return guardRender(
+        new ObservePanel(
+          first,
+          initialTab,
+          theme,
+          done,
+          () => {
+            try {
+              tui.requestRender();
+            } catch {
+              /* 渲染失败不阻塞 */
+            }
+          },
+          loadLog,
+          snapshot,
+          keybindings,
+        ),
         theme,
-        done,
-        () => {
-          try {
-            tui.requestRender();
-          } catch {
-            /* 渲染失败不阻塞 */
-          }
-        },
-        loadLog,
-        snapshot,
-        keybindings,
+        "ObservePanel",
       );
     });
   } catch (e: any) {

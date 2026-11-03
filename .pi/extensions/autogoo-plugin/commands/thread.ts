@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { REPO_ROOT } from "../utils/paths.js";
 import { execPython } from "../utils/exec.js";
 import { uiConfirm, uiInput } from "../utils/ui.js";
+import { guardRender } from "../utils/tui-kit.js";
 import { ThreadManager, type ThreadAction, type ThreadRow } from "../utils/thread-ui.js";
 
 const GOO_THREAD_PY = join(REPO_ROOT, "skills/auto-goo/scripts/goo-thread.py");
@@ -65,19 +66,23 @@ async function openThreadManager(ctx: ExtensionContext): Promise<void> {
     }
 
     const action = await ctx.ui.custom<ThreadAction>((tui, theme, keybindings, done) => {
-      return new ThreadManager(
-        payload.threads,
-        payload.current_thread_id,
+      return guardRender(
+        new ThreadManager(
+          payload.threads,
+          payload.current_thread_id,
+          theme,
+          done,
+          () => {
+            try {
+              tui.requestRender();
+            } catch {
+              /* 渲染请求失败不阻塞 */
+            }
+          },
+          keybindings,
+        ),
         theme,
-        done,
-        () => {
-          try {
-            tui.requestRender();
-          } catch {
-            /* 渲染请求失败不阻塞 */
-          }
-        },
-        keybindings,
+        "ThreadManager",
       );
     });
 

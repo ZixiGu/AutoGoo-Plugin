@@ -337,7 +337,7 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/thread-locks.py release-plan --p
 
 | 工具 | 提取字段 |
 | --- | --- |
-| `bash` / `shell` / `auto_goo_shell` | `command` |
+| `bash` / `shell` | `command` |
 | `read` / `write` / `edit` / `view` | `path` / `file_path` |
 | `grep` / `search` / `glob` | `pattern` + `path` |
 | `auto_goo_ssh_*` | `server` + `command` |
@@ -345,6 +345,18 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/thread-locks.py release-plan --p
 | 其他 | 第一个字符串参数，退化为 JSON 片段 |
 
 > 历史问题：进度里工具调用曾被硬编码成 `⟦bash(...⟧` —— **参数全丢**，用户只看到"有个 bash 在跑"，看不到在跑什么。`ToolCall.arguments` 本来就是完整的，只是没被用。
+
+### shell 执行：只用 pi 内置 `bash`
+
+插件曾注册自定义工具 `auto_goo_shell`（`execShell(cmd)` → `/bin/bash`），但：
+
+- **能力重复** —— pi 自带 `bash` 工具（`docs/cli.md:143` "Run shell commands"）；
+- **每次调用都强制 yes/no 确认**，没有白名单、没有「本次会话记住」；
+- **系统提示里没有任何地方引导模型用它**。
+
+结果是「重复能力 + 额外摩擦」，已移除。shell 执行一律用 pi 内置 `bash`，审批交给 pi 自己的策略。
+
+`check-plugin.sh` §28 静态校验：不得再注册 `auto_goo_shell`；README 的工具数量必须与源码实际注册数一致（从源码 `name: "auto_goo` 计数推导，避免增删工具后文档漂移）。
 
 ### TUI 面板统一约定
 

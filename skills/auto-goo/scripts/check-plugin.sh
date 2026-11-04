@@ -2836,6 +2836,40 @@ else
   fail "面板头部标记不统一:$MISSING_MARK"
 fi
 
+# ── 28. 不使用重复的自定义 shell 工具 ──
+# pi 自带 `bash` 工具（docs/cli.md:143）。插件曾额外注册 auto_goo_shell，
+# 能力重复且**每次调用都强制 yes/no 确认**，系统提示也未引导使用它 —— 已移除。
+echo ""
+echo "── 28. shell 工具去重 ──"
+
+if grep -rq 'name: "auto_goo_shell"' "$ROOT/.pi/extensions/autogoo-plugin" --include=*.ts 2>/dev/null; then
+  fail "仍注册 auto_goo_shell（与 pi 内置 bash 重复，且每次强制确认）"
+else
+  pass "未注册 auto_goo_shell，shell 执行统一走 pi 内置 bash"
+fi
+
+# README 的工具数量必须与源码一致（避免增删工具后文档漂移）
+if python3 - "$ROOT" <<'PY2'
+import re, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+ext = root / ".pi/extensions/autogoo-plugin"
+count = 0
+for source in ext.rglob("*.ts"):
+    if "__tests__" in source.parts:
+        continue
+    count += len(re.findall(r'name: "auto_goo', source.read_text(encoding="utf-8")))
+readme = (root / "README.md").read_text(encoding="utf-8")
+if f"{count} 个自定义工具" not in readme:
+    raise SystemExit(f"README tool count out of sync (source={count})")
+PY2
+then
+  pass "README 工具数量与源码一致"
+else
+  fail "README 工具数量与源码不一致"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

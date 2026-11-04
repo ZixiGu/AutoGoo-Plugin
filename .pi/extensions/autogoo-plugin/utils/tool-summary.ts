@@ -52,7 +52,6 @@ export function describeToolCall(part: any): string {
   switch (name) {
     case "bash":
     case "shell":
-    case "auto_goo_shell":
       detail = pickString(args, ["command", "cmd", "script"]);
       break;
     case "read":

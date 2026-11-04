@@ -29,7 +29,18 @@ def test_versions_are_consistent() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert f"当前版本：**v{expected}**" in readme, "README version out of sync"
     assert f"version-{expected}-green" in readme, "README badge out of sync"
-    assert "17 个自定义工具" in readme
+
+    # 工具数量从源码推导，不硬编码 —— 增删工具时只改代码，README 必须跟着对。
+    ext = ROOT / ".pi/extensions/autogoo-plugin"
+    tool_count = 0
+    for source in ext.rglob("*.ts"):
+        if "__tests__" in source.parts:
+            continue
+        tool_count += len(re.findall(r'name: "auto_goo', source.read_text(encoding="utf-8")))
+    assert tool_count > 0, "no auto_goo tools found"
+    assert f"{tool_count} 个自定义工具" in readme, (
+        f"README tool count out of sync: source has {tool_count}"
+    )
 
     entry = (ROOT / ".pi/extensions/autogoo-plugin/index.ts").read_text(encoding="utf-8")
     assert f"v{expected}" in entry, "extension banner/header out of sync"

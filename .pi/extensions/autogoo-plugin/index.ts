@@ -1,11 +1,11 @@
 /**
- * AutoGoo-Plugin Pi Extension v0.23.0 — 主入口
+ * AutoGoo-Plugin Pi Extension v0.23.1 — 主入口
  *
  * DAG 驱动的多智能体编排框架，从 Claude Code 插件迁移。
  *
  * 功能：
  * - 14 个命令（/auto-goo:goo-xxx 和 /goo-xxx 两种方式）
- * - 13 个自定义工具（执行、调度、SSH、worktree、状态管理）
+ * - 16 个自定义工具（交互/执行/调度/SSH/worktree/状态管理；shell 走 pi 内置 bash）
  * - ctx.ui 替代 AskUserQuestion 进行交互
  * - Python 脚本原样复用
  * - 自动 session 恢复检测
@@ -527,45 +527,9 @@ export default function (pi: ExtensionAPI) {
   });
   } // ── end auto_goo_ask_user (子进程跳过) ──
 
-  // auto_goo_shell — 安全执行 shell 命令
-  pi.registerTool({
-    name: "auto_goo_shell",
-    label: "Shell",
-    description: "在项目根目录执行 shell 命令，返回输出。用于执行 Python 脚本、Git 操作等。",
-    promptSnippet: "在项目根执行 shell 命令",
-    parameters: {
-      type: "object",
-      properties: {
-        command: { type: "string", description: "要执行的 shell 命令" },
-        timeout: { type: "integer", description: "超时秒数（默认 30）" },
-        description: { type: "string", description: "命令用途说明（可选，用于日志）" },
-      },
-      required: ["command"],
-    },
-    async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, ctx: any) {
-      // shell 命令审批：超时一律拒绝（安全默认）。
-      const approved = (await uiConfirmDetailed(
-        ctx,
-        "AutoGoo Shell",
-        `${params.description || "执行项目命令"}\n\n${params.command}`,
-        { defaultOnTimeout: false },
-      )).value ?? false;
-      if (!approved) {
-        return {
-          content: [{ type: "text", text: "用户取消了 shell 命令。" }],
-          details: { exitCode: null, cancelled: true },
-        };
-      }
-      const { execShell } = await import("./utils/exec.js");
-      const timeoutMs = Math.max(1, Number(params.timeout ?? 30)) * 1000;
-      const result = execShell(params.command, ctx.cwd, { timeout: timeoutMs });
-      const output = (result.stdout || result.stderr || "(no output)").slice(0, 10000);
-      return {
-        content: [{ type: "text", text: output }],
-        details: { exitCode: result.exitCode, truncated: (result.stdout?.length ?? 0) > 10000 },
-      };
-    },
-  });
+  // 注：不再注册 auto_goo_shell。pi 已自带 `bash` 工具（docs/cli.md:143），
+  // 能力完全覆盖；自定义版每次调用都强制确认、且系统提示并未引导使用它，
+  // 属于「重复能力 + 额外摩擦」。shell 执行一律用 pi 内置 bash。
 
   // ── Session hooks ─────────────────────────────────────────────────────────
 
@@ -665,5 +629,5 @@ export default function (pi: ExtensionAPI) {
   // 破坏宽度/光标计算 —— 表现为乱码、残影、界面错位。原注释写的
   // "Use stderr to avoid interfering with Pi's TUI rendering" 恰好说反了。
   // 加载状态由 pi 自己在 [Extensions] 列表里显示；诊断信息写 .auto-goo/logs/plugin.log。
-  logInfo("extension loaded", { version: "0.23.0" });
+  logInfo("extension loaded", { version: "0.23.1" });
 }

@@ -62,7 +62,7 @@ pi
 | `goo-improve` | AutoGoo-Plugin 自改进审查 |
 | `goo-benchmark` | 启动性能评测与优化迭代 |
 
-## 自定义工具（17 个）
+## 自定义工具（16 个，shell 走 pi 内置 bash）
 
 LLM 在执行 DAG 时可调用的工具：
 
@@ -74,7 +74,6 @@ LLM 在执行 DAG 时可调用的工具：
 | `auto_goo_prepare_dispatch` | 派发前准备（start + 预创建 log） |
 | `auto_goo_dag_status` | 查看 DAG 状态仪表盘 |
 | `auto_goo_pending_steps` | 查看就绪的可执行步骤 |
-| `auto_goo_shell` | 安全执行 shell 命令 |
 | `auto_goo_ask_user` | 结构化用户交互（替代 AskUserQuestion） |
 | `auto_goo_ssh_exec` | SSH 远程执行命令 |
 | `auto_goo_ssh_monitor` | SSH 跟随监视（训练进度/日志/GPU，窗口流式） |

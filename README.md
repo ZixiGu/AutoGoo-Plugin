@@ -2,7 +2,7 @@
 
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-Plugin-blue)
 ![Codex](https://img.shields.io/badge/Codex-Compatible-purple)
-![Version](https://img.shields.io/badge/version-0.23.0-green)
+![Version](https://img.shields.io/badge/version-0.23.1-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 AutoGoo-Plugin 是一个同时兼容 Claude Code 和 Codex 的智能体编排插件，用来把开放式任务拆成可执行计划、并行调用 subagent、记录运行状态，并把结果同步到 Goo-wiki / Obsidian。
@@ -102,7 +102,7 @@ pi install /path/to/AutoGoo-Plugin        # 仓库根即 pi 包
 }
 ```
 
-> Pi 扩展版本：**v0.23.0**。使用 Pi 原生 API（`ctx.ui`、自定义工具、事件系统）。卸载：`pi remove git:github.com/ZixiGu/AutoGoo-Plugin`。
+> Pi 扩展版本：**v0.23.1**。使用 Pi 原生 API（`ctx.ui`、自定义工具、事件系统）。卸载：`pi remove git:github.com/ZixiGu/AutoGoo-Plugin`。
 
 ## 在 Claude Code 中使用
 
@@ -195,7 +195,7 @@ pi install /path/to/AutoGoo-Plugin        # 仓库根即 pi 包
 
 ### 与 Claude Code 版本的区别
 
-Pi 扩展使用原生 API 注册 17 个自定义工具（`auto_goo_execute`、`auto_goo_dispatch`、`auto_goo_ssh_monitor`、`auto_goo_worktree_*` 等），所有平台差异封装在工具内部，model 不需要检测平台。支持 `ctx.ui.select/confirm/input` 作为用户交互，支持 `session_start`/`session_shutdown` hooks；worktree 不再在 session 退出时强制删除。
+Pi 扩展使用原生 API 注册 16 个自定义工具（`auto_goo_execute`、`auto_goo_dispatch`、`auto_goo_ssh_monitor`、`auto_goo_worktree_*` 等），所有平台差异封装在工具内部，model 不需要检测平台。支持 `ctx.ui.select/confirm/input` 作为用户交互，支持 `session_start`/`session_shutdown` hooks；worktree 不再在 session 退出时强制删除。
 
 ## 平台对比
 
@@ -207,7 +207,7 @@ Pi 扩展使用原生 API 注册 17 个自定义工具（`auto_goo_execute`、`a
 | Subagent 派发 | `Agent` 工具 | `spawn_agent` + `wait_agent` | `pi.registerTool` 自定义工具 |
 | Worktree 隔离 | 支持（`isolation: "worktree"`） | 不支持，自动降级 `mode="none"` | 支持（`auto_goo_worktree_*` 工具） |
 | Hooks | `SessionStart` 等 | 不支持 | `session_start`/`session_shutdown` |
-| 自定义工具 | 无（依赖平台工具） | 无（依赖平台工具） | 17 个注册工具 |
+| 自定义工具 | 无（依赖平台工具） | 无（依赖平台工具） | 16 个注册工具 |
 | 交互控件 | 方向键 + Enter | Plan mode 结构化 / Default mode 纯文本 | `ctx.ui` 原生控件 |
 
 ## 核心约定
@@ -330,7 +330,7 @@ bash skills/auto-goo/scripts/check-plugin.sh
 
 ## 版本
 
-当前版本：**v0.23.0**。
+当前版本：**v0.23.1**。
 
 ### 发版约定：每次提交都 bump
 

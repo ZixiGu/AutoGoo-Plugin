@@ -43,7 +43,7 @@ auto_goo_dispatch / auto_goo_execute
 
 | 工具 | 子进程内 | 说明 |
 |---|---|---|
-| read / bash / edit / write / auto_goo_shell | ✅ | 正常工作 |
+| read / bash / edit / write | ✅ | 正常工作 |
 | auto_goo_update_step | ✅ | 汇报进度/完成（写入共享 plan.json） |
 | auto_goo_dag_status / auto_goo_pending_steps | ✅ | 查看状态 |
 | auto_goo_execute / auto_goo_dispatch / auto_goo_prepare_dispatch | ❌ | 防止 Subagent 递归调度 DAG |

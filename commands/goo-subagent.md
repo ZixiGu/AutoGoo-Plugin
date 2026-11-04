@@ -5,12 +5,17 @@ description: 查看 subagent 实时活动 — 状态栏下面的 widget 与可�
 
 # /auto-goo:goo-subagent — subagent 实时活动
 
-派发 subagent 后，**它在做什么**以前只能从工具输出的滚屏里瞥一眼。现在有两层可观测：
+派发 subagent 后，**它在做什么**以前只能从工具输出的滚屏里瞥一眼（还容易被刷掉）。
+现在把活动记录到内存，随时用面板回看：
 
-| 层 | 形态 | 回答的问题 |
-| --- | --- | --- |
-| **widget** | `ctx.ui.setWidget(..., { placement: "belowEditor" })`，常驻状态栏下面 | "还在跑吗 / 刚做了什么" |
-| **面板** | `ctx.ui.custom` 全屏面板 | "这个 step 到底做了什么" |
+```text
+/goo-subagent      # 打开完整面板
+```
+
+或按 **`alt+a`**（`ctrl+*` 基本被 pi 内置键位占满，故用 `alt+a`）。
+
+> 早期版本还额外用 `ctx.ui.setWidget` 在状态栏下面常驻显示多行活动，
+> 但用户反馈与既有状态栏重复、太吵，已移除 —— 只保留按需打开的面板。
 
 ## 用法
 

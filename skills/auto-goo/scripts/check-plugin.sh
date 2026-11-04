@@ -2696,7 +2696,7 @@ ACT_TS="$ROOT/.pi/extensions/autogoo-plugin/utils/activity.ts"
 ACT_PANEL="$ROOT/.pi/extensions/autogoo-plugin/utils/subagent-panel.ts"
 SUB_CMD="$ROOT/.pi/extensions/autogoo-plugin/commands/subagent.ts"
 
-for sym in "export const activityBus" "export function renderActivityWidget"; do
+for sym in "export const activityBus" "export function kindMark"; do
   if grep -q "$sym" "$ACT_TS" 2>/dev/null; then
     pass "activity 提供 $sym"
   else
@@ -2719,18 +2719,11 @@ for f in "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts" "$ROOT/.pi/exte
   fi
 done
 
-if grep -q "setWidget(" "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts" \
-  && grep -q "belowEditor" "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts"; then
-  pass "活动 widget 挂在状态栏下面（belowEditor）"
+# 用户反馈常驻 widget 与状态栏重复、太吵 —— 只保留按需打开的面板。
+if ! grep -rq "setWidget(" "$ROOT/.pi/extensions/autogoo-plugin" --include=*.ts 2>/dev/null; then
+  pass "不安装常驻 widget（活动只在 /goo-subagent 面板里看）"
 else
-  fail "未安装状态栏 widget"
-fi
-
-if grep -q 'ctx.ui.setWidget("autogoo-subagent", undefined)' "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts" \
-  && grep -q "clearActivityWidget" "$ROOT/.pi/extensions/autogoo-plugin/index.ts"; then
-  pass "session_shutdown 清理活动 widget"
-else
-  fail "活动 widget 未清理（会跨会话残留）"
+  fail "仍在安装常驻 widget（用户已要求移除）"
 fi
 
 if grep -q '"goo-subagent"' "$ROOT/.pi/extensions/autogoo-plugin/index.ts" \

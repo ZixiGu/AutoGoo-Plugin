@@ -25,49 +25,7 @@ import { guardRender } from "../utils/tui-kit.js";
 import { ObservePanel, type ObserveAction, type ObserveSnapshot, type ObserveStep } from "../utils/observe-panel.js";
 import { checkPlanLocks, acquirePlanLocks, releasePlanLocks, describeConflicts } from "../utils/locks.js";
 import { describeMessageContent, describeToolResult } from "../utils/tool-summary.js";
-import { activityBus, renderActivityWidget } from "../utils/activity.js";
-
-/**
- * 状态栏下面的 subagent 活动 widget。
- * `ctx.ui.setWidget` 的工厂会拿到 tui，注册成活动总线的重绘钩子 —— 这样
- * activityBus.push() 就能实时刷新，不必每帧轮询。
- */
-export function ensureActivityWidget(ctx: any): void {
-  if (ctx?.mode !== "tui" || !ctx?.hasUI) return;
-  try {
-    ctx.ui.setWidget(
-      "autogoo-subagent",
-      (tui: any, theme: any) => {
-        const accent = (s: string) => {
-          try { return theme.fg("accent", s); } catch { return s; }
-        };
-        const dim = (s: string) => {
-          try { return theme.fg("dim", s); } catch { return s; }
-        };
-        activityBus.setRenderHook(() => {
-          try { tui.requestRender(); } catch { /* ignore */ }
-        });
-        return {
-          render: (width: number) => renderActivityWidget({ width }, { accent, dim }),
-          invalidate: () => {},
-          dispose: () => activityBus.setRenderHook(null),
-        };
-      },
-      { placement: "belowEditor" },
-    );
-  } catch {
-    /* widget 不可用不阻塞派发 */
-  }
-}
-
-export function clearActivityWidget(ctx: any): void {
-  if (ctx?.mode !== "tui" || !ctx?.hasUI) return;
-  try {
-    ctx.ui.setWidget("autogoo-subagent", undefined);
-  } catch {
-    /* ignore */
-  }
-}
+import { activityBus } from "../utils/activity.js";
 
 // ── Global pi reference, set by setPi() from index.ts ───────────────────────
 let _pi: ExtensionAPI | null = null;
@@ -613,9 +571,8 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
       // 规则一直写在 SKILL.md 里，但此前没有任何代码调用 → 两个会话可以同时写
       // 同一批文件 / wiki 页 / 端口 / 远程服务器。这里补上真正的强制点。
       // 冲突时按规则「标记 blocked 并前台询问用户」，默认不派发。
-      // 活动跟踪：让状态栏下面的 widget 与 /goo-subagent 面板能实时看到
-      // 这个 subagent 在做什么（工具名 + 真实参数）。
-      ensureActivityWidget(ctx);
+      // 活动跟踪：供 /goo-subagent 面板查看这个 subagent 在做什么。
+      // 不再安装常驻 widget（用户反馈状态栏下面多行显示太吵）。
       activityBus.begin(params.stepId, `${params.role}${params.taskAgent ? "/" + params.taskAgent : ""}`);
 
       const lockCheck = checkPlanLocks(cwd, planPath);

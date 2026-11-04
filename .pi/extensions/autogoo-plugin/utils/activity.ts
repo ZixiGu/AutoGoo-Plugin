@@ -2,9 +2,11 @@
  * Subagent 活动总线 —— 记录"正在跑的 subagent 到底在做什么"。
  *
  * 背景：`auto_goo_dispatch` / `auto_goo_execute` 的进度只在工具输出里刷几行，
- * 一旦滚动就看不到了，也没法"切换进去看"。这里把活动持久化到内存：
- *   - 状态栏下面用 `ctx.ui.setWidget` 渲染最近的几行（实时）；
- *   - 完整时间线用 `ctx.ui.custom` 的面板看（`/goo-subagent` 或 alt+a）。
+ * 一旦滚动就看不到了，也没法"切换进去看"。这里把活动持久化到内存，
+ * 由 `ctx.ui.custom` 的面板消费（`/goo-subagent` 或 alt+a）。
+ *
+ * 注：曾额外用 `ctx.ui.setWidget` 在状态栏下面常驻显示，但用户反馈多行
+ * widget 太吵、与既有状态栏重复，已移除 —— 只保留按需打开的面板。
  *
  * 只在内存里，不落盘：这是**运行时可观测性**，不是审计日志（审计走 step log）。
  */
@@ -36,7 +38,6 @@ const MAX_STEPS = 20;
 class ActivityBus {
   private readonly steps = new Map<string, StepActivity>();
   private listeners = new Set<() => void>();
-  private renderHook: (() => void) | null = null;
 
   /** 开始跟踪一个 step。 */
   begin(stepId: string | number, stepName?: string): void {
@@ -112,11 +113,6 @@ class ActivityBus {
     return () => this.listeners.delete(fn);
   }
 
-  /** widget 组件注册重绘钩子；卸载时置空。 */
-  setRenderHook(fn: (() => void) | null): void {
-    this.renderHook = fn;
-  }
-
   private notify(): void {
     for (const fn of this.listeners) {
       try {
@@ -124,11 +120,6 @@ class ActivityBus {
       } catch {
         /* 监听器异常不阻塞 */
       }
-    }
-    try {
-      this.renderHook?.();
-    } catch {
-      /* 重绘请求失败不阻塞 */
     }
   }
 
@@ -166,50 +157,4 @@ const STATUS_MARK: Record<StepRunStatus, string> = {
 
 export function runStatusMark(status: StepRunStatus): string {
   return STATUS_MARK[status] ?? "·";
-}
-
-export interface WidgetRenderOptions {
-  /** 最多显示几行活动（不含标题行） */
-  maxLines?: number;
-  /** 超过多少列截断 */
-  width: number;
-}
-
-/**
- * 状态栏下面的紧凑视图：标题 + 每个运行中 step 的最近几行。
- * 无颜色依赖（theme 可选），保持 widget 轻量。
- */
-export function renderActivityWidget(
-  opts: WidgetRenderOptions,
-  colorize?: { accent: (s: string) => string; dim: (s: string) => string },
-): string[] {
-  const steps = activityBus.list();
-  if (steps.length === 0) return [];
-
-  const maxLines = Math.max(1, opts.maxLines ?? 6);
-  const width = Math.max(20, opts.width);
-  const accent = colorize?.accent ?? ((s: string) => s);
-  const dim = colorize?.dim ?? ((s: string) => s);
-  const clip = (s: string) => (s.length > width ? `${s.slice(0, Math.max(1, width - 1))}…` : s);
-
-  const lines: string[] = [];
-  const running = steps.filter((s) => s.status === "running");
-  const shown = running.length > 0 ? running : steps.slice(0, 1);
-
-  const header = running.length > 0 ? `● subagent 运行中（${running.length}）` : "● subagent 最近一次";
-  lines.push(clip(accent(header)));
-
-  let budget = maxLines;
-  for (const step of shown) {
-    if (budget <= 0) break;
-    lines.push(clip(dim(`  ${runStatusMark(step.status)} #${step.stepId} ${step.stepName}`.trimEnd())));
-    budget -= 1;
-    const recent = step.events.slice(-budget);
-    for (const event of recent) {
-      if (budget <= 0) break;
-      lines.push(clip(`    ${kindMark(event.kind)} ${event.text}`));
-      budget -= 1;
-    }
-  }
-  return lines;
 }

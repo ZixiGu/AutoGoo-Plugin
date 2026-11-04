@@ -346,46 +346,24 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/thread-locks.py release-plan --p
 
 > 历史问题：进度里工具调用曾被硬编码成 `⟦bash(...⟧` —— **参数全丢**，用户只看到"有个 bash 在跑"，看不到在跑什么。`ToolCall.arguments` 本来就是完整的，只是没被用。
 
-### subagent 实时活动（widget + 面板）
+### subagent 活动面板
 
-派发 subagent 时，"它在做什么"由 `utils/activity.ts` 的内存总线承载：
+派发 subagent 时，"它在做什么"由 `utils/activity.ts` 的内存总线承载，通过面板查看：
 
-| 层 | API | 用途 |
-| --- | --- | --- |
-| widget | `ctx.ui.setWidget(key, factory, { placement: "belowEditor" })` | 状态栏下面常驻，`● subagent 运行中（N）` + 每个 step 最近几行 |
-| 面板 | `ctx.ui.custom` | `/goo-subagent` 或 `alt+a`，步骤列表 + 完整时间线 |
-| 快捷键 | `pi.registerShortcut("alt+a", …)` | `ctrl+*` 几乎被 pi 内置键位占满 |
+| 入口 | 说明 |
+| --- | --- |
+| `/goo-subagent` | 打开完整时间线面板 |
+| `alt+a` | 同上的快捷键（`ctrl+*` 几乎被 pi 内置键位占满） |
+| `ctx.ui.custom` | 面板实现（`utils/subagent-panel.ts`） |
 
 接线点：`auto_goo_dispatch`（单步）与 `auto_goo_execute`（并行批次）都调用
-`activityBus.begin/push/end`；`push` 的事件文本来自 `tool-summary.ts`，因此
-widget 里能看到**真实工具参数**（`⟦bash: npm test⟧`）而不是 `⟦bash(...⟧`。
+`activityBus.begin/push/end`；`push` 的事件文本来自 `tool-summary.ts`，因此面板里
+能看到**真实工具参数**（`⟦bash: npm test⟧`）而不是 `⟦bash(...⟧`。
 
-事件图标：`💬` 文本 · `⚙` 工具调用 · `↳` 结果。每个 step 保留最近 400 条、最多 20 个 step；
-`session_shutdown` 清理 widget，避免跨会话残留。
+事件图标：`💬` 文本 · `⚙` 工具调用 · `↳` 结果。每个 step 保留最近 400 条、最多 20 个 step。
 
-### TypeScript 检查覆盖不到的那一类错误
-
-`check-plugin.sh` 里对扩展的检查分三层，**缺一层就会漏**：
-
-| 层 | 手段 | 能查出 |
-| --- | --- | --- |
-| 语法 | `node --experimental-strip-types --check` | 语法错误 |
-| 模块 | `esbuild --bundle` | import 路径错、模块缺失 |
-| **标识符** | **`check-ts-symbols.py`** | **未定义标识符（运行时 `ReferenceError`）** |
-
-前两层都**查不出**「用了但没导入」。历史故障：`logInfo is not defined` 通过了语法与
-bundle，却在 pi 启动时 `Failed to load extension` —— 扩展直接加载失败，整个插件不可用。
-
-`check-ts-symbols.py` 的做法（没有 `tsc` 时的近似）：
-
-- 剥离注释、字符串、**正则字面量**、`interface`/`type` 声明块；
-- 收集裸调用 `name(`（排除 `x.name(`）；
-- `name` 必须在文件内被 import / 声明（含函数参数、方法简写、`foo: (a) => T` 形状），
-  或属于已知全局；
-- 排除「调用后跟 `{` 或 `:`」的情况（那是方法定义/类型签名，不是调用）。
-
-它为**零误报**做了大量白名单工作 —— 宁可漏报，不可因误报阻塞提交。自检用一个人为
-造出缺失导入的临时目录验证（`§26` 里就有这条）。
+> 早期版本额外用 `ctx.ui.setWidget` 在状态栏下面常驻显示多行活动，但用户反馈与既有
+> 状态栏重复、太吵，**已移除** —— 只保留按需打开的面板。`§25` 有一条断言禁止再引入常驻 widget。
 
 ### 扩展禁止直写终端（乱码根因）
 

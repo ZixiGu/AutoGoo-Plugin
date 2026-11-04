@@ -23,7 +23,6 @@ import { checkPlanLocks, acquirePlanLocks, releasePlanLocks, describeConflicts }
 import { describeMessageContent, describeToolResult } from "../utils/tool-summary.js";
 import { activityBus } from "../utils/activity.js";
 import { uiConfirmDetailed } from "../utils/ui.js";
-import { ensureActivityWidget } from "../commands/start.js";
 import {
   loadPlan,
   savePlan,
@@ -376,8 +375,7 @@ async function runSchedule(
   // 同一批文件 / wiki 页 / 端口 / 远程服务器。这里补上真正的强制点。
   // 并行派发用 plan 级 acquire/release（release-plan 会释放该 thread 的全部锁，
   // 因此不能放在单步回调里）。
-  // 活动跟踪：状态栏 widget + /goo-subagent 面板共用同一份总线
-  ensureActivityWidget(ctx);
+  // 活动跟踪：供 /goo-subagent 面板查看（不装常驻 widget）
   for (const step of toDispatch) {
     activityBus.begin(step.id, `${step.name ?? ""}${step.subagent ? ` · ${step.subagent}` : ""}`.trim());
   }

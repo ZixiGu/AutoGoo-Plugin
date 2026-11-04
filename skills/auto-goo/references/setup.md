@@ -323,6 +323,29 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/thread-locks.py release-plan --p
 
 僵尸锁超过 10 分钟（`STALE_LOCK_AGE_SECONDS`）会被视为陈旧。
 
+### 派发进度显示工具参数
+
+`auto_goo_dispatch` / `auto_goo_execute` 的保活进度行会把子进程的工具调用压成一行摘要：
+
+```
+⏳ step #1 运行中 [08:32] · 事件 12 · bash: ls -la /tmp && echo done
+  #1 [08:33] ▶ ⟦read: src/index.ts⟧  ⟦grep: TODO in src/⟧
+  #1 [08:34] ▶ ⟦result⟧ modified: a.ts
+```
+
+摘要规则（`utils/tool-summary.ts`）：
+
+| 工具 | 提取字段 |
+| --- | --- |
+| `bash` / `shell` / `auto_goo_shell` | `command` |
+| `read` / `write` / `edit` / `view` | `path` / `file_path` |
+| `grep` / `search` / `glob` | `pattern` + `path` |
+| `auto_goo_ssh_*` | `server` + `command` |
+| `auto_goo_update_step` | `stepId` + `action` + `note` |
+| 其他 | 第一个字符串参数，退化为 JSON 片段 |
+
+> 历史问题：进度里工具调用曾被硬编码成 `⟦bash(...⟧` —— **参数全丢**，用户只看到"有个 bash 在跑"，看不到在跑什么。`ToolCall.arguments` 本来就是完整的，只是没被用。
+
 ### 扩展禁止直写终端（乱码根因）
 
 pi 的 TUI **独占屏幕**。扩展里任何 `console.log` / `console.error` / `process.stderr.write`

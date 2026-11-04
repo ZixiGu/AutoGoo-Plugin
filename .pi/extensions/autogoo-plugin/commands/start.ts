@@ -24,6 +24,7 @@ import { join } from "node:path";
 import { guardRender } from "../utils/tui-kit.js";
 import { ObservePanel, type ObserveAction, type ObserveSnapshot, type ObserveStep } from "../utils/observe-panel.js";
 import { checkPlanLocks, acquirePlanLocks, releasePlanLocks, describeConflicts } from "../utils/locks.js";
+import { describeMessageContent, describeToolResult } from "../utils/tool-summary.js";
 
 // ── Global pi reference, set by setPi() from index.ts ───────────────────────
 let _pi: ExtensionAPI | null = null;
@@ -624,18 +625,18 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
             const role = message?.role;
             let text = "";
             if (role === "assistant" && Array.isArray(message.content)) {
-              text = message.content
-                .map((p: any) => (p?.type === "text" ? p.text : p?.type === "toolCall" ? `⟦${p.name}(...⟧` : ""))
-                .filter(Boolean)
-                .join("\n");
+              // 用 describeMessageContent：toolCall 带出真实参数（命令/路径/pattern），
+              // 而不是以前的 ⟦bash(...⟧（参数全丢，看不到"在做什么"）。
+              text = describeMessageContent(message.content);
             } else if (message?.type === "tool_result_end" || message?.role === "tool") {
-              const c = message.content?.[0]?.text || "";
-              text = `⟦tool result⟧ ${String(c).slice(0, 200)}`;
+              const summary = describeToolResult(message);
+              text = summary ? `⟦result⟧ ${summary}` : "";
             }
             if (text) {
               eventCount += 1;
-              lastActivity = text.replace(/\s+/g, " ").slice(0, 80);
-              emit(`  #${params.stepId} [${fmtElapsed()}] ▶ ${text.slice(0, 300)}`);
+              // 保活行显示"最近在干什么"，这里保留工具摘要而不是截成半截
+              lastActivity = text.replace(/\s+/g, " ").slice(0, 120);
+              emit(`  #${params.stepId} [${fmtElapsed()}] ▶ ${text.slice(0, 400)}`);
             }
           } catch {
             /* 流式转发失败不阻塞 */

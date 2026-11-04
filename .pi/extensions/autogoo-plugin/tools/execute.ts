@@ -20,6 +20,7 @@ import { runSubagent, resolveSubagentModel, resolveOrPromptSubagentModel } from 
 import { getRolePrompt, getTaskAgentPrompt } from "../utils/prompts.js";
 import { updateStatusBar, formatStatusLine, snapshotPlan } from "../utils/status.js";
 import { checkPlanLocks, acquirePlanLocks, releasePlanLocks, describeConflicts } from "../utils/locks.js";
+import { describeMessageContent, describeToolResult } from "../utils/tool-summary.js";
 import {
   loadPlan,
   savePlan,
@@ -478,18 +479,16 @@ async function runSchedule(
             const role = message?.role;
             let text = "";
             if (role === "assistant" && Array.isArray(message.content)) {
-              text = message.content
-                .map((p: any) => (p?.type === "text" ? p.text : p?.type === "toolCall" ? `⟦${p.name}(...⟧` : ""))
-                .filter(Boolean)
-                .join("\n");
+              // toolCall 带出真实参数（命令/路径/pattern），不再只是 ⟦bash(...⟧
+              text = describeMessageContent(message.content);
             } else if (message?.type === "tool_result_end" || message?.role === "tool") {
-              const c = message.content?.[0]?.text || "";
-              text = `⟦tool result⟧ ${String(c).slice(0, 200)}`;
+              const summary = describeToolResult(message);
+              text = summary ? `⟦result⟧ ${summary}` : "";
             }
             if (text) {
               eventCount += 1;
-              lastActivity = text.replace(/\s+/g, " ").slice(0, 80);
-              emit(`  #${step.id} [${fmtElapsed()}] ▶ ${text.slice(0, 300)}`);
+              lastActivity = text.replace(/\s+/g, " ").slice(0, 120);
+              emit(`  #${step.id} [${fmtElapsed()}] ▶ ${text.slice(0, 400)}`);
             }
           } catch {
             /* 流式转发失败不阻塞 */

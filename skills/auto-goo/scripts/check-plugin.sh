@@ -2634,6 +2634,59 @@ else
   pass "启动 banner 已移除（加载状态由 pi 的 [Extensions] 展示）"
 fi
 
+# ── 24. 派发进度显示工具参数 ──
+# 回归：进度行里工具调用曾被硬编码成 ⟦bash(...⟧ —— 参数全丢，用户只看到
+# "有个 bash 在跑"，看不到在跑什么。
+echo ""
+echo "── 24. 派发进度可读性 ──"
+
+TS_TS="$ROOT/.pi/extensions/autogoo-plugin/utils/tool-summary.ts"
+
+for sym in "export function describeToolCall" "export function describeMessageContent" "export function describeToolResult"; do
+  if grep -q "$sym" "$TS_TS" 2>/dev/null; then
+    pass "tool-summary 提供 $sym"
+  else
+    fail "tool-summary 缺少 $sym"
+  fi
+done
+
+for f in "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts" "$ROOT/.pi/extensions/autogoo-plugin/tools/execute.ts"; do
+  base="$(basename "$f")"
+  if grep -q "describeMessageContent(" "$f"; then
+    pass "$base 用 describeMessageContent 渲染工具参数"
+  else
+    fail "$base 未使用 describeMessageContent（进度里看不到工具参数）"
+  fi
+done
+
+# 关键回归：不得残留 ⟦name(...⟧ 占位。
+# 注意跳过注释行 —— 解释"以前是 ⟦bash(...⟧"的说明文字本身包含该子串，
+# 本项目已因同类误判踩坑 5 次，静态检查必须区分「代码」与「描述代码的文字」。
+if python3 - "$ROOT/.pi/extensions/autogoo-plugin" <<'PY2'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+needle = "(...⟧"
+offenders = []
+for path in root.rglob("*.ts"):
+    if "__tests__" in path.parts:
+        continue
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        stripped = line.lstrip()
+        if stripped.startswith("//") or stripped.startswith("*") or stripped.startswith("/*"):
+            continue
+        if needle in line:
+            offenders.append(f"{path.relative_to(root)}:{lineno}")
+if offenders:
+    raise SystemExit("tuple placeholder still in code: " + "; ".join(offenders[:5]))
+PY2
+then
+  pass "无 ⟦工具(...⟧ 参数丢失占位（跳过注释行）"
+else
+  fail "仍存在 ⟦工具(...⟧ 占位（参数被丢弃）"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

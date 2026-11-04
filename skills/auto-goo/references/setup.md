@@ -477,6 +477,20 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-thread.py restore <id>
 
 **反向约束（易被忽略）**：`sync_from_plan()` 内部调用 `set_current` 时传 `sync_compat=False`。否则它会把（可能陈旧的）thread plan 复制回兼容入口，**静默回滚掉 `update-step.py` 刚写入的进度**。这条已写成 §18 断言。
 
+#### 缓存为什么必须校验本地 HEAD
+
+实际误报：跑完 `pi update --extensions` 后，会话启动仍显示
+
+```
+[AutoGoo-Plugin] ⬆ 有更新：本地 f5dec80 → 远端 3301aa0
+```
+
+原因是缓存只校验 `version` / `root` / TTL，**没校验本地 HEAD 是否已经变了**：
+更新前写入的 `{status: available, local_sha: 旧HEAD}` 会在 24h 内一直命中。
+
+现在 `load_cache()` 多一条：`local_sha` 与当前 HEAD 不一致 → 缓存失效重查。
+`check-plugin.sh` §29 同时校验「读取缓存前必须先算本地 HEAD」的顺序。
+
 ### thread 记录对账（`thread-doctor.py`）
 
 thread 状态存在**五处**，此前没有任何交叉校验：
@@ -532,7 +546,7 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py --cached-onl
 | --- | --- |
 | 为什么比 SHA 而不是版本号 | `package.json` 的 version 可能跨多个 commit 不变（实测：本地领先 6 个 commit 时，两边 version 仍然相同），比版本号会漏报 |
 | 只读保证 | 只用 `git ls-remote` / `rev-parse` / `symbolic-ref` / `remote`，**从不** `fetch`/`pull`，不改动本地 checkout |
-| 缓存 | `~/.auto-goo/cache/update-check.json`，默认 24h（`--interval-hours` 可调）；缓存按 `root` 校验，避免另一份安装的结论被误用 |
+| 缓存 | `~/.auto-goo/cache/update-check.json`，默认 24h（`--interval-hours` 可调）；缓存按 **`root` + `local_sha`** 校验 —— 换安装目录或**本地 HEAD 已变**（`pi update` 之后）都会立即失效重查 |
 | 不阻塞启动 | 会话启动路径只用 `--cached-only`（绝不联网）；完整检查由 pi 扩展在 `session_start` **异步**触发 |
 | 失败降级 | 网络不可达 / 非 git 目录 / 限流 → `status=unknown`，**始终 exit 0**，永不阻断会话 |
 | 关闭方式 | `AUTOGOO_SKIP_UPDATE_CHECK=1` / `PI_SKIP_VERSION_CHECK=1` / `PI_OFFLINE=1` / `AUTOGOO_OFFLINE=1`，或配置 `update_check.enabled=false` |

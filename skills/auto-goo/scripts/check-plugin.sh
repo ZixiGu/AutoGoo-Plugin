@@ -2870,6 +2870,39 @@ else
   fail "README 工具数量与源码不一致"
 fi
 
+# ── 29. 更新检查缓存必须随本地 HEAD 失效 ──
+# 实际误报：pi update 之后仍显示「有更新：本地 f5dec80 → 远端 3301aa0」——
+# 因为缓存只校验 version/root/TTL，没校验本地 HEAD 是否已变。
+echo ""
+echo "── 29. 更新检查缓存失效 ──"
+
+UPD2="$ROOT/skills/auto-goo/scripts/goo-update-check.py"
+
+if grep -q "def load_cache(" "$UPD2" && grep -q "local_sha: str | None = None" "$UPD2" \
+  && grep -q 'data.get("local_sha") not in (None, local_sha)' "$UPD2"; then
+  pass "缓存读取会校验 local_sha（HEAD 变了就失效）"
+else
+  fail "缓存不校验 local_sha —— pi update 后会在 TTL 内持续误报有更新"
+fi
+
+if grep -q "local_sha, branch, remote = local_revision(root)" "$UPD2" \
+  && python3 - "$UPD2" <<'PY2'
+import sys
+from pathlib import Path
+
+src = Path(sys.argv[1]).read_text(encoding="utf-8")
+# local_revision 必须出现在 load_cache 调用之前
+rev = src.find("local_sha, branch, remote = local_revision(root)")
+cache = src.find("cached = load_cache(")
+if rev < 0 or cache < 0 or rev > cache:
+    raise SystemExit("local_revision must run before load_cache")
+PY2
+then
+  pass "先算本地 HEAD 再读缓存（顺序正确）"
+else
+  fail "缓存读取早于本地 HEAD 计算，校验必然失效"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

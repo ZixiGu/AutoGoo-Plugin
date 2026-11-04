@@ -142,13 +142,22 @@ def cache_path() -> Path:
     return Path(os.environ.get("HOME") or "~").expanduser() / ".auto-goo" / "cache" / "update-check.json"
 
 
-def load_cache(ttl_seconds: float, root: Path | None = None) -> dict | None:
+def load_cache(
+    ttl_seconds: float,
+    root: Path | None = None,
+    local_sha: str | None = None,
+) -> dict | None:
     data = _read_json(cache_path())
     if data.get("version") != CACHE_VERSION:
         return None
     # 缓存是全局的，但 root 可能是另一份安装（开发 checkout vs pi/git 安装）；
     # root 不匹配时必须重查，否则会把另一份安装的结论误报给当前安装。
     if root is not None and str(data.get("root", "")) != str(root):
+        return None
+    # **本地 HEAD 变了就必须重查**：pi update 之后本地已是最新，但缓存里仍存着
+    # 更新前的 local_sha 和 "available" 结论，会在 TTL（默认 24h）内持续误报
+    # "有更新"。这是实际发生过的误报。
+    if local_sha is not None and data.get("local_sha") not in (None, local_sha):
         return None
     checked_at = data.get("checked_at")
     if not isinstance(checked_at, str):
@@ -186,7 +195,10 @@ def evaluate(root: Path, use_cache: bool, ttl_seconds: float, cached_only: bool 
     if opt_out:
         return {"status": "disabled", "reason": opt_out}
 
-    cached = load_cache(ttl_seconds, root) if use_cache else None
+    # 先算本地 HEAD —— 缓存必须按它校验，否则 update 后仍会误报。
+    local_sha, branch, remote = local_revision(root)
+
+    cached = load_cache(ttl_seconds, root, local_sha) if use_cache else None
     if cached:
         cached["cached"] = True
         return cached
@@ -195,7 +207,6 @@ def evaluate(root: Path, use_cache: bool, ttl_seconds: float, cached_only: bool 
         # 会话启动路径：只读缓存，绝不发网络请求（避免阻塞启动）
         return {"status": "unknown", "reason": "no fresh cache", "cached_only": True}
 
-    local_sha, branch, remote = local_revision(root)
     if not local_sha:
         result = {"status": "unknown", "reason": "not a git checkout or git unavailable"}
     else:

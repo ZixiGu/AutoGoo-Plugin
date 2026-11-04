@@ -49,10 +49,28 @@ export function headerLine(title: string, right: string, width: number, theme?: 
   return color(theme, "accent", left) + " ".repeat(gap) + color(theme, "dim", rightFitted);
 }
 
-/** 底部按键提示。 */
+/**
+ * 底部按键提示。放不下时**从尾部丢项**并补 `…`，绝不截断成半个按键说明
+ * （截断会显示成 `c 清空 ·...` 这种看不懂的样子）。
+ */
 export function keyHelp(items: KeyHelpItem[], width: number, theme?: Theme): string {
-  const text = items.map((i) => `${i.keys} ${i.label}`).join("  ·  ");
-  return fit(color(theme, "dim", ` ${text}`), width);
+  const w = Math.max(1, width);
+  const render = (list: KeyHelpItem[]) => {
+    const text = list.map((i) => `${i.keys} ${i.label}`).join("  ·  ");
+    return ` ${text}`;
+  };
+  let list = items.slice();
+  while (list.length > 0 && visibleWidth(render(list)) > w) {
+    list = list.slice(0, -1);
+  }
+  let text = list.length > 0 ? render(list) : " ";
+  if (list.length < items.length) {
+    text = `${text}  ·  …`;
+    while (visibleWidth(text) > w && text.length > 1) {
+      text = text.slice(0, -1);
+    }
+  }
+  return fit(color(theme, "dim", text), w);
 }
 
 /** 选中行高亮（统一风格，避免每个界面各写一套）。 */

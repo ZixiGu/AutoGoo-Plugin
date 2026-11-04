@@ -2739,6 +2739,24 @@ else
   fail "面板未兜底（渲染异常会崩 pi）"
 fi
 
+# 键位必须真的实现（写进 footer 但没实现 = 按不动）
+SUB_MISSING=""
+for key in '"tab"' '"pageUp"' '"pageDown"' '"home"' '"end"' '"up"' '"down"' '"escape"'; do
+  grep -q "matchesKey(data, $key)" "$ACT_PANEL" || SUB_MISSING="$SUB_MISSING $key"
+done
+if [[ -z "$SUB_MISSING" ]]; then
+  pass "面板键位全部有实现（tab/pageUp/pageDown/home/end/up/down/escape）"
+else
+  fail "面板声明了但没实现的键:$SUB_MISSING"
+fi
+
+# footer 在窄宽度下不得截断成半个按键说明
+if grep -q "while (list.length > 0 && visibleWidth(render(list)) > w)" "$ROOT/.pi/extensions/autogoo-plugin/utils/tui-kit.ts"; then
+  pass "keyHelp 自适应宽度（放不下丢项而非截断）"
+else
+  fail "keyHelp 会截断按键提示文本"
+fi
+
 # ── 26. TypeScript 未定义标识符 ──
 # node --check 只查语法，esbuild 只查模块解析 —— **两者都查不出未定义标识符**。
 # 这就是 `logInfo is not defined` 能通过全部本地检查、却在 pi 启动时报错的原因。

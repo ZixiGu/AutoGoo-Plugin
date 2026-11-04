@@ -68,9 +68,3 @@ export function getTaskAgentPrompt(taskAgent: string): string {
   return prompts[taskAgent] || "";
 }
 
-/** 角色 → 工具集限制（--tools）。默认不限制（保留全部工具）。 */
-export function getRoleTools(role: string): string[] | undefined {
-  // researcher/evaluator 偏只读，但步骤可能需写报告到 .goo/artifacts，
-  // 为兼容所有 step 类型暂不限制；后续可按 allowed_read/write 细化。
-  return undefined;
-}

@@ -99,16 +99,6 @@ async function refreshStatusBarTick(ctx: ExtensionContext): Promise<void> {
     stopStatusBarAutoRefresh(ctx.cwd);
   }
 }
-export function debouncedUpdateStatusBar(ctx: ExtensionContext): void {
-  const key = ctx.cwd;
-  const prev = debounceTimers.get(key);
-  if (prev) clearTimeout(prev);
-  debounceTimers.set(key, setTimeout(() => {
-    debounceTimers.delete(key);
-    void updateStatusBar(ctx);
-  }, DEBOUNCE_MS));
-}
-
 /** Format ms → "5m" / "1h23m" / "30s" / "0s". Exported for tests. */
 export function formatDuration(ms: number): string {
   if (ms < 1000) return "0s";

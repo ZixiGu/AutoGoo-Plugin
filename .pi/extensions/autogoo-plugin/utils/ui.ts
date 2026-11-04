@@ -63,7 +63,7 @@ export interface UIDialogContext {
 }
 
 /** Default interaction timeout (3 minutes). */
-export const DEFAULT_INTERACTION_TIMEOUT_MS = 180_000;
+const DEFAULT_INTERACTION_TIMEOUT_MS = 180_000;
 
 const RECOMMENDED_MARKERS = ["(recommended)", "（推荐）", "[recommended]"];
 
@@ -104,7 +104,7 @@ function readInteractionSeconds(configPath: string): number | undefined {
  * Order: project `.goo/config.json` -> user `~/.auto-goo/config.json` -> default.
  * Returns `undefined` when the timeout is explicitly disabled (`<= 0`).
  */
-export function getInteractionTimeoutMs(ctx?: { cwd?: string }): number | undefined {
+function getInteractionTimeoutMs(ctx?: { cwd?: string }): number | undefined {
   const cwd = ctx?.cwd || process.cwd();
   const home = process.env.HOME || "";
   const candidates = [

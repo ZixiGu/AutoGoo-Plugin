@@ -33,7 +33,7 @@ function clip(text: string, limit = MAX_DETAIL): string {
  * 生成形如 `bash: ls -la /tmp`、`read: src/index.ts`、`grep: TODO in src/` 的摘要。
  * 未知工具退化为「第一个字符串参数」，再退化到 JSON 片段。
  */
-export function describeToolCall(part: any): string {
+function describeToolCall(part: any): string {
   const name = String(part?.name ?? "tool");
   let args: Record<string, unknown> = {};
   const raw = part?.arguments;

@@ -4,6 +4,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+# 断言应扫「整个 commands 目录」而不是单个文件 —— 文件拆分不该让断言误伤
+COMMANDS_DIR="$ROOT/.pi/extensions/autogoo-plugin/commands"
 ERRORS=0
 WARNINGS=0
 
@@ -47,6 +49,28 @@ for agent in researcher collector implementer optimizer evaluator reviewer audit
   [[ -f "$ROOT/agents/$agent.md" ]] || fail "Claude Agent 未注册: agents/$agent.md"
 done
 [[ -f "$ROOT/hooks/hooks.json" ]] && pass "Claude SessionStart hook 存在" || fail "hooks/hooks.json 缺失"
+
+# TS 单元/集成测试（此前从未进 CI —— 55 个用例一直没人跑）
+# 需要 tsx；缺失时 warn 而非 fail，避免阻塞没有 node 工具链的环境。
+# 注意：本脚本 set -euo pipefail，任何 grep 无匹配都会让整条管道非零退出，
+#      所以这里的每个取值都必须用 `|| true` 兜住，并用 --test-reporter=tap
+#      拿到稳定的 `# pass N` / `# fail N` 机器可读行。
+EXT_TEST_DIR="$ROOT/.pi/extensions/autogoo-plugin"
+TSX_BIN="$ROOT/node_modules/.bin/tsx"
+if [[ -x "$TSX_BIN" ]]; then
+  TS_TEST_OUT="$(cd "$EXT_TEST_DIR" && "$TSX_BIN" --test --test-reporter=tap \
+    __tests__/*.test.ts utils/*.test.ts 2>&1 || true)"
+  TS_TEST_PASS="$(printf '%s\n' "$TS_TEST_OUT" | sed -n 's/^# pass \([0-9]*\)$/\1/p' | head -1 || true)"
+  TS_TEST_FAIL="$(printf '%s\n' "$TS_TEST_OUT" | sed -n 's/^# fail \([0-9]*\)$/\1/p' | head -1 || true)"
+  if [[ -n "$TS_TEST_PASS" && "${TS_TEST_FAIL:-1}" == "0" ]]; then
+    pass "TS 测试全部通过（${TS_TEST_PASS} 个用例）"
+  else
+    fail "TS 测试失败（pass=${TS_TEST_PASS:-?} fail=${TS_TEST_FAIL:-?}）"
+    printf '%s\n' "$TS_TEST_OUT" | sed -n 's/^not ok /    ✗ /p' | head -5 || true
+  fi
+else
+  warn "tsx 不可用，跳过 TS 测试"
+fi
 
 if command -v pytest &>/dev/null; then
   if (cd "$ROOT" && pytest -q tests/test_platform_integrity.py >/dev/null); then
@@ -1508,15 +1532,17 @@ echo "" >/dev/null
 echo ""
 echo "── 12. DAG 唤醒消息投递 ──"
 
-if python3 - "$ROOT" <<'PY'
+if python3 - "$COMMANDS_DIR" "$ROOT/.pi/extensions/autogoo-plugin/utils/pi-state.ts" <<'PY'
 import sys
 from pathlib import Path
 
-start = (Path(sys.argv[1]) / ".pi/extensions/autogoo-plugin/commands/start.ts").read_text(encoding="utf-8")
+d = Path(sys.argv[1])
+files = sorted(d.rglob("*.ts")) + [Path(sys.argv[2])]
+start = "\n".join(p.read_text(encoding="utf-8") for p in files if p.is_file())
 
 required = [
-    "agentBusy",
-    "wakeupPending",
+    "isAgentBusy",
+    "claimWakeup",
     "registerBusyTracking",
     'pi.on("agent_start"',
     'pi.on("agent_end"',
@@ -1525,8 +1551,8 @@ for token in required:
     if token not in start:
         raise SystemExit(f"missing busy-tracking token: {token}")
 
-# 忙时必须走 UI 反馈而不是 followUp：确认 agentBusy 分支存在且先于 sendUserMessage
-busy_idx = start.find("if (agentBusy)")
+# 忙时必须走 UI 反馈而不是 followUp：确认忙闲分支存在且先于 sendUserMessage
+busy_idx = start.find("if (isAgentBusy())")
 send_idx = start.find('deliverAs: "followUp"', busy_idx if busy_idx >= 0 else 0)
 if busy_idx < 0 or send_idx < 0 or busy_idx > send_idx:
     raise SystemExit("followUp 未被 agentBusy 门控（可能在 turn 内仍入队）")
@@ -2204,14 +2230,14 @@ for sym in checkPlanLocks acquirePlanLocks releasePlanLocks describeConflicts; d
   fi
 done
 
-for f in "$DISPATCH_TS" "$EXECUTE_TS"; do
+for f in "$COMMANDS_DIR" "$EXECUTE_TS"; do
   base="$(basename "$f")"
-  if grep -q "checkPlanLocks(" "$f" && grep -q "acquirePlanLocks(" "$f" && grep -q "releasePlanLocks(" "$f"; then
+  if grep -rq "checkPlanLocks(" "$f" && grep -rq "acquirePlanLocks(" "$f" && grep -rq "releasePlanLocks(" "$f"; then
     pass "$base 同时调用 check/acquire/release（配对加锁）"
   else
     fail "$base 未完整接入 thread-locks（check/acquire/release 必须配对）"
   fi
-  if grep -q "资源冲突" "$f" && grep -q '"--block"' "$f"; then
+  if grep -rq "资源冲突" "$f" && grep -rq '"--block"' "$f"; then
     pass "$base 冲突时标记 blocked（按 SKILL 规则）"
   else
     fail "$base 冲突时未标记 blocked"
@@ -2482,15 +2508,15 @@ else
   fail "/goo-usage 仍把输出塞进 sendUserMessage（会被排队）"
 fi
 
-if grep -q 'ctx.mode !== "tui"' "$OTHER_TS" && grep -q 'ctx.mode !== "tui"' "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts"; then
+if grep -rq 'ctx.mode !== "tui"' "$OTHER_TS" "$COMMANDS_DIR"; then
   pass "usage / observe 都有非 TUI 降级判定"
 else
   fail "缺少非 TUI 降级判定"
 fi
 
 # venv: goo-status 与 goo-observe 必须共用同一个面板（合并回归）
-if grep -q "openObservePanel(ctx, \"steps\")" "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts" \
-  && grep -q "openObservePanel(ctx, \"env\")" "$ROOT/.pi/extensions/autogoo-plugin/commands/other.ts"; then
+if grep -rq "openObservePanel(ctx, \"steps\")" "$COMMANDS_DIR" \
+  && grep -q "openObservePanel(ctx, \"env\")" "$OTHER_TS"; then
   pass "goo-status 与 goo-observe 共用 ObservePanel（仅初始 tab 不同）"
 else
   fail "两个命令未共用同一面板（合并失效）"
@@ -2510,7 +2536,7 @@ else
 fi
 
 if grep -q "export class ObservePanel" "$OPANEL" 2>/dev/null \
-  && grep -q "new ObservePanel" "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts"; then
+  && grep -rq "new ObservePanel" "$COMMANDS_DIR"; then
   pass "/goo-status 用 ctx.ui.custom 渲染 ObservePanel"
 else
   fail "/goo-status 未接入 TUI 面板"
@@ -2575,6 +2601,7 @@ echo ""
 echo "── 23. 扩展不得直写终端 ──"
 
 EXT_DIR="$ROOT/.pi/extensions/autogoo-plugin"
+# 断言应扫「整个 commands 目录」而不是单个文件 —— 文件拆分不该让断言误伤
 
 if python3 - "$EXT_DIR" <<'PY2'
 import sys
@@ -2642,7 +2669,7 @@ echo "── 24. 派发进度可读性 ──"
 
 TS_TS="$ROOT/.pi/extensions/autogoo-plugin/utils/tool-summary.ts"
 
-for sym in "export function describeToolCall" "export function describeMessageContent" "export function describeToolResult"; do
+for sym in "function describeToolCall" "export function describeMessageContent" "export function describeToolResult"; do
   if grep -q "$sym" "$TS_TS" 2>/dev/null; then
     pass "tool-summary 提供 $sym"
   else
@@ -2650,9 +2677,9 @@ for sym in "export function describeToolCall" "export function describeMessageCo
   fi
 done
 
-for f in "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts" "$ROOT/.pi/extensions/autogoo-plugin/tools/execute.ts"; do
+for f in "$COMMANDS_DIR" "$EXECUTE_TS"; do
   base="$(basename "$f")"
-  if grep -q "describeMessageContent(" "$f"; then
+  if grep -rq "describeMessageContent(" "$f"; then
     pass "$base 用 describeMessageContent 渲染工具参数"
   else
     fail "$base 未使用 describeMessageContent（进度里看不到工具参数）"
@@ -2710,9 +2737,9 @@ else
   fail "SubagentPanel 缺失"
 fi
 
-for f in "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts" "$ROOT/.pi/extensions/autogoo-plugin/tools/execute.ts"; do
+for f in "$COMMANDS_DIR" "$EXECUTE_TS"; do
   base="$(basename "$f")"
-  if grep -q "activityBus.begin(" "$f" && grep -q "activityBus.push(" "$f" && grep -q "activityBus.end(" "$f"; then
+  if grep -rq "activityBus.begin(" "$f" && grep -rq "activityBus.push(" "$f" && grep -rq "activityBus.end(" "$f"; then
     pass "$base 完整记录 begin/push/end"
   else
     fail "$base 未完整接入 activityBus（面板会看不到活动）"
@@ -2798,7 +2825,7 @@ echo "── 27. TUI 面板一致性 ──"
 
 TUIKIT="$ROOT/.pi/extensions/autogoo-plugin/utils/tui-kit.ts"
 
-for sym in "export function tabsLine" "export function fitColumns" "export function keyHelp"; do
+for sym in "export function tabsLine" "export function keyHelp" "export class ListState"; do
   if grep -q "$sym" "$TUIKIT" 2>/dev/null; then
     pass "tui-kit 提供 $sym"
   else

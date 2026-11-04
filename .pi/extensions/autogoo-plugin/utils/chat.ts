@@ -52,19 +52,15 @@ export type SetAliasResult =
 
 // ── Paths ───────────────────────────────────────────────────────────────────
 
-export function chatDir(cwd: string): string {
-  return join(cwd, ".goo/chat");
-}
-
-export function sessionsRegistryPath(cwd: string): string {
+function sessionsRegistryPath(cwd: string): string {
   return join(cwd, ".goo/chat/sessions.json");
 }
 
-export function pairsPath(cwd: string): string {
+function pairsPath(cwd: string): string {
   return join(cwd, ".goo/chat/pairs.json");
 }
 
-export function sessionMailboxDir(cwd: string, sessionId: string): string {
+function sessionMailboxDir(cwd: string, sessionId: string): string {
   return join(cwd, ".goo/chat/mailbox", sessionId);
 }
 
@@ -100,7 +96,7 @@ function sanitizeTs(ts: string): string {
  * 生成别名 `<project>@<序号>`：同项目已有 session 数量 + 1。
  * （注册表按项目隔离，同 cwd 下 project 一致。）
  */
-export function generateAlias(entries: ChatSessionEntry[], project: string): string {
+function generateAlias(entries: ChatSessionEntry[], project: string): string {
   const sameProject = entries.filter((e) => e.project === project);
   return `${project}@${sameProject.length + 1}`;
 }

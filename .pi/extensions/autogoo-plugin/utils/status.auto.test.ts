@@ -12,14 +12,31 @@ import { test } from "node:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  updateStatusBar,
-  clearStatusBar,
-  startStatusBarAutoRefresh,
-  stopStatusBarAutoRefresh,
-} from "./status.ts";
 
-const REFRESH_MS = Number(process.env.AUTOGOO_STATUS_REFRESH_MS ?? 150);
+// ⚠ 必须在 import status.ts **之前**设置：status.ts 在模块顶层计算
+//   STATUS_REFRESH_INTERVAL_MS，一旦加载就固化，之后再改环境变量无效。
+//   （这正是这两个用例长期失败的原因：环境变量从未被设置，定时器是 15s，
+//    而测试只等 450ms。）
+process.env.AUTOGOO_STATUS_REFRESH_MS = "150";
+
+const { updateStatusBar, clearStatusBar, startStatusBarAutoRefresh, stopStatusBarAutoRefresh } =
+  await import("./status.ts");
+
+const REFRESH_MS = 150;
+
+/** 轮询等待条件成立（替代固定 sleep，避免 CI 负载下次数不够）。 */
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 5000,
+  label = "condition",
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (predicate()) return;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(`timeout waiting for ${label} (${timeoutMs}ms)`);
+}
 
 function makePlan(steps: Array<{ id: number; status: string }>) {
   return {
@@ -70,21 +87,23 @@ test("auto-refresh: timer starts on active plan, refreshes, stops on completion"
 
     // 2. 等待几个 tick → 状态栏被周期重渲染（count 明显增长）
     const countAfterStart = calls.length;
-    await sleep(REFRESH_MS * 3);
-    assert.ok(calls.length > countAfterStart, `expected periodic refreshes, got ${calls.length} (was ${countAfterStart})`);
+    await waitFor(() => calls.length > countAfterStart, 5000, "periodic refresh");
 
     // 3. plan 全部完成 → 下一次 tick 渲染最终状态并停止定时器
     //    注意 snapshotPlan 有 1s 缓存（CACHE_TTL_MS=1000），需等缓存过期才能读到新 plan
     writePlan(cwd, makePlan([{ id: 1, status: "completed" }, { id: 2, status: "completed" }]));
-    const countBeforeDone = calls.length;
-    await sleep(1300); // > snapshotCache TTL
-    assert.ok(calls.length > countBeforeDone, "final state should be rendered");
+    // snapshotPlan 有 1s 缓存，等它过期并出现 2/2 的渲染
+    await waitFor(
+      () => (calls[calls.length - 1]?.text ?? "").includes("2/2"),
+      5000,
+      "final 2/2 render",
+    );
     const last = calls[calls.length - 1];
     assert.match(last.text ?? "", /2\/2/, "final line should show 2/2");
 
     // 4. 停止后不再有刷新（定时器已停止）
     const countAfterStop = calls.length;
-    await sleep(REFRESH_MS * 3);
+    await new Promise((r) => setTimeout(r, REFRESH_MS * 4));
     assert.equal(calls.length, countAfterStop, "no refreshes after timer stopped");
   } finally {
     stopStatusBarAutoRefresh(cwd);
@@ -103,7 +122,7 @@ test("clearStatusBar stops timer and clears status", async () => {
     assert.equal(calls[calls.length - 1].text, undefined, "clear sets status to undefined");
     // 之后不应再有刷新（clearStatusBar 自己的那一次调用已计入）
     const before = calls.length;
-    await sleep(REFRESH_MS * 3);
+    await new Promise((r) => setTimeout(r, REFRESH_MS * 4));
     assert.equal(calls.length, before, "no refreshes after clearStatusBar");
   } finally {
     stopStatusBarAutoRefresh(cwd);

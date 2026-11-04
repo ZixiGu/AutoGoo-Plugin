@@ -101,6 +101,8 @@ test("runSubagent 解析 JSON 流、收集 usage、传递 AUTOGOO_SUBAGENT env",
       task: "fake task",
       cwd: tmpdir(),
       timeoutMs: 30000,
+      provider: "test-provider",
+      model: "test-model",
     });
 
     // 验证解析结果
@@ -134,6 +136,8 @@ test("runSubagent 子进程异常退出时返回 errorMessage", async () => {
       task: "boom",
       cwd: tmpdir(),
       timeoutMs: 30000,
+      provider: "test-provider",
+      model: "test-model",
     });
     assert.equal(result.exitCode, 3);
   } finally {

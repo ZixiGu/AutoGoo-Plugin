@@ -394,6 +394,46 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/thread-locks.py release-plan --p
 > 早期版本额外用 `ctx.ui.setWidget` 在状态栏下面常驻显示多行活动，但用户反馈与既有
 > 状态栏重复、太吵，**已移除** —— 只保留按需打开的面板。`§25` 有一条断言禁止再引入常驻 widget。
 
+### 扩展测试：三层检查必须都跑
+
+`check-plugin.sh` 对 pi 扩展的检查分四层，缺一层就会漏：
+
+| 层 | 手段 | 能查出 |
+| --- | --- | --- |
+| 语法 | `node --experimental-strip-types --check` | 语法错误 |
+| 模块 | `esbuild --bundle` | import 路径错、模块缺失 |
+| 标识符 | `check-ts-symbols.py` | 未定义标识符（运行时 `ReferenceError`） |
+| **行为** | **`tsx --test`**（55 个用例） | 逻辑回归 |
+
+> 2026-11 之前 `tsx --test` **从未进 CI** —— 55 个用例一直躺着没人跑。
+> 现在 check-plugin 会跑它们；`tsx` 缺失时 warn 而非 fail。
+
+跑单个测试：
+
+```bash
+cd .pi/extensions/autogoo-plugin
+../../node_modules/.bin/tsx --test __tests__/plan-cycle.test.ts
+```
+
+**写测试时的两个坑**：
+
+1. **环境变量必须在 import 之前设置**。`status.ts` 在模块顶层计算
+   `STATUS_REFRESH_INTERVAL_MS`，之后再改 `process.env` 无效 ——
+   必须把 `process.env.X = ...` 放在 import 之前，并用 `await import()`。
+2. **别用固定 `sleep` 等异步**。CI 负载下次数会不够，应改用轮询条件（`waitFor`）。
+
+### 断言不要绑定文件路径
+
+`check-plugin.sh` 里的断言原本写死 `commands/start.ts`。一次文件拆分就让 8 条断言全红
+（代码只是移到了 `tools-execution.ts` / `status.ts`）。
+
+**规则**：
+
+- 查「代码是否存在」→ 扫**目录**（`grep -rq … "$COMMANDS_DIR"`），不绑单个文件；
+- 查「是否出现某写法」→ **跳过注释行**（说明文字里常包含被禁的子串）；
+- 查「是否写到某路径」→ 只检查**写盘参数**（`writeFileSync` / `join` 的实参），
+  不要用 `! grep` 判断全文出现。
+
 ### 扩展禁止直写终端（乱码根因）
 
 pi 的 TUI **独占屏幕**。扩展里任何 `console.log` / `console.error` / `process.stderr.write`

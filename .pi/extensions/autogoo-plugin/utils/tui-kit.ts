@@ -144,7 +144,7 @@ export function bar(value: number, max: number, cells = 24, theme?: Theme): stri
 }
 
 /** 时间显示：ISO → HH:MM:SS（本地），解析失败原样返回。 */
-export function fmtTime(value: string | null | undefined): string {
+function fmtTime(value: string | null | undefined): string {
   if (!value) return "-";
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return String(value);
@@ -237,27 +237,6 @@ export function tabsLine(
   const compact = build(false);
   const chosen = visibleWidth(full) <= width ? full : visibleWidth(compact) <= width ? compact : compact;
   return fit(chosen, width);
-}
-
-/**
- * 响应式列：按优先级从低到高，宽度不够就**整列丢弃**（而不是把文字截成残句）。
- * `columns` 里 priority 越小越先被丢。
- */
-export function fitColumns(
-  columns: Array<{ text: string; priority: number }>,
-  width: number,
-  separator = "  ",
-): string {
-  let kept = columns.slice().sort((a, b) => a.priority - b.priority);
-  const render = () =>
-    columns
-      .filter((c) => kept.includes(c))
-      .map((c) => c.text)
-      .join(separator);
-  while (kept.length > 1 && visibleWidth(render()) > width) {
-    kept = kept.slice(1); // 丢掉当前优先级最低的
-  }
-  return render();
 }
 
 /**

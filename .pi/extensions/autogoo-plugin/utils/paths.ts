@@ -54,9 +54,6 @@ export const GOO_STATUS_PY = scriptPath("goo-status.py");
 /** Resolve-root.sh path. */
 export const RESOLVE_ROOT_SH = scriptPath("resolve-root.sh");
 
-/** Thread-state.py path. */
-export const THREAD_STATE_PY = scriptPath("thread-state.py");
-
 /** Goo-observe.py path（环境/路径/shell 快照）。 */
 export const GOO_OBSERVE_PY = scriptPath("goo-observe.py");
 
@@ -71,21 +68,6 @@ export const WIKI_GRAPH_ASSIST_PY = scriptPath("wiki-graph-assist.py");
 
 /** Goo-publish.py path. */
 export const GOO_PUBLISH_PY = scriptPath("goo-publish.py");
-
-/** References directory. */
-export function referencesDir(): string {
-  return join(REPO_ROOT, "skills/auto-goo/references");
-}
-
-/** Templates directory. */
-export function templatesDir(): string {
-  return join(REPO_ROOT, "skills/auto-goo/templates");
-}
-
-/** Publish templates directory. */
-export function publishTemplatesDir(): string {
-  return join(REPO_ROOT, "skills/auto-goo/templates/publish");
-}
 
 // ── Run-time project paths (relative to ctx.cwd) ───────────────────────────
 
@@ -143,22 +125,6 @@ export function projectThreadsDir(cwd: string): string {
 
 export function projectThreadDir(cwd: string, threadId: string): string {
   return join(cwd, `.goo/threads/${threadId}`);
-}
-
-export function projectPlansHistoryDir(cwd: string): string {
-  return join(cwd, ".goo/plans/history");
-}
-
-export function projectLogsDir(cwd: string): string {
-  return join(cwd, ".goo/logs");
-}
-
-export function projectObsidianDir(cwd: string): string {
-  return join(cwd, ".goo/obsidian");
-}
-
-export function projectSecretsPath(cwd: string): string {
-  return join(cwd, ".goo/secrets.json");
 }
 
 export function userConfigPath(): string {
@@ -273,7 +239,7 @@ export async function loadProjectConfig(cwd: string): Promise<AutogooPluginConfi
   }
 }
 
-export async function loadUserConfig(): Promise<AutogooPluginConfig | null> {
+async function loadUserConfig(): Promise<AutogooPluginConfig | null> {
   const p = userConfigPath();
   try {
     await access(p);

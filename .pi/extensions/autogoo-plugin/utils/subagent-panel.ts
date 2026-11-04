@@ -4,6 +4,7 @@
  * 布局：步骤列表（上）+ 时间线（下），Tab 在两者间切换焦点。
  *
  * 键位（全部可用的完整集合）：
+ *   Enter        进入 / 退出详情（单个 step 的完整信息与全部事件）
  *   Tab          切换焦点：步骤 ↔ 时间线
  *   ↑↓ / j k     按焦点移动：切 step / 滚动时间线
  *   PgUp PgDn    滚动时间线（不改变焦点）
@@ -16,7 +17,7 @@
  */
 
 import type { Component, KeybindingsManager, Theme } from "@earendil-works/pi-tui";
-import { matchesKey } from "@earendil-works/pi-tui";
+import { matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import { activityBus, kindMark, runStatusMark, type ActivityKind, type StepActivity } from "./activity.js";
 import { clip, color, fit, fmtAge, headerLine, keyHelp, ListState, rule, selected as hl } from "./tui-kit.js";
 
@@ -26,6 +27,7 @@ type Focus = "steps" | "timeline";
 
 const STEP_WINDOW = 6;
 const TIMELINE_WINDOW = 10;
+const DETAIL_WINDOW = 16;
 
 function elapsed(from: number, to = Date.now()): string {
   const sec = Math.max(0, Math.round((to - from) / 1000));
@@ -57,6 +59,9 @@ function kindToken(kind: ActivityKind): string {
 
 export class SubagentPanel implements Component {
   private focus: Focus = "steps";
+  /** 详情视图：显示选中 step 的完整信息与全部事件 */
+  private detailMode = false;
+  private detailTop = 0;
   private readonly stepList = new ListState(STEP_WINDOW, 0);
   private timelineTop = 0;
   private followTail = true;
@@ -113,6 +118,8 @@ export class SubagentPanel implements Component {
 
   render(width: number): string[] {
     const w = Math.max(24, width);
+    if (this.detailMode) return this.renderDetail(w);
+
     const out: string[] = [];
     const steps = this.steps();
     const running = steps.filter((s) => s.status === "running").length;
@@ -207,6 +214,7 @@ export class SubagentPanel implements Component {
     out.push(
       keyHelp(
         [
+          { keys: "⏎", label: "详情" },
           { keys: "Tab", label: "切焦点" },
           { keys: "↑↓", label: this.focus === "steps" ? "选 step" : "滚时间线" },
           { keys: "PgUp/PgDn", label: "翻时间线" },
@@ -221,11 +229,151 @@ export class SubagentPanel implements Component {
     return out;
   }
 
+  /**
+   * 详情视图：单个 step 的完整信息 + 全部事件（可滚动）。
+   * Enter 从列表进入，Esc / q / Enter 返回列表（q 在详情里**不退出面板**，
+   * 否则用户想返回时会把整个面板关掉，体验很差）。
+   */
+  private renderDetail(w: number): string[] {
+    const out: string[] = [];
+    const step = this.currentStep();
+    if (!step) {
+      this.detailMode = false;
+      return this.render(w);
+    }
+    const events = step.events;
+    const total = events.length;
+    const maxTop = Math.max(0, total - DETAIL_WINDOW);
+    this.detailTop = Math.min(maxTop, Math.max(0, this.detailTop));
+    const shown = events.slice(this.detailTop, this.detailTop + DETAIL_WINDOW);
+
+    out.push(rule(w, this.theme));
+    out.push(
+      headerLine(
+        ` ◆ Subagent 详情 · #${step.stepId}`,
+        `${step.status} · ${elapsed(step.startedAt, step.endedAt ?? Date.now())} · ${total} 事件`,
+        w,
+        this.theme,
+      ),
+    );
+    out.push(rule(w, this.theme));
+
+    // ── 元信息 ──
+    // 中文是双宽字符，padEnd 按字符数会歪 —— 用 visibleWidth 补空格对齐
+    const kv = (k: string, v: string) => {
+      const padWidth = Math.max(0, 12 - visibleWidth(k));
+      out.push(fit(` ${color(this.theme, "dim", k + " ".repeat(padWidth))}${v}`, w));
+    };
+    kv("step", String(step.stepId));
+    kv("名称", step.stepName || "(unnamed)");
+    kv("状态", color(this.theme, step.status === "failed" ? "error" : step.status === "running" ? "accent" : "dim", step.status));
+    kv("开始", new Date(step.startedAt).toLocaleString("zh-CN", { hour12: false }));
+    if (step.endedAt) {
+      kv("结束", new Date(step.endedAt).toLocaleString("zh-CN", { hour12: false }));
+    }
+    kv("耗时", elapsed(step.startedAt, step.endedAt ?? Date.now()));
+    if (step.currentTool) {
+      kv("当前工具", color(this.theme, "accent", step.currentTool));
+    }
+    const tools = events.filter((e) => e.kind === "tool").length;
+    const results = events.filter((e) => e.kind === "result").length;
+    const texts = events.filter((e) => e.kind === "text").length;
+    kv("事件构成", `工具 ${tools} · 结果 ${results} · 文本 ${texts}`);
+
+    out.push(rule(w, this.theme));
+
+    // ── 全部事件（可滚动） ──
+    const rangeText = total === 0 ? "无事件" : `${this.detailTop + 1}-${this.detailTop + shown.length}/${total}`;
+    out.push(fit(` ${color(this.theme, "accent", "▸ 全部事件")}　${color(this.theme, "dim", rangeText)}`, w));
+    if (shown.length === 0) {
+      out.push(fit(color(this.theme, "dim", "  （尚无事件）"), w));
+    } else {
+      for (const event of shown) {
+        const mark = color(this.theme, kindToken(event.kind), kindMark(event.kind));
+        const time = color(this.theme, "dim", clock(event.at));
+        // 详情视图给更多横向空间（列表页会截到很窄）
+        out.push(fit(`  ${time} ${mark} ${color(this.theme, kindToken(event.kind), event.text)}`, w));
+      }
+    }
+
+    out.push(rule(w, this.theme));
+    out.push(
+      keyHelp(
+        [
+          { keys: "⏎/Esc", label: "返回列表" },
+          { keys: "↑↓", label: "滚动" },
+          { keys: "PgUp/PgDn", label: "翻页" },
+          { keys: "g/G", label: "首/尾" },
+        ],
+        w,
+        this.theme,
+      ),
+    );
+    return out;
+  }
+
   invalidate(): void {
     /* 无缓存 */
   }
 
   handleInput(data: string): void {
+    // 详情视图：Enter / Esc / q 都返回列表（不退出面板）
+    if (this.detailMode) {
+      if (matchesKey(data, "return") || matchesKey(data, "enter") || matchesKey(data, "escape") || data === "q") {
+        this.detailMode = false;
+        this.requestRender();
+        return;
+      }
+      if (matchesKey(data, "up") || data === "k") {
+        this.detailTop = Math.max(0, this.detailTop - 1);
+        this.requestRender();
+        return;
+      }
+      if (matchesKey(data, "down") || data === "j") {
+        const total = this.currentStep()?.events.length ?? 0;
+        this.detailTop = Math.min(Math.max(0, total - DETAIL_WINDOW), this.detailTop + 1);
+        this.requestRender();
+        return;
+      }
+      if (matchesKey(data, "pageUp")) {
+        this.detailTop = Math.max(0, this.detailTop - DETAIL_WINDOW);
+        this.requestRender();
+        return;
+      }
+      if (matchesKey(data, "pageDown")) {
+        const total = this.currentStep()?.events.length ?? 0;
+        this.detailTop = Math.min(Math.max(0, total - DETAIL_WINDOW), this.detailTop + DETAIL_WINDOW);
+        this.requestRender();
+        return;
+      }
+      if (data === "g") {
+        this.detailTop = 0;
+        this.requestRender();
+        return;
+      }
+      if (data === "G") {
+        const total = this.currentStep()?.events.length ?? 0;
+        this.detailTop = Math.max(0, total - DETAIL_WINDOW);
+        this.requestRender();
+        return;
+      }
+      // ctrl+c 仍然允许强制退出面板
+      if (matchesKey(data, "ctrl+c")) {
+        this.done({ action: "quit" });
+      }
+      return;
+    }
+
+    // 进入详情
+    if (matchesKey(data, "return") || matchesKey(data, "enter")) {
+      if (this.currentStep()) {
+        this.detailMode = true;
+        this.detailTop = 0;
+        this.requestRender();
+      }
+      return;
+    }
+
     // 退出
     if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || data === "q") {
       this.done({ action: "quit" });

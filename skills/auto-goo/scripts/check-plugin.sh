@@ -2721,6 +2721,15 @@ echo "── 25. subagent 实时活动 ──"
 
 ACT_TS="$ROOT/.pi/extensions/autogoo-plugin/utils/activity.ts"
 ACT_PANEL="$ROOT/.pi/extensions/autogoo-plugin/utils/subagent-panel.ts"
+
+# Enter 必须真的进入详情视图（用户实测按 Enter 没反应 —— 当时根本没实现）
+if grep -q "detailMode" "$ACT_PANEL" && grep -q "renderDetail" "$ACT_PANEL" \
+  && grep -q 'matchesKey(data, "return")' "$ACT_PANEL"; then
+  pass "SubagentPanel 支持 Enter 进入详情视图"
+else
+  fail "SubagentPanel 不支持 Enter 详情（按键会无反应）"
+fi
+
 SUB_CMD="$ROOT/.pi/extensions/autogoo-plugin/commands/subagent.ts"
 
 for sym in "export const activityBus" "export function kindMark"; do
@@ -2768,7 +2777,7 @@ fi
 
 # 键位必须真的实现（写进 footer 但没实现 = 按不动）
 SUB_MISSING=""
-for key in '"tab"' '"pageUp"' '"pageDown"' '"home"' '"end"' '"up"' '"down"' '"escape"'; do
+for key in '"tab"' '"pageUp"' '"pageDown"' '"home"' '"end"' '"up"' '"down"' '"escape"' '"return"'; do
   grep -q "matchesKey(data, $key)" "$ACT_PANEL" || SUB_MISSING="$SUB_MISSING $key"
 done
 if [[ -z "$SUB_MISSING" ]]; then

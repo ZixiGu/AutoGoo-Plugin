@@ -22,6 +22,7 @@ import { updateStatusBar, formatStatusLine, snapshotPlan } from "../utils/status
 import { checkPlanLocks, acquirePlanLocks, releasePlanLocks, describeConflicts } from "../utils/locks.js";
 import { describeMessageContent, describeToolResult } from "../utils/tool-summary.js";
 import { activityBus } from "../utils/activity.js";
+import { uiConfirmDetailed } from "../utils/ui.js";
 import { ensureActivityWidget } from "../commands/start.js";
 import {
   loadPlan,

@@ -2746,6 +2746,39 @@ else
   fail "面板未兜底（渲染异常会崩 pi）"
 fi
 
+# ── 26. TypeScript 未定义标识符 ──
+# node --check 只查语法，esbuild 只查模块解析 —— **两者都查不出未定义标识符**。
+# 这就是 `logInfo is not defined` 能通过全部本地检查、却在 pi 启动时报错的原因。
+echo ""
+echo "── 26. TypeScript 未定义标识符 ──"
+
+TS_CHECK="$ROOT/skills/auto-goo/scripts/check-ts-symbols.py"
+
+if [[ -f "$TS_CHECK" ]] && python3 -m py_compile "$TS_CHECK" 2>/dev/null; then
+  pass "check-ts-symbols.py 存在且可编译"
+else
+  fail "check-ts-symbols.py 缺失"
+fi
+
+if python3 "$TS_CHECK" "$ROOT/.pi/extensions/autogoo-plugin" >/dev/null 2>&1; then
+  pass "扩展内无未定义标识符（运行时不会 ReferenceError）"
+else
+  fail "存在未定义标识符 —— 会在运行时抛 ReferenceError（如 logInfo is not defined）"
+  python3 "$TS_CHECK" "$ROOT/.pi/extensions/autogoo-plugin" 2>&1 | sed -n '2,6p' | sed 's/^/    /'
+fi
+
+# 回归自检：检查器必须能抓出人为构造的缺失导入
+TS_TMP="$(mktemp -d)"
+mkdir -p "$TS_TMP/probe"
+printf 'export function helper(): number { return 1; }\n' > "$TS_TMP/probe/lib.ts"
+printf 'import { helper } from "./lib.js";\nexport function run(): number { return missing(helper()); }\n' > "$TS_TMP/probe/main.ts"
+if python3 "$TS_CHECK" "$TS_TMP/probe" >/dev/null 2>&1; then
+  fail "检查器自身失效：未能发现 missing()"
+else
+  pass "检查器能抓出缺失的标识符（自检通过）"
+fi
+rm -rf "$TS_TMP"
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

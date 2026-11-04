@@ -1,5 +1,5 @@
 /**
- * AutoGoo-Plugin Pi Extension v0.21.0 — 主入口
+ * AutoGoo-Plugin Pi Extension v0.21.1 — 主入口
  *
  * DAG 驱动的多智能体编排框架，从 Claude Code 插件迁移。
  *
@@ -15,7 +15,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { logError, logWarn } from "./utils/log.js";
+import { logError, logInfo, logWarn } from "./utils/log.js";
 
 // Commands
 import { handleGooInit } from "./commands/init.js";
@@ -669,5 +669,5 @@ export default function (pi: ExtensionAPI) {
   // 破坏宽度/光标计算 —— 表现为乱码、残影、界面错位。原注释写的
   // "Use stderr to avoid interfering with Pi's TUI rendering" 恰好说反了。
   // 加载状态由 pi 自己在 [Extensions] 列表里显示；诊断信息写 .auto-goo/logs/plugin.log。
-  logInfo("extension loaded", { version: "0.21.0" });
+  logInfo("extension loaded", { version: "0.21.1" });
 }

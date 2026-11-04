@@ -5,7 +5,7 @@
  * directories from within the extension's own location.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { logWarn } from "./log.js";
 import { readFile, access, writeFile } from "node:fs/promises";
 import { resolve, dirname, join, relative } from "node:path";

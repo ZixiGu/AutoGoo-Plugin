@@ -14,7 +14,7 @@ import { UPDATE_STEP_PY, GOO_STATUS_PY, projectPlanPath, loadProjectConfig, writ
 import { execPython } from "../utils/exec.js";
 import { runSubagent, resolveSubagentModel, resolveOrPromptSubagentModel } from "../utils/subagent.js";
 import { getRolePrompt, getTaskAgentPrompt } from "../utils/prompts.js";
-import { uiSelect, uiInput } from "../utils/ui.js";
+import { uiSelect, uiInput, uiConfirm } from "../utils/ui.js";
 import { updateStatusBar } from "../utils/status.js";
 import { generateWikiPacket, buildSubagentTaskPrompt, heartbeatTick } from "../utils/dispatch.js";
 import { existsSync } from "node:fs";

@@ -363,6 +363,30 @@ widget 里能看到**真实工具参数**（`⟦bash: npm test⟧`）而不是 `
 事件图标：`💬` 文本 · `⚙` 工具调用 · `↳` 结果。每个 step 保留最近 400 条、最多 20 个 step；
 `session_shutdown` 清理 widget，避免跨会话残留。
 
+### TypeScript 检查覆盖不到的那一类错误
+
+`check-plugin.sh` 里对扩展的检查分三层，**缺一层就会漏**：
+
+| 层 | 手段 | 能查出 |
+| --- | --- | --- |
+| 语法 | `node --experimental-strip-types --check` | 语法错误 |
+| 模块 | `esbuild --bundle` | import 路径错、模块缺失 |
+| **标识符** | **`check-ts-symbols.py`** | **未定义标识符（运行时 `ReferenceError`）** |
+
+前两层都**查不出**「用了但没导入」。历史故障：`logInfo is not defined` 通过了语法与
+bundle，却在 pi 启动时 `Failed to load extension` —— 扩展直接加载失败，整个插件不可用。
+
+`check-ts-symbols.py` 的做法（没有 `tsc` 时的近似）：
+
+- 剥离注释、字符串、**正则字面量**、`interface`/`type` 声明块；
+- 收集裸调用 `name(`（排除 `x.name(`）；
+- `name` 必须在文件内被 import / 声明（含函数参数、方法简写、`foo: (a) => T` 形状），
+  或属于已知全局；
+- 排除「调用后跟 `{` 或 `:`」的情况（那是方法定义/类型签名，不是调用）。
+
+它为**零误报**做了大量白名单工作 —— 宁可漏报，不可因误报阻塞提交。自检用一个人为
+造出缺失导入的临时目录验证（`§26` 里就有这条）。
+
 ### 扩展禁止直写终端（乱码根因）
 
 pi 的 TUI **独占屏幕**。扩展里任何 `console.log` / `console.error` / `process.stderr.write`

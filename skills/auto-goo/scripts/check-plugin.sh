@@ -2790,6 +2790,52 @@ else
 fi
 rm -rf "$TS_TMP"
 
+# ── 27. TUI 面板一致性 ──
+# 四个面板（thread / usage / observe / subagent）必须共用同一套约定：
+# 底部键提示走 keyHelp（自适应），头部带 ◆ 标记，窄宽度用 tabsLine/fitColumns。
+echo ""
+echo "── 27. TUI 面板一致性 ──"
+
+TUIKIT="$ROOT/.pi/extensions/autogoo-plugin/utils/tui-kit.ts"
+
+for sym in "export function tabsLine" "export function fitColumns" "export function keyHelp"; do
+  if grep -q "$sym" "$TUIKIT" 2>/dev/null; then
+    pass "tui-kit 提供 $sym"
+  else
+    fail "tui-kit 缺少 $sym"
+  fi
+done
+
+for f in thread-ui.ts usage-panel.ts observe-panel.ts subagent-panel.ts; do
+  path="$ROOT/.pi/extensions/autogoo-plugin/utils/$f"
+  if grep -q "keyHelp(" "$path" && grep -q "guardRender\|render(width" "$path"; then
+    pass "$f 使用 keyHelp 渲染底部键提示"
+  else
+    fail "$f 未使用 keyHelp（手写键提示会在窄终端被截断）"
+  fi
+done
+
+# 有 tab 的面板必须用 tabsLine（否则 40 列下会显示成 "[4" 残句）
+for f in usage-panel.ts observe-panel.ts; do
+  path="$ROOT/.pi/extensions/autogoo-plugin/utils/$f"
+  if grep -q "tabsLine(" "$path"; then
+    pass "$f 使用 tabsLine（窄宽度自动紧凑）"
+  else
+    fail "$f 手写 tab 栏（窄终端会截断）"
+  fi
+done
+
+# 头部统一用 ◆ 标记
+MISSING_MARK=""
+for f in thread-ui.ts usage-panel.ts observe-panel.ts subagent-panel.ts; do
+  grep -q "◆" "$ROOT/.pi/extensions/autogoo-plugin/utils/$f" || MISSING_MARK="$MISSING_MARK $f"
+done
+if [[ -z "$MISSING_MARK" ]]; then
+  pass "四个面板头部统一带 ◆ 标记"
+else
+  fail "面板头部标记不统一:$MISSING_MARK"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

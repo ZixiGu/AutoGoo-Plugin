@@ -14,6 +14,7 @@
 
 import type { Component, KeybindingsManager, Theme } from "@earendil-works/pi-tui";
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { keyHelp, tabsLine } from "./tui-kit.js";
 
 export interface ThreadRow {
   id: string;
@@ -118,15 +119,10 @@ export class ThreadManager implements Component {
     const out: string[] = [];
     const w = Math.max(20, width);
 
+    const narrow = w < 60;
     out.push(this.fg("accent", "─".repeat(w)));
-    const header = ` AutoGoo Threads · ${this.rows.length} 个 · 当前 ${this.currentId ?? "(无)"}`;
-    out.push(this.line(w, this.fg("accent", header)));
-    out.push(
-      this.line(
-        w,
-        this.fg("dim", " ↑↓/jk 移动   ⏎ 切换   r 重命名   a 归档   u 恢复   c 关闭   d 对账   q 退出"),
-      ),
-    );
+    const right = w < 80 ? `${this.rows.length} 个` : `${this.rows.length} 个 · 当前 ${this.currentId ?? "(无)"}`;
+    out.push(this.line(w, this.fg("accent", ` ◆ AutoGoo Threads`) + this.fg("dim", `　${right}`)));
     out.push(this.fg("accent", "─".repeat(w)));
 
     if (this.rows.length === 0) {
@@ -145,8 +141,15 @@ export class ThreadManager implements Component {
         const mark = MARK[row.flag] ?? "?";
         const id = row.id.length > idWidth ? row.id.slice(0, idWidth - 1) + "…" : row.id.padEnd(idWidth);
         const plan = row.has_plan ? `${row.plan_status}/${row.steps}` : "—";
-        const title = row.title.replace(/\s+/g, " ").slice(0, 40);
-        const text = ` ${cursor}${star} ${id}  ${mark} ${row.status.padEnd(10)} ${plan.padEnd(16)} ${title}`;
+        // 窄宽度下整列丢弃状态/计划，而不是把它们截成残句
+        let text: string;
+        if (narrow) {
+          text = ` ${cursor}${star} ${mark} ${id}`;
+        } else if (w < 88) {
+          text = ` ${cursor}${star} ${id} ${mark} ${row.status}`;
+        } else {
+          text = ` ${cursor}${star} ${id}  ${mark} ${row.status.padEnd(10)} ${plan.padEnd(16)} ${row.title.replace(/\s+/g, " ").slice(0, 30)}`;
+        }
         const styled = active ? this.fg("accent", text) : text;
         out.push(this.line(w, styled));
       });
@@ -165,25 +168,52 @@ export class ThreadManager implements Component {
     const sel = this.current();
     if (sel) {
       out.push(this.line(w, this.fg("accent", ` ${sel.is_current ? "* 当前" : "  选中"}: ${sel.title}`)));
-      out.push(
-        this.line(
-          w,
-          this.fg(
-            "dim",
-            `   id: ${sel.id}　状态: ${sel.status}　计划: ${sel.has_plan ? sel.plan_status : "无"} (${sel.steps})`,
-          ),
-        ),
-      );
-      const age = typeof sel.age_hours === "number" ? `　未更新 ${sel.age_hours}h` : "";
-      out.push(this.line(w, this.fg("dim", `   最近更新: ${sel.updated_at}${age}`)));
-      if (sel.health_reasons && sel.health_reasons.length > 0) {
-        out.push(this.line(w, this.fg("warning", `   ⚠ ${sel.health_reasons.join("；")}`)));
+      if (narrow) {
+        out.push(this.line(w, this.fg("dim", `   ${sel.id}`)));
+        out.push(this.line(w, this.fg("dim", `   ${sel.status}${sel.has_plan ? ` · ${sel.plan_status} ${sel.steps}` : ""}`)));
       } else {
-        out.push(this.line(w, this.fg("success", `   健康: ${sel.health_state ?? "unknown"}`)));
+        out.push(
+          this.line(
+            w,
+            this.fg(
+              "dim",
+              `   id: ${sel.id}　状态: ${sel.status}　计划: ${sel.has_plan ? sel.plan_status : "无"} (${sel.steps})`,
+            ),
+          ),
+        );
+        const age = typeof sel.age_hours === "number" ? `　未更新 ${sel.age_hours}h` : "";
+        out.push(this.line(w, this.fg("dim", `   最近更新: ${sel.updated_at}${age}`)));
       }
+      const reason = sel.health_reasons && sel.health_reasons.length > 0
+        ? this.fg("warning", `   ⚠ ${sel.health_reasons.join("；")}`)
+        : this.fg("success", `   健康: ${sel.health_state ?? "unknown"}`);
+      out.push(this.line(w, reason));
     }
 
     out.push(this.fg("accent", "─".repeat(w)));
+    out.push(
+      keyHelp(
+        narrow
+          ? [
+              { keys: "↑↓", label: "移动" },
+              { keys: "⏎", label: "切换" },
+              { keys: "r/a/u/c", label: "改名/归档/恢复/关闭" },
+              { keys: "q", label: "退出" },
+            ]
+          : [
+              { keys: "↑↓/jk", label: "移动" },
+              { keys: "⏎", label: "切换" },
+              { keys: "r", label: "重命名" },
+              { keys: "a", label: "归档" },
+              { keys: "u", label: "恢复" },
+              { keys: "c", label: "关闭" },
+              { keys: "d", label: "对账" },
+              { keys: "q", label: "退出" },
+            ],
+        w,
+        this.theme,
+      ),
+    );
     return out;
   }
 

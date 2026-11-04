@@ -30,6 +30,7 @@ import {
   selected as hl,
   statusMark,
   statusToken,
+  tabsLine,
 } from "./tui-kit.js";
 
 export interface ObserveStep {
@@ -163,18 +164,20 @@ export class ObservePanel implements Component {
     out.push(rule(w, this.theme));
     out.push(
       headerLine(
-        ` AutoGoo Observe`,
-        `${d.threadId ?? "(no thread)"} · ${doneCount}/${total} · ${d.planStatus}`,
+        " ◆ AutoGoo Observe",
+        w < 60
+          ? `${doneCount}/${total} · ${d.planStatus}`
+          : `${d.threadId ?? "(no thread)"} · ${doneCount}/${total} · ${d.planStatus}`,
         w,
         this.theme,
       ),
     );
-    const tabs = TAB_ORDER.map((t, i) =>
-      i === this.tabIndex
-        ? color(this.theme, "accent", `[${i + 1}] ${t}`)
-        : color(this.theme, "dim", `[${i + 1}] ${t}`),
-    ).join("  ");
-    out.push(fit(` ${tabs}`, w));
+    const tabDefs = TAB_ORDER.map((t, i) => ({
+      index: i,
+      short: t.slice(0, 2),
+      full: t,
+    }));
+    out.push(tabsLine(tabDefs, this.tabIndex, w, this.theme));
     out.push(rule(w, this.theme));
 
     const body = this.renderBody(w, counts, pct);
@@ -217,12 +220,14 @@ export class ObservePanel implements Component {
       const [start, end] = this.stepList.range(d.steps.length);
       d.steps.slice(start, end).forEach((step, i) => {
         const active = start + i === this.stepList.selected;
-        const nameWidth = Math.max(12, w - 52);
+        const narrow = w < 60;
+        const nameWidth = narrow ? Math.max(8, w - 14) : Math.max(12, w - 46);
         const name = (step.name || "").slice(0, nameWidth).padEnd(nameWidth);
-        const hb = step.status === "running" ? `hb ${fmtAge(step.heartbeat_at)}` : "";
-        const text =
-          ` ${active ? "›" : " "} ${color(this.theme, statusToken(step.status), statusMark(step.status))} ` +
-          `${String(step.id).slice(0, 4).padEnd(4)} ${name} ${step.status.padEnd(10)} ${String(step.progress ?? 0).padStart(3)}% ${hb}`;
+        const hb = step.status === "running" ? ` hb ${fmtAge(step.heartbeat_at)}` : "";
+        const text = narrow
+          ? ` ${active ? "›" : " "} ${color(this.theme, statusToken(step.status), statusMark(step.status))} ${name}`
+          : ` ${active ? "›" : " "} ${color(this.theme, statusToken(step.status), statusMark(step.status))} ` +
+            `${String(step.id).slice(0, 4).padEnd(4)} ${name} ${step.status.padEnd(10)} ${String(step.progress ?? 0).padStart(3)}%${hb}`;
         L.push(fit(active ? hl(this.theme, text) : text, w));
       });
       const sel = d.steps[this.stepList.selected];

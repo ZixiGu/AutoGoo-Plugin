@@ -23,6 +23,7 @@ import {
   ListState,
   rule,
   selected as hl,
+  tabsLine,
 } from "./tui-kit.js";
 
 export interface UsageData {
@@ -99,17 +100,20 @@ export class UsagePanel implements Component {
     out.push(rule(w, this.theme));
     out.push(
       headerLine(
-        ` AutoGoo Usage`,
-        `${fmtInt(d.tokens)} tokens · ${fmtCompact(d.tokens)} · ${d.sessions} sessions`,
+        " ◆ AutoGoo Usage",
+        w < 60 ? `${fmtCompact(d.tokens)} · ${d.sessions} 会话` : `${fmtInt(d.tokens)} tokens · ${d.sessions} sessions`,
         w,
         this.theme,
       ),
     );
 
-    const tabLine = TABS.map((t, i) =>
-      i === this.tabIndex ? color(this.theme, "accent", `[${i + 1}] ${t}`) : color(this.theme, "dim", `[${i + 1}] ${t}`),
-    ).join("  ");
-    out.push(fit(` ${tabLine}`, w));
+    const tabDefs = [
+      { index: 0, short: "ov", full: "overview" },
+      { index: 1, short: "pr", full: "projects" },
+      { index: 2, short: "mo", full: "models" },
+      { index: 3, short: "hi", full: "history" },
+    ];
+    out.push(tabsLine(tabDefs, this.tabIndex, w, this.theme));
     out.push(rule(w, this.theme));
 
     const budget = 14;
@@ -155,11 +159,16 @@ export class UsagePanel implements Component {
         ["cache read", Number(b.cache_read_input_tokens ?? 0)],
       ];
       const max = Math.max(1, ...parts.map(([, v]) => v));
+      const narrow = w < 60;
       for (const [name, value] of parts) {
         const pct = d.tokens > 0 ? (value / d.tokens) * 100 : 0;
+        const label = color(this.theme, "dim", name.padEnd(narrow ? 10 : 14));
+        const amount = fmtInt(value).padStart(narrow ? 12 : 14);
         L.push(
           fit(
-            `  ${color(this.theme, "dim", name.padEnd(14))}${fmtInt(value).padStart(14)}  ${fmtPct(pct).padStart(6)}  ${bar(value, max, 16, this.theme)}`,
+            narrow
+              ? `  ${label}${amount}`
+              : `  ${label}${amount}  ${fmtPct(pct).padStart(6)}  ${bar(value, max, 16, this.theme)}`,
             w,
           ),
         );
@@ -175,7 +184,9 @@ export class UsagePanel implements Component {
         const idx = start + i;
         const active = idx === this.list.selected;
         const name = (p.name || "?").slice(0, 28).padEnd(28);
-        const text = ` ${active ? "›" : " "} ${name} ${fmtCompact(p.tokens).padStart(8)}  ${bar(p.tokens, max, 12, this.theme)}`;
+        const text = w < 60
+          ? ` ${active ? "›" : " "} ${name} ${fmtCompact(p.tokens).padStart(8)}`
+          : ` ${active ? "›" : " "} ${name} ${fmtCompact(p.tokens).padStart(8)}  ${bar(p.tokens, max, 12, this.theme)}`;
         L.push(fit(active ? hl(this.theme, text) : text, w));
       });
       return L;
@@ -189,7 +200,9 @@ export class UsagePanel implements Component {
         const idx = start + i;
         const active = idx === this.list.selected;
         const name = (m.name || "?").slice(0, 24).padEnd(24);
-        const text = ` ${active ? "›" : " "} ${name} ${fmtCompact(m.tokens).padStart(8)}  ${bar(m.tokens, max, 14, this.theme)}  $${(m.cost ?? 0).toFixed(4)}`;
+        const text = w < 60
+          ? ` ${active ? "›" : " "} ${name} ${fmtCompact(m.tokens).padStart(8)}`
+          : ` ${active ? "›" : " "} ${name} ${fmtCompact(m.tokens).padStart(8)}  ${bar(m.tokens, max, 14, this.theme)}  $${(m.cost ?? 0).toFixed(4)}`;
         L.push(fit(active ? hl(this.theme, text) : text, w));
       });
       return L;
@@ -203,7 +216,9 @@ export class UsagePanel implements Component {
       const label = `${String(h).padStart(2, "0")}:00`;
       L.push(
         fit(
-          `  ${color(this.theme, "dim", label)} ${fmtCompact(value).padStart(9)}  ${bar(value, max, 30, this.theme)}`,
+          w < 60
+            ? `  ${color(this.theme, "dim", label)} ${fmtCompact(value).padStart(9)}`
+            : `  ${color(this.theme, "dim", label)} ${fmtCompact(value).padStart(9)}  ${bar(value, max, 30, this.theme)}`,
           w,
         ),
       );

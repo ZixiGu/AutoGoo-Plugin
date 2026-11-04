@@ -346,6 +346,23 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/thread-locks.py release-plan --p
 
 > 历史问题：进度里工具调用曾被硬编码成 `⟦bash(...⟧` —— **参数全丢**，用户只看到"有个 bash 在跑"，看不到在跑什么。`ToolCall.arguments` 本来就是完整的，只是没被用。
 
+### TUI 面板统一约定
+
+四个面板（`/goo-thread`、`/goo-usage`、`/goo-status` `/goo-observe`、`/goo-subagent`）共用 `utils/tui-kit.ts`：
+
+| 约定 | 说明 |
+| --- | --- |
+| 头部 | `◆ AutoGoo <名字>` + 右侧摘要；窄宽度下右侧只留计数 |
+| Tab 栏 | 必须用 `tabsLine()` —— 宽时 `[1] overview`，窄时自动退化为 `1:ov` |
+| 列布局 | 必须用整列丢弃（`fitColumns` 或 `narrow` 分支），**绝不把列截成残句** |
+| 底部键提示 | 必须用 `keyHelp()` —— 放不下时从尾部丢项并补 `…`，不截半个按键 |
+| 兜底 | 面板 `render` 声明里不加缓存，`invalidate()` 空实现即可 |
+
+> 反面例子（本次修掉的）：40 列下 `[4] shell` 被截成 `[4`、步骤行的状态/进度列被挤掉只剩半截、
+> `ThreadManager` 手写键提示导致 `a ...` 这种看不懂的结尾。
+
+`check-plugin.sh` §27 静态校验上述四条（keyHelp / tabsLine / ◆ 标记），防止新面板各写一套。
+
 ### subagent 活动面板
 
 派发 subagent 时，"它在做什么"由 `utils/activity.ts` 的内存总线承载，通过面板查看：

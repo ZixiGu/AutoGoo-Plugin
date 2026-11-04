@@ -216,6 +216,51 @@ export class ListState {
 }
 
 /**
+ * 响应式 Tab 栏：宽时用完整名，窄时退化为 `1:ov 2:pr`。
+ * 四个 tab 的完整名在 40 列下必然放不下，硬截会变成 `[4` 这种残句。
+ */
+export function tabsLine(
+  tabs: Array<{ index: number; short: string; full: string }>,
+  activeIndex: number,
+  width: number,
+  theme?: Theme,
+): string {
+  const build = (useFull: boolean) => {
+    const parts = tabs.map((tab) => {
+      const label = useFull ? tab.full : tab.short;
+      const text = useFull ? `[${tab.index + 1}] ${label}` : `${tab.index + 1}:${label}`;
+      return tab.index === activeIndex ? color(theme, "accent", text) : color(theme, "dim", text);
+    });
+    return ` ${parts.join(useFull ? "  " : " ")}`;
+  };
+  const full = build(true);
+  const compact = build(false);
+  const chosen = visibleWidth(full) <= width ? full : visibleWidth(compact) <= width ? compact : compact;
+  return fit(chosen, width);
+}
+
+/**
+ * 响应式列：按优先级从低到高，宽度不够就**整列丢弃**（而不是把文字截成残句）。
+ * `columns` 里 priority 越小越先被丢。
+ */
+export function fitColumns(
+  columns: Array<{ text: string; priority: number }>,
+  width: number,
+  separator = "  ",
+): string {
+  let kept = columns.slice().sort((a, b) => a.priority - b.priority);
+  const render = () =>
+    columns
+      .filter((c) => kept.includes(c))
+      .map((c) => c.text)
+      .join(separator);
+  while (kept.length > 1 && visibleWidth(render()) > width) {
+    kept = kept.slice(1); // 丢掉当前优先级最低的
+  }
+  return render();
+}
+
+/**
  * 渲染兜底：任何面板的 render 抛异常时，降级成一行错误提示，而不是让
  * pi 整个进程 uncaughtException 退出。
  *

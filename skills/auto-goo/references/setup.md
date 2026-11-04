@@ -346,6 +346,23 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/thread-locks.py release-plan --p
 
 > 历史问题：进度里工具调用曾被硬编码成 `⟦bash(...⟧` —— **参数全丢**，用户只看到"有个 bash 在跑"，看不到在跑什么。`ToolCall.arguments` 本来就是完整的，只是没被用。
 
+### subagent 实时活动（widget + 面板）
+
+派发 subagent 时，"它在做什么"由 `utils/activity.ts` 的内存总线承载：
+
+| 层 | API | 用途 |
+| --- | --- | --- |
+| widget | `ctx.ui.setWidget(key, factory, { placement: "belowEditor" })` | 状态栏下面常驻，`● subagent 运行中（N）` + 每个 step 最近几行 |
+| 面板 | `ctx.ui.custom` | `/goo-subagent` 或 `alt+a`，步骤列表 + 完整时间线 |
+| 快捷键 | `pi.registerShortcut("alt+a", …)` | `ctrl+*` 几乎被 pi 内置键位占满 |
+
+接线点：`auto_goo_dispatch`（单步）与 `auto_goo_execute`（并行批次）都调用
+`activityBus.begin/push/end`；`push` 的事件文本来自 `tool-summary.ts`，因此
+widget 里能看到**真实工具参数**（`⟦bash: npm test⟧`）而不是 `⟦bash(...⟧`。
+
+事件图标：`💬` 文本 · `⚙` 工具调用 · `↳` 结果。每个 step 保留最近 400 条、最多 20 个 step；
+`session_shutdown` 清理 widget，避免跨会话残留。
+
 ### 扩展禁止直写终端（乱码根因）
 
 pi 的 TUI **独占屏幕**。扩展里任何 `console.log` / `console.error` / `process.stderr.write`

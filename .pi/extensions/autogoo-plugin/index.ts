@@ -1,5 +1,5 @@
 /**
- * AutoGoo-Plugin Pi Extension v0.20.0 — 主入口
+ * AutoGoo-Plugin Pi Extension v0.21.0 — 主入口
  *
  * DAG 驱动的多智能体编排框架，从 Claude Code 插件迁移。
  *
@@ -20,6 +20,7 @@ import { logError, logWarn } from "./utils/log.js";
 // Commands
 import { handleGooInit } from "./commands/init.js";
 import { handleGooThread } from "./commands/thread.js";
+import { handleGooSubagent } from "./commands/subagent.js";
 import { handleGooPlan } from "./commands/plan.js";
 import { handleGooBrainstorm } from "./commands/brainstorm.js";
 import {
@@ -244,6 +245,10 @@ const COMMANDS: Record<string, CommandEntry> = {
     description: "恢复中断的执行（检测僵尸步骤 → 继续调度）",
     handler: handleGooContinue,
   },
+  "goo-subagent": {
+    description: "查看 subagent 实时活动（在跑的 step 在做什么）",
+    handler: handleGooSubagent,
+  },
   "goo-thread": {
     description: "统一管理 thread：列出/详情/切换/新建/关闭/对账",
     handler: handleGooThread,
@@ -365,6 +370,20 @@ export default function (pi: ExtensionAPI) {
         await entry.handler(args, ctx);
       },
     });
+  }
+
+  // ── Subagent 活动面板快捷键 ────────────────────────────────────────────────
+  // alt+a：随时切入"subagent 在做什么"。状态栏下面常驻的 widget 只是摘要，
+  // 这个面板是完整时间线。ctrl+* 基本被 pi 的内置键位占满，故用 alt+a。
+  try {
+    pi.registerShortcut("alt+a", {
+      description: "AutoGoo: 查看 subagent 活动",
+      handler: async (ctx: any) => {
+        await handleGooSubagent("", ctx);
+      },
+    });
+  } catch (e) {
+    logWarn("[AutoGoo-Plugin] 注册 alt+a 快捷键失败:", e);
   }
 
   // ── Register execution tools ──────────────────────────────────────────────
@@ -629,6 +648,11 @@ export default function (pi: ExtensionAPI) {
       const { clearStatusBar } = await import("./utils/status.js");
       clearStatusBar(ctx);
     } catch {}
+    // 清掉 subagent 活动 widget，避免残留
+    try {
+      const { clearActivityWidget } = await import("./commands/start.js");
+      clearActivityWidget(ctx);
+    } catch {}
 
     // Worktrees are never removed automatically: they may contain unmerged work.
   });
@@ -645,5 +669,5 @@ export default function (pi: ExtensionAPI) {
   // 破坏宽度/光标计算 —— 表现为乱码、残影、界面错位。原注释写的
   // "Use stderr to avoid interfering with Pi's TUI rendering" 恰好说反了。
   // 加载状态由 pi 自己在 [Extensions] 列表里显示；诊断信息写 .auto-goo/logs/plugin.log。
-  logInfo("extension loaded", { version: "0.20.0" });
+  logInfo("extension loaded", { version: "0.21.0" });
 }

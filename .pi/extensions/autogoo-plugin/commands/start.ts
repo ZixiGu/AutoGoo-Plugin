@@ -25,6 +25,49 @@ import { guardRender } from "../utils/tui-kit.js";
 import { ObservePanel, type ObserveAction, type ObserveSnapshot, type ObserveStep } from "../utils/observe-panel.js";
 import { checkPlanLocks, acquirePlanLocks, releasePlanLocks, describeConflicts } from "../utils/locks.js";
 import { describeMessageContent, describeToolResult } from "../utils/tool-summary.js";
+import { activityBus, renderActivityWidget } from "../utils/activity.js";
+
+/**
+ * 状态栏下面的 subagent 活动 widget。
+ * `ctx.ui.setWidget` 的工厂会拿到 tui，注册成活动总线的重绘钩子 —— 这样
+ * activityBus.push() 就能实时刷新，不必每帧轮询。
+ */
+export function ensureActivityWidget(ctx: any): void {
+  if (ctx?.mode !== "tui" || !ctx?.hasUI) return;
+  try {
+    ctx.ui.setWidget(
+      "autogoo-subagent",
+      (tui: any, theme: any) => {
+        const accent = (s: string) => {
+          try { return theme.fg("accent", s); } catch { return s; }
+        };
+        const dim = (s: string) => {
+          try { return theme.fg("dim", s); } catch { return s; }
+        };
+        activityBus.setRenderHook(() => {
+          try { tui.requestRender(); } catch { /* ignore */ }
+        });
+        return {
+          render: (width: number) => renderActivityWidget({ width }, { accent, dim }),
+          invalidate: () => {},
+          dispose: () => activityBus.setRenderHook(null),
+        };
+      },
+      { placement: "belowEditor" },
+    );
+  } catch {
+    /* widget 不可用不阻塞派发 */
+  }
+}
+
+export function clearActivityWidget(ctx: any): void {
+  if (ctx?.mode !== "tui" || !ctx?.hasUI) return;
+  try {
+    ctx.ui.setWidget("autogoo-subagent", undefined);
+  } catch {
+    /* ignore */
+  }
+}
 
 // ── Global pi reference, set by setPi() from index.ts ───────────────────────
 let _pi: ExtensionAPI | null = null;
@@ -570,6 +613,11 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
       // 规则一直写在 SKILL.md 里，但此前没有任何代码调用 → 两个会话可以同时写
       // 同一批文件 / wiki 页 / 端口 / 远程服务器。这里补上真正的强制点。
       // 冲突时按规则「标记 blocked 并前台询问用户」，默认不派发。
+      // 活动跟踪：让状态栏下面的 widget 与 /goo-subagent 面板能实时看到
+      // 这个 subagent 在做什么（工具名 + 真实参数）。
+      ensureActivityWidget(ctx);
+      activityBus.begin(params.stepId, `${params.role}${params.taskAgent ? "/" + params.taskAgent : ""}`);
+
       const lockCheck = checkPlanLocks(cwd, planPath);
       if (!lockCheck.ok) {
         const detail = describeConflicts(lockCheck.conflicts) || lockCheck.error || "未知冲突";
@@ -634,8 +682,10 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
             }
             if (text) {
               eventCount += 1;
-              // 保活行显示"最近在干什么"，这里保留工具摘要而不是截成半截
               lastActivity = text.replace(/\s+/g, " ").slice(0, 120);
+              // 同步进活动总线：toolCall 记 tool，结果记 result，其余记 text
+              const kind = text.startsWith("⟦result⟧") ? "result" : text.startsWith("⟦") ? "tool" : "text";
+              activityBus.push(params.stepId, kind as any, text.slice(0, 200));
               emit(`  #${params.stepId} [${fmtElapsed()}] ▶ ${text.slice(0, 400)}`);
             }
           } catch {
@@ -647,6 +697,10 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
       } finally {
         clearInterval(progressTimer);
         setProgressStatus(undefined);
+        activityBus.end(
+          params.stepId,
+          subagentResult?.aborted ? "interrupted" : subagentResult && subagentResult.exitCode === 0 ? "done" : "failed",
+        );
         // 释放本 thread 的资源锁（与 acquirePlanLocks 配对；无锁时也是安全 no-op）
         const released = releasePlanLocks(cwd, planPath);
         if (!released.ok) {

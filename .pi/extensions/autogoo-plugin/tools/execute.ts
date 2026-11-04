@@ -21,6 +21,8 @@ import { getRolePrompt, getTaskAgentPrompt } from "../utils/prompts.js";
 import { updateStatusBar, formatStatusLine, snapshotPlan } from "../utils/status.js";
 import { checkPlanLocks, acquirePlanLocks, releasePlanLocks, describeConflicts } from "../utils/locks.js";
 import { describeMessageContent, describeToolResult } from "../utils/tool-summary.js";
+import { activityBus } from "../utils/activity.js";
+import { ensureActivityWidget } from "../commands/start.js";
 import {
   loadPlan,
   savePlan,
@@ -373,6 +375,12 @@ async function runSchedule(
   // 同一批文件 / wiki 页 / 端口 / 远程服务器。这里补上真正的强制点。
   // 并行派发用 plan 级 acquire/release（release-plan 会释放该 thread 的全部锁，
   // 因此不能放在单步回调里）。
+  // 活动跟踪：状态栏 widget + /goo-subagent 面板共用同一份总线
+  ensureActivityWidget(ctx);
+  for (const step of toDispatch) {
+    activityBus.begin(step.id, `${step.name ?? ""}${step.subagent ? ` · ${step.subagent}` : ""}`.trim());
+  }
+
   const lockCheck = checkPlanLocks(cwd, planPath);
   if (!lockCheck.ok) {
     const detail = describeConflicts(lockCheck.conflicts) || lockCheck.error || "未知冲突";
@@ -488,6 +496,8 @@ async function runSchedule(
             if (text) {
               eventCount += 1;
               lastActivity = text.replace(/\s+/g, " ").slice(0, 120);
+              const kind = text.startsWith("⟦result⟧") ? "result" : text.startsWith("⟦") ? "tool" : "text";
+              activityBus.push(step.id, kind as any, text.slice(0, 200));
               emit(`  #${step.id} [${fmtElapsed()}] ▶ ${text.slice(0, 400)}`);
             }
           } catch {
@@ -499,6 +509,10 @@ async function runSchedule(
       } finally {
         clearInterval(progressTimer);
         setProgressStatus(undefined);
+        activityBus.end(
+          step.id,
+          result?.aborted ? "interrupted" : result && result.exitCode === 0 ? "done" : "failed",
+        );
       }
       // 兕底：子进程退出后 step 若仍 running，按退出码标记
       const planNow = await loadPlan(cwd, planPath);

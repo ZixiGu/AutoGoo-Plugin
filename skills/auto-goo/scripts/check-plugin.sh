@@ -2687,6 +2687,65 @@ else
   fail "仍存在 ⟦工具(...⟧ 占位（参数被丢弃）"
 fi
 
+# ── 25. subagent 实时活动（widget + 面板）──
+# 需求：状态栏下面常驻显示 subagent 在做什么，并能切换进去看完整时间线。
+echo ""
+echo "── 25. subagent 实时活动 ──"
+
+ACT_TS="$ROOT/.pi/extensions/autogoo-plugin/utils/activity.ts"
+ACT_PANEL="$ROOT/.pi/extensions/autogoo-plugin/utils/subagent-panel.ts"
+SUB_CMD="$ROOT/.pi/extensions/autogoo-plugin/commands/subagent.ts"
+
+for sym in "export const activityBus" "export function renderActivityWidget"; do
+  if grep -q "$sym" "$ACT_TS" 2>/dev/null; then
+    pass "activity 提供 $sym"
+  else
+    fail "activity 缺少 $sym"
+  fi
+done
+
+if grep -q "export class SubagentPanel" "$ACT_PANEL" 2>/dev/null; then
+  pass "SubagentPanel 存在"
+else
+  fail "SubagentPanel 缺失"
+fi
+
+for f in "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts" "$ROOT/.pi/extensions/autogoo-plugin/tools/execute.ts"; do
+  base="$(basename "$f")"
+  if grep -q "activityBus.begin(" "$f" && grep -q "activityBus.push(" "$f" && grep -q "activityBus.end(" "$f"; then
+    pass "$base 完整记录 begin/push/end"
+  else
+    fail "$base 未完整接入 activityBus（面板会看不到活动）"
+  fi
+done
+
+if grep -q "setWidget(" "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts" \
+  && grep -q "belowEditor" "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts"; then
+  pass "活动 widget 挂在状态栏下面（belowEditor）"
+else
+  fail "未安装状态栏 widget"
+fi
+
+if grep -q 'ctx.ui.setWidget("autogoo-subagent", undefined)' "$ROOT/.pi/extensions/autogoo-plugin/commands/start.ts" \
+  && grep -q "clearActivityWidget" "$ROOT/.pi/extensions/autogoo-plugin/index.ts"; then
+  pass "session_shutdown 清理活动 widget"
+else
+  fail "活动 widget 未清理（会跨会话残留）"
+fi
+
+if grep -q '"goo-subagent"' "$ROOT/.pi/extensions/autogoo-plugin/index.ts" \
+  && grep -q 'registerShortcut("alt+a"' "$ROOT/.pi/extensions/autogoo-plugin/index.ts"; then
+  pass "/goo-subagent 命令与 alt+a 快捷键已注册"
+else
+  fail "缺少 /goo-subagent 命令或快捷键"
+fi
+
+if grep -q "new SubagentPanel" "$SUB_CMD" && grep -q "guardRender" "$SUB_CMD"; then
+  pass "面板经 guardRender 兜底"
+else
+  fail "面板未兜底（渲染异常会崩 pi）"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

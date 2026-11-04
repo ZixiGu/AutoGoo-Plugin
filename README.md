@@ -2,7 +2,7 @@
 
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-Plugin-blue)
 ![Codex](https://img.shields.io/badge/Codex-Compatible-purple)
-![Version](https://img.shields.io/badge/version-0.20.0-green)
+![Version](https://img.shields.io/badge/version-0.21.0-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 AutoGoo-Plugin 是一个同时兼容 Claude Code 和 Codex 的智能体编排插件，用来把开放式任务拆成可执行计划、并行调用 subagent、记录运行状态，并把结果同步到 Goo-wiki / Obsidian。
@@ -102,7 +102,7 @@ pi install /path/to/AutoGoo-Plugin        # 仓库根即 pi 包
 }
 ```
 
-> Pi 扩展版本：**v0.20.0**。使用 Pi 原生 API（`ctx.ui`、自定义工具、事件系统）。卸载：`pi remove git:github.com/ZixiGu/AutoGoo-Plugin`。
+> Pi 扩展版本：**v0.21.0**。使用 Pi 原生 API（`ctx.ui`、自定义工具、事件系统）。卸载：`pi remove git:github.com/ZixiGu/AutoGoo-Plugin`。
 
 ## 在 Claude Code 中使用
 
@@ -228,6 +228,7 @@ Pi 扩展使用原生 API 注册 17 个自定义工具（`auto_goo_execute`、`a
 - **thread 统一管理**：pi TUI 下 `/goo-thread` 打开**键盘驱动的交互式管理界面**（`↑↓` 移动、`⏎` 切换、`r/a/u/c` 重命名·归档·恢复·关闭），带参数时走脚本（`list --json` / `show` / `switch` / `new` / `rename` / `archive` / `restore` / `close` / `doctor` / `health`）收口原先分散在四个脚本里的 thread 操作。`switch` **同时同步** `current_thread.json` 与兼容入口 `.goo/plan.json` —— 只切前者会让 `/goo-status`、`/goo-continue` 继续作用于旧 thread。
 - **thread 记录对账**：`thread-doctor.py` 交叉校验 `thread.json` / `plan.json` / `threads/index.json` / `current_thread.json` / 文件系统五处的一致性，检出幽灵索引、状态漂移、`plan_path` 越界、时间戳倒置等静默腐坏。`--fix` 只做幂等安全修复（不删文件、不改步骤状态、先备份 index），反向漂移只报告不修。
 - **中断 plan 主动确认**：`goo-plan-health.py` 按 **thread 维度**检查可能已中断/搬置的 DAG：心跳停滞的 `running` 步骤、`failed`/`interrupted`/`blocked` 步骤、多日未更新，以及 **plan 与 thread 状态不一致**（如 plan 已完成但 `thread.json` 仍为 `running`）。会话启动时分别提问：当前 thread → 继续/结束/稍后；历史 thread → 暂不处理/全部结束。`--close` 会归档副本并把 plan 与 thread 一并标为 `abandoned`，**不篡改步骤状态、不删文件**。
+- **subagent 实时活动**：派发时状态栏下面常驻 widget（运行中 step + 最近几条工具调用，**带真实参数**），`/goo-subagent` 或 `alt+a` 可切入完整时间线面板（↑↓ 切 step、c 清空、q 退出）。活动只在内存，审计仍看 step log。
 - **派发可见且中断不误判**：Subagent 派发时会立即回一行并在运行中每 8s 输出 `elapsed + 事件数 + 最近活动`，同步写入状态栏；用户 Esc / 超时 / 信号杀（exit 143/137）一律标记 `interrupted` 而**不是** `failed`，并提示先检查产物再决定 `--complete` / `--resume` / 重派。
 - **分析文档**：论文分析和代码分析必须生成独立 Markdown 并归档到 Goo-wiki；fallback 只作临时防丢失，不能视为归档完成。
 - **安全边界**：敏感信息放在 `.goo/secrets.json` 或 `~/.auto-goo/secrets.json`，不要写入计划、日志或 HTML 发布页。
@@ -329,7 +330,7 @@ bash skills/auto-goo/scripts/check-plugin.sh
 
 ## 版本
 
-当前版本：**v0.20.0**。
+当前版本：**v0.21.0**。
 
 ### 发版约定：每次提交都 bump
 

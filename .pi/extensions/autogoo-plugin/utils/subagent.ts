@@ -45,8 +45,18 @@ export interface SubagentRunOptions {
   model?: string;
   /** 限制工具集（--tools a,b） */
   tools?: string[];
-  /** 超时（默认 30min），超时 kill SIGTERM → 5s 后 SIGKILL */
+  /** 总超时（默认 30min），超时 kill SIGTERM → 5s 后 SIGKILL */
   timeoutMs?: number;
+  /** 空闲超时（默认 5min）：连续无任何事件即判定卡住，提前 kill */
+  idleTimeoutMs?: number;
+  /**
+   * 提前结束判断（在每次心跳时调用）：返回 true 则终止子进程。
+   *
+   * 用途：subagent 已经把 step 标记为 completed/failed，但进程因清理逻辑
+   * 或僵死没有退出 —— 此时父进程不该继续等满 timeoutMs。
+   * 机制（何时 kill、如何标记）留在 runSubagent，判断交给调用方。
+   */
+  shouldStop?: () => boolean;
   /** 心跳保活回调（每 ~20s），由调用方写 step heartbeat */
   onTick?: () => void;
   /** 流式消息回调（message_end / tool_result_end），可选 */
@@ -66,6 +76,10 @@ export interface SubagentRunResult {
   stopReason?: string;
   errorMessage?: string;
   timedOut?: boolean;
+  /** 超时原因：total=总超时兜底，idle=长时间无事件（多半是真卡住） */
+  timeoutReason?: "total" | "idle";
+  /** 由 shouldStop() 判定提前结束（step 已完成但进程未退出） */
+  stoppedEarly?: boolean;
   /** 被调用方的 AbortSignal 中断（用户 Esc / 会话中断），与超时区分 */
   aborted?: boolean;
 }
@@ -173,7 +187,19 @@ export async function resolveOrPromptSubagentModel(
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 const HEARTBEAT_INTERVAL_MS = 20_000;
+/**
+ * 总超时（默认 30 分钟）：兜底用，防止子进程永久驻留。
+ * 注意它**不是**主要的时间保障 —— 真正防止"卡住还等满 30 分钟"的是 idle 检测。
+ */
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+/**
+ * 空闲超时（默认 5 分钟）：连续这么久**没有任何事件**就判定卡住。
+ *
+ * 为什么需要它：子进程可能因为网络断、模型挂起、内部死锁而僵住，
+ * 但进程还在。只靠 30 分钟总超时的话，整个 DAG 会白等半小时。
+ * 阈值不能太短：模型 thinking 阶段可能长时间不输出事件。
+ */
+const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** 解析当前 pi 可执行文件（复用官方 subagent 扩展逻辑）。
  *  支持 AUTOGOO_SUBAGENT_CMD 环境变量覆盖（测试/调试用）。 */
@@ -297,6 +323,16 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
       } catch {
         /* 心跳失败不阻塞子进程 */
       }
+      // step 已被标记完成/失败但进程没退出 → 提前结束，不必等满 timeoutMs
+      try {
+        if (opts.shouldStop?.()) {
+          result.stoppedEarly = true;
+          result.errorMessage = "step 已结束但子进程仍在运行，已提前终止";
+          killProc("SIGTERM");
+        }
+      } catch {
+        /* 判断失败不阻塞 */
+      }
     }, HEARTBEAT_INTERVAL_MS);
 
     let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
@@ -327,11 +363,38 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
       }
     };
 
+    // ── 超时：total 兜底 + idle 检测 ────────────────────────────────────
+    // 只靠总超时的话，子进程卡住时要白等满 timeoutMs（默认 30 分钟）。
+    // 这里额外跟踪"最后一次收到事件的时间"：连续 idleTimeoutMs 无事件即判定卡住。
+    let lastEventAt = Date.now();
+    const markActivity = () => {
+      lastEventAt = Date.now();
+    };
+    const idleMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+
     if (timeoutMs > 0) {
       timeoutTimer = setTimeout(() => {
         result.timedOut = true;
+        result.timeoutReason = "total";
         killProc("SIGTERM");
       }, timeoutMs);
+    }
+
+    let idleTimer: ReturnType<typeof setInterval> | null = null;
+    if (idleMs > 0) {
+      // 用 1/4 间隔轮询，既能及时判定又不至于太频繁
+      const tick = Math.max(1000, Math.floor(idleMs / 4));
+      idleTimer = setInterval(() => {
+        if (Date.now() - lastEventAt > idleMs) {
+          result.timedOut = true;
+          result.timeoutReason = "idle";
+          result.errorMessage =
+            `子进程 ${Math.round(idleMs / 1000)}s 无任何事件（疑似卡住），已终止；` +
+            `可用 execution.subagent_idle_timeout_seconds 调整该阈值`;
+          killProc("SIGTERM");
+        }
+      }, tick);
+      idleTimer.unref?.();
     }
 
     // P11：abort listener 在 close/error 时移除，避免泄漏
@@ -348,6 +411,10 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
 
     const stopTimers = () => {
       clearInterval(heartbeatTimer);
+      if (idleTimer) {
+        clearInterval(idleTimer);
+        idleTimer = null;
+      }
       if (timeoutTimer) {
         clearTimeout(timeoutTimer);
         timeoutTimer = null;
@@ -374,6 +441,8 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
       } catch {
         return; // 非 JSON 行（如日志）忽略
       }
+      // 任何合法事件都算「子进程还活着」，用于 idle 检测（见上方 idleTimer）
+      markActivity();
       if (event.type === "message_end" && event.message) {
         const msg = event.message as {
           role?: string;

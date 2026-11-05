@@ -3,6 +3,7 @@
  */
 
 import { readFile, writeFile, access, mkdir, copyFile, rename } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { projectPlanPath, projectCurrentThreadPath, projectThreadsDir, projectThreadDir } from "./paths.js";
@@ -111,6 +112,19 @@ export async function loadPlan(cwd: string, planPath?: string): Promise<Plan | n
     await access(p);
     const raw = await readFile(p, "utf-8");
     return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 同步读取 plan —— 供 setInterval 之类的同步回调使用（如 subagent 的
+ * shouldStop 判断）。纯读文件，不涉及写，同步是安全的。
+ */
+export function loadPlanSync(cwd: string, planPath?: string): Plan | null {
+  const p = planPath ?? projectPlanPath(cwd);
+  try {
+    return JSON.parse(readFileSync(p, "utf-8")) as Plan;
   } catch {
     return null;
   }

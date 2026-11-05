@@ -2939,6 +2939,56 @@ else
   fail "缓存读取早于本地 HEAD 计算，校验必然失效"
 fi
 
+# ── 30. Subagent 超时优化（idle 检测 / 可配置 / 提前结束）──
+# 回归：原来只有 30 分钟总超时，子进程卡住时整个 DAG 要白等半小时。
+echo ""
+echo "── 30. Subagent 超时优化 ──"
+
+SUB_TS="$ROOT/.pi/extensions/autogoo-plugin/utils/subagent.ts"
+
+for sym in "idleTimeoutMs?: number" "shouldStop?: () => boolean" "timeoutReason" "stoppedEarly"; do
+  if grep -q "$sym" "$SUB_TS" 2>/dev/null; then
+    pass "subagent 提供 $sym"
+  else
+    fail "subagent 缺少 $sym"
+  fi
+done
+
+if grep -q "DEFAULT_IDLE_TIMEOUT_MS" "$SUB_TS" && grep -q "idleTimer" "$SUB_TS"; then
+  pass "实现 idle 检测（无事件即判定卡住）"
+else
+  fail "缺少 idle 检测 —— 卡住时要等满总超时"
+fi
+
+if grep -q "clearInterval(idleTimer)" "$SUB_TS"; then
+  pass "idle 定时器在 stopTimers 中清理"
+else
+  fail "idle 定时器未清理（会泄漏）"
+fi
+
+# 超时必须可配置（两个派发路径都读 config.execution）
+if grep -q "subagent_idle_timeout_seconds" "$ROOT/.pi/extensions/autogoo-plugin/utils/paths.ts"; then
+  pass "config.execution 支持 subagent_idle_timeout_seconds"
+else
+  fail "超时不可配置（硬编码）"
+fi
+CFG_HITS=0
+for f in "$COMMANDS_DIR" "$ROOT/.pi/extensions/autogoo-plugin/tools/execute.ts"; do
+  grep -rq "subagentIdleTimeoutMs" "$f" && CFG_HITS=$((CFG_HITS + 1))
+done
+if [[ "$CFG_HITS" -ge 2 ]]; then
+  pass "两个派发路径都传入 idle 超时"
+else
+  fail "有派发路径未传 idle 超时（会回退默认值）"
+fi
+
+# 提前结束：step 已结束就不必等
+if grep -q "shouldStop" "$SUB_TS" && grep -rq "loadPlanSync" "$COMMANDS_DIR"; then
+  pass "step 结束后提前终止子进程（不等满 timeout）"
+else
+  fail "缺少 shouldStop 接入 —— 干完活没退出的子进程会拖满超时"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

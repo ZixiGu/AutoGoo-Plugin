@@ -745,6 +745,45 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py --cached-onl
 }
 ```
 
+### Subagent 超时：三层机制，避免「卡住还等半小时」
+
+原来只有 **30 分钟总超时**，子进程卡住（网络断 / 模型挂起 / 内部死锁）时整个 DAG 要白等半小时。
+现在三层：
+
+| 机制 | 默认 | 作用 |
+| --- | --- | --- |
+| **idle 检测** | **5 分钟** | 连续无任何事件 → 判定卡住，立即 kill，`timeoutReason="idle"` |
+| **shouldStop** | 心跳时（20s） | step 已 `completed`/`failed` 但进程没退出 → 提前结束，`stoppedEarly=true` |
+| **总超时兜底** | 30 分钟 | 防止子进程永久驻留，`timeoutReason="total"` |
+
+配置（`.goo/config.json` 或 `~/.auto-goo/config.json`）：
+
+```json
+{
+  "execution": {
+    "subagent_idle_timeout_seconds": 300,
+    "subagent_timeout_seconds": 1800
+  }
+}
+```
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `subagent_idle_timeout_seconds` | 300（5min） | **卡住判定阈值**。太短会误杀长时间 thinking 的模型，太长又失去意义 |
+| `subagent_timeout_seconds` | 1800（30min） | 总超时兜底 |
+
+**为什么 idle 阈值不能太短**：模型 thinking 阶段可能长时间不输出事件。5 分钟是"正常思考"与"真卡住"的分界经验值；如果任务里有超长单步（如大模型训练），应调大。
+
+**结果字段区分**：
+
+| 字段 | 含义 |
+| --- | --- |
+| `timedOut` + `timeoutReason: "idle"` | 长时间无事件，多半是真卡住 |
+| `timedOut` + `timeoutReason: "total"` | 跑满总超时（任务可能确实很大） |
+| `stoppedEarly: true` | step 已结束但进程没退出，被提前终止（**不是失败**） |
+
+上层据此区分处理：`idle` 应考虑换模型/拆步骤，`total` 应调大超时，`stoppedEarly` 应直接按 step 的实际状态处理。
+
 ### 执行配置（`execution`）
 
 | 字段 | 说明 |

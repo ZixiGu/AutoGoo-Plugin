@@ -195,6 +195,10 @@ export interface AutogooPluginConfig {
     subagent_model?: string;
     /** Subagent 子进程显式 provider（默认使用主 agent 的 PI_PROVIDER；无时回退 pi 全局）。与 subagent_model 配对 */
     subagent_provider?: string;
+    /** Subagent 总超时秒数（默认 1800 = 30min）。兜底用，防止子进程永久驻留 */
+    subagent_timeout_seconds?: number;
+    /** Subagent 空闲超时秒数（默认 300 = 5min）。连续这么久无任何事件即判定卡住并终止 */
+    subagent_idle_timeout_seconds?: number;
   };
   planning?: {
     recall_wiki?: boolean;

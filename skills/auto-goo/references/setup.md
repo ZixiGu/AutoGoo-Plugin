@@ -394,6 +394,24 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/thread-locks.py release-plan --p
 > 早期版本额外用 `ctx.ui.setWidget` 在状态栏下面常驻显示多行活动，但用户反馈与既有
 > 状态栏重复、太吵，**已移除** —— 只保留按需打开的面板。`§25` 有一条断言禁止再引入常驻 widget。
 
+### 配置字段必须有消费点
+
+配置项「声明了但没人读」是本项目出现过两次的静默失效：
+
+| 字段 | 症状 | 修复 |
+| --- | --- | --- |
+| `planning.recall_wiki` / `require_wiki_context` | 改了不生效，规划仍无条件召回 wiki | 接入 `commands/plan.ts` |
+| `execution.heartbeat_seconds` | 改了不生效，subagent 心跳硬编码 20s | 接入 `utils/subagent.ts` |
+
+**检查器本身的坑**：第一版 §32 用子串匹配判断「是否被消费」，
+`heartbeat_seconds` 被 `stale_heartbeat_seconds` 命中而**误判为有消费点**。
+必须用**词边界**（`\bforehead\b` 而非 `in`）。
+
+**规则**：
+- 声明配置字段的同一次提交里，必须写出消费点；
+- 静态检查要用词边界匹配，不能用子串包含；
+- `publish` / `archive` 等由 Python 脚本消费的段不在 TS 检查范围内。
+
 ### 工具参数必须用 TypeBox，不能传原生 JSON Schema
 
 `pi.registerTool<TParams extends TSchema>` 要求 **TypeBox** schema：

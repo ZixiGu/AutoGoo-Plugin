@@ -30,7 +30,7 @@ import {
   type Step,
   type Goal,
 } from "../utils/plan.js";
-import {
+import { loadProjectConfig,
   REPO_ROOT,
   RESOLVE_ROOT_SH,
   REMOTE_RESOURCES_PY,
@@ -70,8 +70,24 @@ export async function handleGooPlan(taskDescription: string, ctx: ExtensionConte
   const isNewThread = threadAction === "new";
 
   // ── Step 2: Wiki recall ───────────────────────────────────────────────────
-  ctx.ui.notify("正在召回 Goo-wiki 经验...", "info");
-  const wikiContext = await recallWiki(cwd, taskDescription, ctx);
+  // 计划阶段可配置（planning.recall_wiki / planning.require_wiki_context）。
+  // 之前这两个字段**全仓零引用** —— 配置了也不生效，属静默失效。
+  const planningCfg = (await loadProjectConfig(cwd).catch(() => null))?.planning || {};
+  const recallEnabled = planningCfg.recall_wiki !== false;
+  let wikiContext: WikiContext = { found: false, sources: [], reused_knowledge: [] };
+  if (recallEnabled) {
+    ctx.ui.notify("正在召回 Goo-wiki 经验...", "info");
+    wikiContext = await recallWiki(cwd, taskDescription, ctx);
+  } else {
+    ctx.ui.notify("已按配置跳过 Goo-wiki 召回（planning.recall_wiki=false）", "info");
+  }
+  if (planningCfg.require_wiki_context === true && !wikiContext.found) {
+    ctx.ui.notify(
+      "⚠ planning.require_wiki_context=true，但本次未召回到 wiki 内容；" +
+        "请先补 Goo-wiki 或把该配置改为 false。",
+      "warning",
+    );
+  }
 
   // ── Step 3: Check for brainstorm reference ─────────────────────────────────
   let brainstormGoals: Goal[] = [];

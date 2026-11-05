@@ -3042,6 +3042,63 @@ else
   fail "index.ts 未引入 TypeBox"
 fi
 
+# ── 32. 配置字段必须有消费点 ──
+# 回归：planning.recall_wiki / require_wiki_context 曾经**全仓零引用** ——
+# 用户改了配置毫无反应，且没有任何提示（与 auto_goo_ask_user 的 TypeBox 问题
+# 同属「静默失效」）。这里静态检查 TS 侧声明的每个 config 字段是否被消费。
+echo ""
+echo "── 32. 配置字段消费 ──"
+
+if python3 - "$ROOT" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+ext = root / ".pi/extensions/autogoo-plugin"
+paths_ts = (ext / "utils/paths.ts").read_text(encoding="utf-8")
+scripts = root / "skills/auto-goo/scripts"
+
+# 只查「纯 TS 侧」的配置段：execution / planning / interaction / init。
+# publish / archive 等由 Python 脚本消费，不在此列。
+INTERFACES = ("ExecutionConfig", "execution", "planning", "interaction", "init")
+fields = set()
+for m in re.finditer(r"(execution|planning|interaction|init)\??:\s*\{([^}]*)\}", paths_ts, re.S):
+    for f in re.findall(r"^\s*([a-z_]+)\??:", m.group(2), re.M):
+        fields.add(f)
+
+# 认为「有意不消费」的白名单（需写明理由）
+ALLOW = {
+    "prompt_for_scope",   # init 段仅作文档性声明，交互与否由命令流程决定
+    "prompt_for_wiki_dir",
+}
+
+ts_sources = "\n".join(
+    p.read_text(encoding="utf-8")
+    for p in ext.rglob("*.ts")
+    if "__tests__" not in p.parts and p.name != "paths.ts"
+)
+py_sources = "\n".join(
+    p.read_text(encoding="utf-8") for p in scripts.glob("*.py")
+) if scripts.is_dir() else ""
+
+dead = []
+for f in sorted(fields - ALLOW):
+    # ⚠ 必须用**词边界**匹配：`heartbeat_seconds` 曾被 `stale_heartbeat_seconds`
+    # 子串命中而误判为「有消费点」——但它其实没人用。
+    pattern = re.compile(rf"\b{re.escape(f)}\b")
+    if pattern.search(ts_sources) or pattern.search(py_sources):
+        continue
+    dead.append(f)
+if dead:
+    raise SystemExit("config fields with no consumer: " + ", ".join(dead))
+PY
+then
+  pass "所有 TS 侧声明、由 TS 消费的配置字段都有消费点"
+else
+  fail "存在「声明了但没人用」的配置字段 —— 用户改了不生效"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

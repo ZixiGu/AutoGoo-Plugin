@@ -361,6 +361,7 @@ async function runSchedule(
   // 超时可配：默认 total 30min / idle 5min。idle 才是"卡住不等满半小时"的关键。
   const subagentTimeoutMs = (Number(execCfg.subagent_timeout_seconds) || 1800) * 1000;
   const subagentIdleTimeoutMs = (Number(execCfg.subagent_idle_timeout_seconds) || 300) * 1000;
+  const heartbeatIntervalMs = (Number(execCfg.heartbeat_seconds) || 20) * 1000;
   const subModel = await resolveOrPromptSubagentModel(
     { provider: execCfg.subagent_provider, model: execCfg.subagent_model },
     ctx?.model ? { provider: ctx.model.provider, id: ctx.model.id } : null,
@@ -508,6 +509,7 @@ async function runSchedule(
         },
         timeoutMs: subagentTimeoutMs,
         idleTimeoutMs: subagentIdleTimeoutMs,
+  heartbeatIntervalMs: heartbeatIntervalMs,
         // step 已完成/失败但进程没退出时提前结束，避免白等
         shouldStop: () => {
           try {

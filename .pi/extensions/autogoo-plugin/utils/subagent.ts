@@ -49,6 +49,8 @@ export interface SubagentRunOptions {
   timeoutMs?: number;
   /** 空闲超时（默认 5min）：连续无任何事件即判定卡住，提前 kill */
   idleTimeoutMs?: number;
+  /** 心跳间隔毫秒（默认 20000）。对应 config.execution.heartbeat_seconds */
+  heartbeatIntervalMs?: number;
   /**
    * 提前结束判断（在每次心跳时调用）：返回 true 则终止子进程。
    *
@@ -317,6 +319,10 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
       return;
     }
 
+    // 心跳间隔可配（config.execution.heartbeat_seconds）；默认 20s
+    const heartbeatEvery = opts.heartbeatIntervalMs && opts.heartbeatIntervalMs > 0
+      ? opts.heartbeatIntervalMs
+      : HEARTBEAT_INTERVAL_MS;
     const heartbeatTimer = setInterval(() => {
       try {
         opts.onTick?.();
@@ -333,7 +339,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
       } catch {
         /* 判断失败不阻塞 */
       }
-    }, HEARTBEAT_INTERVAL_MS);
+    }, heartbeatEvery);
 
     let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
     let killTimer: ReturnType<typeof setTimeout> | null = null;

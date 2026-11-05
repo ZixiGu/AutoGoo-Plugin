@@ -394,6 +394,47 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/thread-locks.py release-plan --p
 > 早期版本额外用 `ctx.ui.setWidget` 在状态栏下面常驻显示多行活动，但用户反馈与既有
 > 状态栏重复、太吵，**已移除** —— 只保留按需打开的面板。`§25` 有一条断言禁止再引入常驻 widget。
 
+### 工具参数必须用 TypeBox，不能传原生 JSON Schema
+
+`pi.registerTool<TParams extends TSchema>` 要求 **TypeBox** schema：
+
+```ts
+import { Type } from "typebox";
+
+pi.registerTool({
+  name: "auto_goo_ask_user",
+  parameters: Type.Object({          // ✅ 正确
+    header: Type.String(),
+    type: Type.Union([Type.Literal("select"), Type.Literal("confirm")]),
+  }),
+});
+```
+
+写成原生 JSON Schema（`{ type: "object", properties: {…} }`）**不会报错**，
+但参数解析会失效，症状很有迷惑性：
+
+| 表现 | 说明 |
+| --- | --- |
+| 工具调用的**原始内容被当普通文本打印** | 用户看到的是 XML/JSON 原文，而不是渲染好的选择菜单 |
+| `execute` 收到的参数为空/畸形 | 因为 schema 校验没过 |
+| 没有任何报错 | 最容易误判成"渲染 bug"或"UI 问题" |
+
+**根因**：TypeBox 的 schema 带 Symbol 标记，pi 用它做参数校验；
+原生 JSON Schema 缺这些标记，校验器认为参数不合法。
+
+对比序列化结果：
+
+```
+TypeBox:      {"type":"object","required":["header","type"],
+               "properties":{"type":{"anyOf":[{"type":"string","const":"select"},…]}}}
+原生 JS:      {"type":"object","required":["header","type"],
+               "properties":{"type":{"type":"string","enum":["select",…]}}}
+```
+
+两者都是合法 JSON Schema，只有前者能被 pi 正确解析。
+
+`check-plugin.sh` §31 静态校验：所有 `parameters:` 必须是 `Type.Object`。
+
 ### 扩展测试：三层检查必须都跑
 
 `check-plugin.sh` 对 pi 扩展的检查分四层，缺一层就会漏：

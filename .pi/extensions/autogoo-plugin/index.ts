@@ -1,5 +1,5 @@
 /**
- * AutoGoo-Plugin Pi Extension v0.25.1 — 主入口
+ * AutoGoo-Plugin Pi Extension v0.25.2 — 主入口
  *
  * DAG 驱动的多智能体编排框架，从 Claude Code 插件迁移。
  *
@@ -15,6 +15,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { logError, logInfo, logWarn } from "./utils/log.js";
 
 // Commands
@@ -431,37 +432,39 @@ export default function (pi: ExtensionAPI) {
       "提问返回后必须检查 details.source：source=user 才是用户真实选择；source=recommended/first/default 表示超时或非交互下自动采用了兜底值，需在回复中明确告知用户；source=cancelled 表示未作答且无可推荐项，此时不要擅自继续不可逆操作。",
       "对不可逆操作（删除、覆盖、发布、执行移动/整理）显式传 onTimeout='cancel'，不要让超时替你确认。",
     ],
-    parameters: {
-      type: "object",
-      properties: {
-        header: { type: "string", description: "问题标题" },
-        question: { type: "string", description: "问题内容" },
-        type: { type: "string", enum: ["select", "confirm", "input"], description: "交互类型" },
-        options: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              label: { type: "string" },
-              description: { type: "string" },
-              value: { type: "string" },
-            },
-          },
-          description: "选择类型时的选项列表",
-        },
-        defaultValue: { type: "string", description: "输入类型时的默认值（也是超时兜底值）" },
-        timeoutSeconds: {
-          type: "number",
-          description: "覆盖超时秒数；0 或负数表示禁用超时（一直等待）。不传则用 config.interaction.timeout_seconds，默认 180。",
-        },
-        onTimeout: {
-          type: "string",
-          enum: ["recommended", "first", "cancel"],
-          description: "超时兜底策略（仅 select）：recommended=采用含 (Recommended) 的选项（无则取消，默认）；first=采用第一项；cancel=直接取消。",
-        },
-      },
-      required: ["header", "question", "type"],
-    },
+    // ⚠ 必须用 TypeBox（Type.Object）而不是原生 JSON Schema。
+    // pi 的 registerTool 签名是 registerTool<TParams extends TSchema>，
+    // 传 `{ type: "object", properties: {...} }` 这种原生 JSON Schema 会让
+    // 参数解析失效 —— 表现为工具调用内容被当成普通文本打印出来，
+    // 而不是渲染成可点击的选择菜单（用户实测看到的是 XML 原文）。
+    parameters: Type.Object({
+      header: Type.String({ description: "问题标题" }),
+      question: Type.String({ description: "问题内容" }),
+      type: Type.Union([
+        Type.Literal("select"),
+        Type.Literal("confirm"),
+        Type.Literal("input"),
+      ], { description: "交互类型" }),
+      options: Type.Optional(Type.Array(
+        Type.Object({
+          label: Type.String(),
+          description: Type.Optional(Type.String()),
+          value: Type.Optional(Type.String()),
+        }),
+        { description: "选择类型时的选项列表" },
+      )),
+      defaultValue: Type.Optional(Type.String({ description: "输入类型时的默认值（也是超时兜底值）" })),
+      timeoutSeconds: Type.Optional(Type.Number({
+        description: "覆盖超时秒数；0 或负数表示禁用超时（一直等待）。不传则用 config.interaction.timeout_seconds，默认 180。",
+      })),
+      onTimeout: Type.Optional(Type.Union([
+        Type.Literal("recommended"),
+        Type.Literal("first"),
+        Type.Literal("cancel"),
+      ], {
+        description: "超时兜底策略（仅 select）：recommended=采用含 (Recommended) 的选项（无则取消，默认）；first=采用第一项；cancel=直接取消。",
+      })),
+    }),
     async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, ctx: any) {
       const uiOpts = {
         ...(typeof params.timeoutSeconds === "number" ? { timeoutMs: params.timeoutSeconds * 1000 } : {}),
@@ -629,5 +632,5 @@ export default function (pi: ExtensionAPI) {
   // 破坏宽度/光标计算 —— 表现为乱码、残影、界面错位。原注释写的
   // "Use stderr to avoid interfering with Pi's TUI rendering" 恰好说反了。
   // 加载状态由 pi 自己在 [Extensions] 列表里显示；诊断信息写 .auto-goo/logs/plugin.log。
-  logInfo("extension loaded", { version: "0.25.1" });
+  logInfo("extension loaded", { version: "0.25.2" });
 }

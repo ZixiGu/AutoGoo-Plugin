@@ -3005,6 +3005,43 @@ else
   fail "缺少 shouldStop 接入 —— 干完活没退出的子进程会拖满超时"
 fi
 
+# ── 31. 工具参数必须用 TypeBox ──
+# pi 的 registerTool<TParams extends TSchema> 要求 TypeBox schema。
+# 传原生 JSON Schema（{ type: "object", properties: {...} }）会让参数解析失效 ——
+# 表现为工具调用内容被当普通文本打印，而不是渲染成 UI（用户实测看到 XML 原文）。
+echo ""
+echo "── 31. 工具参数用 TypeBox ──"
+
+if python3 - "$ROOT/.pi/extensions/autogoo-plugin" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+offenders = []
+for path in root.rglob("*.ts"):
+    if "__tests__" in path.parts:
+        continue
+    text = path.read_text(encoding="utf-8")
+    # 找 `parameters:` 后面紧跟原生 JSON Schema 的写法（而非 Type.Object）
+    for match in re.finditer(r"parameters:\s*\{", text):
+        line = text[: match.start()].count("\n") + 1
+        offenders.append(f"{path.relative_to(root)}:{line}")
+if offenders:
+    raise SystemExit("native JSON schema in parameters (must use Type.Object): " + "; ".join(offenders))
+PY
+then
+  pass "所有工具 parameters 都用 Type.Object（TypeBox）"
+else
+  fail "有工具用原生 JSON Schema 定义 parameters —— UI 会渲染失败"
+fi
+
+if grep -q 'import { Type } from "typebox";' "$ROOT/.pi/extensions/autogoo-plugin/index.ts"; then
+  pass "index.ts 已引入 TypeBox 的 Type"
+else
+  fail "index.ts 未引入 TypeBox"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

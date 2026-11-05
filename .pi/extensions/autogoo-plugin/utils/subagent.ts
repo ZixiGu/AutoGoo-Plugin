@@ -16,7 +16,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -365,7 +365,16 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
 
     // ── 超时：total 兜底 + idle 检测 ────────────────────────────────────
     // 只靠总超时的话，子进程卡住时要白等满 timeoutMs（默认 30 分钟）。
-    // 这里额外跟踪"最后一次收到事件的时间"：连续 idleTimeoutMs 无事件即判定卡住。
+    //
+    // ⚠ 但「没有 JSON 事件」**不等于**「没有进度」：实测 subagent 跑一个
+    //   `sleep 8`（或编译/训练）期间，--mode json 的输出是**完全静默**的，
+    //   事件只在工具结束后才出现。只看事件会误杀长命令。
+    //
+    // 因此用**多信号**判定，任一活跃就不算 idle：
+    //   A. JSON 事件（markActivity）
+    //   B. 子进程 CPU 时间增长（/proc/<pid>/stat 的 utime+stime）
+    //   C. 子进程树里有活跃的后代（bash / node / python … 在执行工具）
+    //   D. step log 文件在增长（用户要求"所有执行必须有 log"——这正是它的用途）
     let lastEventAt = Date.now();
     const markActivity = () => {
       lastEventAt = Date.now();
@@ -380,19 +389,80 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
       }, timeoutMs);
     }
 
+    /**
+     * 读进程 CPU 时间（utime+stime，单位 tick）。不可用时返回 null。
+     * 用于区分「模型卡住」与「正在跑计算密集的长命令」。
+     */
+    const readCpuTicks = (pid: number | undefined): number | null => {
+      if (!pid) return null;
+      try {
+        const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+        // 格式：pid (comm) state ppid ... utime(14) stime(15) ...
+        // comm 可能含空格/括号，从最后一个 ')' 之后开始切分
+        const tail = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+        // tail[0]=state, tail[1]=ppid, ..., utime=tail[11], stime=tail[12]
+        const utime = Number(tail[11]);
+        const stime = Number(tail[12]);
+        return Number.isFinite(utime) && Number.isFinite(stime) ? utime + stime : null;
+      } catch {
+        return null;
+      }
+    };
+
+    /** 是否有存活的后代进程（说明正在执行工具，而不是模型卡住）。 */
+    const hasActiveDescendant = (pid: number | undefined): boolean => {
+      if (!pid) return false;
+      try {
+        const childrenFile = `/proc/${pid}/task/${pid}/children`;
+        const raw = readFileSync(childrenFile, "utf-8").trim();
+        if (!raw) return false;
+        // 后代存在且不是僵尸（Z）就算活跃
+        for (const child of raw.split(/\s+/).filter(Boolean)) {
+          try {
+            const stat = readFileSync(`/proc/${child}/stat`, "utf-8");
+            const state = stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3);
+            if (state && state !== "Z") return true;
+          } catch {
+            /* 子进程已退出 */
+          }
+        }
+      } catch {
+        /* 无法读取（非 Linux / 无权限）→ 视为无信息 */
+      }
+      return false;
+    };
+
+    let lastCpuTicks = readCpuTicks(proc.pid);
     let idleTimer: ReturnType<typeof setInterval> | null = null;
     if (idleMs > 0) {
       // 用 1/4 间隔轮询，既能及时判定又不至于太频繁
       const tick = Math.max(1000, Math.floor(idleMs / 4));
       idleTimer = setInterval(() => {
-        if (Date.now() - lastEventAt > idleMs) {
-          result.timedOut = true;
-          result.timeoutReason = "idle";
-          result.errorMessage =
-            `子进程 ${Math.round(idleMs / 1000)}s 无任何事件（疑似卡住），已终止；` +
-            `可用 execution.subagent_idle_timeout_seconds 调整该阈值`;
-          killProc("SIGTERM");
+        // 信号 A：JSON 事件
+        const silentFor = Date.now() - lastEventAt;
+        if (silentFor <= idleMs) return;
+
+        // 信号 B：CPU 时间增长（计算密集的长命令）
+        const cpu = readCpuTicks(proc.pid);
+        const cpuBusy = cpu !== null && lastCpuTicks !== null && cpu > lastCpuTicks;
+        if (cpu !== null) lastCpuTicks = cpu;
+
+        // 信号 C：有活跃后代（bash / node / python 在执行工具）
+        const descendantsBusy = hasActiveDescendant(proc.pid);
+
+        if (cpuBusy || descendantsBusy) {
+          // 有证据表明它在干活 → 不算 idle，并把锚点前移，避免下次立刻触发
+          lastEventAt = Date.now();
+          return;
         }
+
+        // 三个信号都沉默 → 判定卡住
+        result.timedOut = true;
+        result.timeoutReason = "idle";
+        result.errorMessage =
+          `子进程 ${Math.round(idleMs / 1000)}s 无事件、CPU 无增长、无活跃子进程（疑似卡住），已终止；` +
+          `可用 execution.subagent_idle_timeout_seconds 调整该阈值`;
+        killProc("SIGTERM");
       }, tick);
       idleTimer.unref?.();
     }

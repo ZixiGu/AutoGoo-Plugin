@@ -752,7 +752,7 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py --cached-onl
 
 | 机制 | 默认 | 作用 |
 | --- | --- | --- |
-| **idle 检测** | **5 分钟** | 连续无任何事件 → 判定卡住，立即 kill，`timeoutReason="idle"` |
+| **idle 检测** | **5 分钟** | **多信号**都沉默 → 判定卡住，`timeoutReason="idle"` |
 | **shouldStop** | 心跳时（20s） | step 已 `completed`/`failed` 但进程没退出 → 提前结束，`stoppedEarly=true` |
 | **总超时兜底** | 30 分钟 | 防止子进程永久驻留，`timeoutReason="total"` |
 
@@ -772,7 +772,37 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py --cached-onl
 | `subagent_idle_timeout_seconds` | 300（5min） | **卡住判定阈值**。太短会误杀长时间 thinking 的模型，太长又失去意义 |
 | `subagent_timeout_seconds` | 1800（30min） | 总超时兜底 |
 
-**为什么 idle 阈值不能太短**：模型 thinking 阶段可能长时间不输出事件。5 分钟是"正常思考"与"真卡住"的分界经验值；如果任务里有超长单步（如大模型训练），应调大。
+#### idle 为什么必须多信号（否则会误杀）
+
+**实测证据**：subagent 跑一个 `sleep 8`（或编译/训练）期间，`--mode json` 的输出是**完全静默**的：
+
+```
+[+101ms]  message_end（发出 sleep 8 命令）
+          ← 8 秒内零输出（pi 不流式转发工具执行过程）
+[+8109ms] tool_result_end
+```
+
+只看 JSON 事件的话，一个 10 分钟的训练命令会在第 5 分钟被 idle 检测**误杀**。
+
+所以 idle 判定用**四个信号，任一活跃即不算 idle**：
+
+| 信号 | 含义 | 覆盖场景 |
+| --- | --- | --- |
+| **A. JSON 事件** | 模型有输出 | thinking、回复、工具调用 |
+| **B. CPU 时间增长** | `/proc/<pid>/stat` 的 utime+stime 在涨 | 计算密集（训练、编译） |
+| **C. 有活跃后代** | `/proc/<pid>/task/<pid>/children` 里有非僵尸进程 | `bash` / `node` / `python` 正在执行工具 |
+| **D. 有 step log 更新** | （由调用方通过 `shouldStop` 等机制反映） | 长任务主动打点 |
+
+三者（A/B/C）都沉默满 `idleTimeoutMs` 才判定卡住。错误信息会写明是哪个组合：
+
+```
+子进程 300s 无事件、CPU 无增长、无活跃子进程（疑似卡住），已终止
+```
+
+**为什么阈值不能太短**：模型 thinking 阶段可能长时间不输出事件。5 分钟是"正常思考"与"真卡住"的分界经验值；如果任务里有超长单步（如大模型训练），应调大。
+
+**回归测试**：`__tests__/subagent-idle-safety.test.ts` 专门验证「idle 阈值(2s) < 命令时长(6s) 但不误杀」——
+这是 idle 检测最危险的失效模式，必须有测试守着。
 
 **结果字段区分**：
 

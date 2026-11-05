@@ -2960,6 +2960,22 @@ else
   fail "缺少 idle 检测 —— 卡住时要等满总超时"
 fi
 
+# 关键安全性：idle 判定必须多信号，不能只看 JSON 事件
+# （实测：subagent 跑 sleep/编译/训练期间 --mode json 完全静默，只看事件会误杀）
+for sig in "readCpuTicks" "hasActiveDescendant" "cpuBusy" "descendantsBusy"; do
+  if grep -q "$sig" "$SUB_TS" 2>/dev/null; then
+    pass "idle 检测包含信号 $sig"
+  else
+    fail "idle 检测缺少信号 $sig —— 会误杀长命令"
+  fi
+done
+
+if grep -q "长命令执行期间不误杀" "$ROOT/.pi/extensions/autogoo-plugin/__tests__/subagent-idle-safety.test.ts" 2>/dev/null; then
+  pass "有「长命令不误杀」的回归测试"
+else
+  fail "缺少「长命令不误杀」测试 —— 这是 idle 检测最危险的失效模式"
+fi
+
 if grep -q "clearInterval(idleTimer)" "$SUB_TS"; then
   pass "idle 定时器在 stopTimers 中清理"
 else

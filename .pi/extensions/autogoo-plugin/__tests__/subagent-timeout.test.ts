@@ -48,7 +48,7 @@ test("idle 超时：长时间无事件 → 提前终止并标记 timeoutReason=i
     assert.equal(result.timedOut, true, "应标记超时");
     assert.equal(result.timeoutReason, "idle", `应为 idle 而非 ${result.timeoutReason}`);
     assert.ok(elapsed < 20_000, `应在 idle 阈值附近终止，实际 ${elapsed}ms（不应等满 60s 总超时）`);
-    assert.match(result.errorMessage ?? "", /无任何事件/);
+    assert.match(result.errorMessage ?? "", /无事件、CPU 无增长、无活跃子进程/);
   } finally {
     if (oldCmd === undefined) delete process.env.AUTOGOO_SUBAGENT_CMD;
     else process.env.AUTOGOO_SUBAGENT_CMD = oldCmd;

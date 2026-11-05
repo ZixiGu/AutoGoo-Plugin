@@ -394,6 +394,33 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/thread-locks.py release-plan --p
 > 早期版本额外用 `ctx.ui.setWidget` 在状态栏下面常驻显示多行活动，但用户反馈与既有
 > 状态栏重复、太吵，**已移除** —— 只保留按需打开的面板。`§25` 有一条断言禁止再引入常驻 widget。
 
+### Python 版本兼容性：f-string 不能嵌套同种引号
+
+`pyproject.toml` 声明 `requires-python = ">=3.10"`，但 **PEP 701 是 3.12 才落地的**。
+在 3.10 / 3.11 上，f-string 表达式内部使用与外层相同的引号是**语法错误**：
+
+```python
+# ✗ Python 3.10/3.11: SyntaxError: f-string: unmatched '('
+print(f"  {fmt_col(c('Total Tokens', MUTED), 22, "<")}")
+
+# ✓ 内层换用另一种引号
+print(f"  {fmt_col(c('Total Tokens', MUTED), 22, '<')}")
+```
+
+**这个 bug 的危害在于开发环境测不出来**：本机 Python 3.14 完全正常，
+只有在用户的 3.10/3.11 机器上才炸（`goo-usage.py` 曾累积 16 处）。
+
+`check-plugin.sh` §33 做两层检查：
+
+| 层 | 手段 | 覆盖 |
+| --- | --- | --- |
+| 静态 | 正则扫 `f"…{…"…}…"` 模式 | 任何环境都能跑 |
+| 真机 | 找到 `python3.10`/`python3.11` 就 `ast.parse` 全部脚本 | 最可靠，未安装则 warn |
+
+**连同源问题一起记**：这类「开发环境版本比目标环境新」导致的缺陷，
+本项目已出现两次 —— bash 4.2 空数组展开、Python 3.10 f-string。
+凡是 `pyproject` / `README` 声明了最低版本，检查脚本就应该尽量用该版本验证。
+
 ### 配置字段必须有消费点
 
 配置项「声明了但没人读」是本项目出现过两次的静默失效：

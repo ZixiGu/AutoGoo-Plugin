@@ -1182,11 +1182,11 @@ def render_overview(args: argparse.Namespace, pricing: dict[str, dict[str, float
     # ── Key Metrics Row ──
     print(cbold("  ◆  Today's Activity", WHITE))
     print()
-    print(f"  {fmt_col(c('Total Tokens', MUTED), 22, "<")} {cbold(fmt_int_full(data['tokens']), GREEN)}")
-    print(f"  {fmt_col(c('Messages', MUTED), 22, "<")} {c(fmt_int_full(data['messages']), CYAN)}")
-    print(f"  {fmt_col(c('Sessions', MUTED), 22, "<")} {c(fmt_int_full(data['sessions']), WHITE)}")
+    print(f"  {fmt_col(c('Total Tokens', MUTED), 22, '<')} {cbold(fmt_int_full(data['tokens']), GREEN)}")
+    print(f"  {fmt_col(c('Messages', MUTED), 22, '<')} {c(fmt_int_full(data['messages']), CYAN)}")
+    print(f"  {fmt_col(c('Sessions', MUTED), 22, '<')} {c(fmt_int_full(data['sessions']), WHITE)}")
     if pricing and data["cost"] > 0:
-        print(f"  {fmt_col(c('Estimated Cost', MUTED), 22, "<")} {cbold(fmt_money(data['cost']), YELLOW)}")
+        print(f"  {fmt_col(c('Estimated Cost', MUTED), 22, '<')} {cbold(fmt_money(data['cost']), YELLOW)}")
     print()
 
     # ── Token Breakdown ──
@@ -1203,7 +1203,7 @@ def render_overview(args: argparse.Namespace, pricing: dict[str, dict[str, float
     for name, val, color in items:
         pct = val / total_t * 100 if total_t > 0 else 0
         bar_str = hbar(val, total_t, width=25)
-        print(f"  {c(name, MUTED):<{max_w + 18}} {fmt_col(c(fmt_int_full(val), color), 12, ">")} {c(f'{pct:5.1f}%', MUTED)} {bar_str}")
+        print(f"  {c(name, MUTED):<{max_w + 18}} {fmt_col(c(fmt_int_full(val), color), 12, '>')} {c(f'{pct:5.1f}%', MUTED)} {bar_str}")
     print()
 
     # ── Model Distribution ──
@@ -1215,7 +1215,7 @@ def render_overview(args: argparse.Namespace, pricing: dict[str, dict[str, float
             pct = m["tokens"] / data["tokens"] * 100 if data["tokens"] > 0 else 0
             bar_str = hbar(m["tokens"], max_model, width=22)
             cost_str = f" {c(fmt_money(m['cost']), YELLOW)}" if pricing else ""
-            print(f"  {fmt_col(c(m['name'][:28], model_color(m['name'])), 44, "<")} {fmt_col(c(fmt_int_full(m['tokens']), GREEN), 12, ">")} {bar_str} {c(f'{pct:.1f}%', MUTED)}{cost_str}")
+            print(f"  {fmt_col(c(m['name'][:28], model_color(m['name'])), 44, '<')} {fmt_col(c(fmt_int_full(m['tokens']), GREEN), 12, '>')} {bar_str} {c(f'{pct:.1f}%', MUTED)}{cost_str}")
         print()
 
     # ── Hourly Sparkline ──
@@ -1237,7 +1237,7 @@ def render_overview(args: argparse.Namespace, pricing: dict[str, dict[str, float
         max_pt = max(p["tokens"] for p in projects) or 1
         for p in projects:
             bar_str = hbar(p["tokens"], max_pt, width=18)
-            print(f"  {fmt_col(c(p['name'][:24], model_color(p['name'])), 40, "<")} {fmt_col(c(fmt_int_full(int(p['tokens'])), GREEN), 12, ">")} {bar_str}")
+            print(f"  {fmt_col(c(p['name'][:24], model_color(p['name'])), 40, '<')} {fmt_col(c(fmt_int_full(int(p['tokens'])), GREEN), 12, '>')} {bar_str}")
         print()
 
     print(f"  {DIM}Updated: {format_clock(datetime.now(tz), args.time_format)}{RESET}")
@@ -1252,10 +1252,10 @@ def render_projects(args: argparse.Namespace, pricing: dict[str, dict[str, float
         return 0
 
     data = summarize(rows, pricing)
-    print(f"  {fmt_col(c('Total Tokens', MUTED), 22, "<")} {cbold(fmt_int_full(data['tokens']), GREEN)}")
-    print(f"  {fmt_col(c('Projects', MUTED), 22, "<")} {c(fmt_int_full(len(data['projects'])), WHITE)}")
+    print(f"  {fmt_col(c('Total Tokens', MUTED), 22, '<')} {cbold(fmt_int_full(data['tokens']), GREEN)}")
+    print(f"  {fmt_col(c('Projects', MUTED), 22, '<')} {c(fmt_int_full(len(data['projects'])), WHITE)}")
     if pricing and data["cost"] > 0:
-        print(f"  {fmt_col(c('Estimated Cost', MUTED), 22, "<")} {cbold(fmt_money(data['cost']), YELLOW)}")
+        print(f"  {fmt_col(c('Estimated Cost', MUTED), 22, '<')} {cbold(fmt_money(data['cost']), YELLOW)}")
     print()
 
     if not data["projects"]:
@@ -1263,16 +1263,16 @@ def render_projects(args: argparse.Namespace, pricing: dict[str, dict[str, float
         return 0
 
     print(cbold("  ◆  Project Breakdown", WHITE))
-    print(f"  {fmt_col(c('Project', MUTED), 26, "<")} {fmt_col(c('Tokens', MUTED), 12, ">")} {fmt_col(c('Msgs', MUTED), 6, ">")} {fmt_col(c('Sessions', MUTED), 9, ">")}  {c('Distribution', MUTED)}")
+    print(f"  {fmt_col(c('Project', MUTED), 26, '<')} {fmt_col(c('Tokens', MUTED), 12, '>')} {fmt_col(c('Msgs', MUTED), 6, '>')} {fmt_col(c('Sessions', MUTED), 9, '>')}  {c('Distribution', MUTED)}")
     max_pt = max(p["tokens"] for p in data["projects"]) or 1
     for p in data["projects"][:15]:
         bar_str = gradient_bar(p["tokens"] / max_pt * 100, width=25)
-        print(f"  {fmt_col(c(p['name'][:25], model_color(p['name'])), 26, "<")} "
-              f"{fmt_col(c(fmt_int_full(int(p['tokens'])), GREEN), 12, ">")} "
+        print(f"  {fmt_col(c(p['name'][:25], model_color(p['name'])), 26, '<')} "
+              f"{fmt_col(c(fmt_int_full(int(p['tokens'])), GREEN), 12, '>')} "
               f"{fmt_int_full(int(p['messages'])):>6} "
               f"{fmt_int_full(int(p['sessions'])):>9}  {bar_str}")
         if pricing and p["cost"] > 0:
-            print(f"  {'':26} {fmt_col(c(fmt_money(p['cost']), YELLOW), 12, ">")}")
+            print(f"  {'':26} {fmt_col(c(fmt_money(p['cost']), YELLOW), 12, '>')}")
 
     if len(data["projects"]) > 15:
         print(c(f"  ... and {len(data['projects']) - 15} more projects", MUTED))
@@ -1327,7 +1327,7 @@ def render_models(args: argparse.Namespace, pricing: dict[str, dict[str, float]]
         color = model_color(name)
 
         print(f"  {cbold(name[:36], color)}")
-        print(f"    Tokens:     {fmt_col(c(fmt_int_full(m['tokens']), GREEN), 12, ">")}  ({pct:.1f}%)  {hbar(m['tokens'], max_mt, width=28)}")
+        print(f"    Tokens:     {fmt_col(c(fmt_int_full(m['tokens']), GREEN), 12, '>')}  ({pct:.1f}%)  {hbar(m['tokens'], max_mt, width=28)}")
 
         eff = m["tokens"] / max(1, m["messages"])
         print(f"    Messages:   {fmt_int_full(m['messages']):>12}  │  Efficiency: {c(f'{eff:,.0f}', CYAN)} tok/msg")
@@ -1344,7 +1344,7 @@ def render_models(args: argparse.Namespace, pricing: dict[str, dict[str, float]]
 
         if pricing and m["cost"] > 0:
             cost_per_msg = m["cost"] / max(1, m["messages"])
-            print(f"    Cost:       {fmt_col(c(fmt_money(m['cost']), YELLOW), 12, ">")}  │  per msg: {c(fmt_money(cost_per_msg), YELLOW)}")
+            print(f"    Cost:       {fmt_col(c(fmt_money(m['cost']), YELLOW), 12, '>')}  │  per msg: {c(fmt_money(cost_per_msg), YELLOW)}")
 
         print()
 

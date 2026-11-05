@@ -3099,6 +3099,56 @@ else
   fail "存在「声明了但没人用」的配置字段 —— 用户改了不生效"
 fi
 
+# ── 33. Python 兼容性（f-string 引号嵌套）──
+# 回归：goo-usage.py 有 16 处 `f"...{..."<"...}..."`（f-string 内用与外层
+# 相同的引号）。PEP 701(Python 3.12) 之后才允许，而 pyproject 声明 >=3.10 ——
+# 在 3.10/3.11 上直接 SyntaxError，而本机 3.14 完全测不出来。
+echo ""
+echo "── 33. Python 兼容性（f-string 引号）──"
+
+if python3 - "$ROOT" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+scripts = root / "skills/auto-goo/scripts"
+offenders = []
+for path in sorted(scripts.glob("*.py")):
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        # f" 开头且 {...} 内含 " ；或 f' 且 {...} 内含 '
+        if re.search(r'f"[^\n]*\{[^}\n]*"[^}\n]*\}', line) or re.search(r"f'[^\n]*\{[^}\n]*'[^}\n]*\}", line):
+            offenders.append(f"{path.name}:{lineno}")
+if offenders:
+    raise SystemExit(
+        "f-string with same-quote nesting (breaks on Python <3.12): " + "; ".join(offenders[:8])
+    )
+PY
+then
+  pass "Python 脚本无 f-string 同种引号嵌套（兼容 3.10/3.11）"
+else
+  fail "存在 f-string 同种引号嵌套 —— Python 3.10/3.11 会 SyntaxError"
+fi
+
+# 有条件时用真正的 3.10 编译验证（本机 3.14 测不出 PEP 701 之前的限制）
+PY310=""
+for cand in python3.10 python3.11; do
+  if command -v "$cand" >/dev/null 2>&1; then PY310="$cand"; break; fi
+done
+if [[ -n "$PY310" ]]; then
+  PY_FAIL=""
+  for f in "$ROOT"/skills/auto-goo/scripts/*.py; do
+    "$PY310" -c 'import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' "$f" 2>/dev/null || PY_FAIL="$PY_FAIL $(basename "$f")"
+  done
+  if [[ -z "$PY_FAIL" ]]; then
+    pass "全部 Python 脚本在 $PY310 下可解析"
+  else
+    fail "Python 脚本在 $PY310 下解析失败:$PY_FAIL"
+  fi
+else
+  warn "未安装 python3.10/3.11，跳过真机解析（静态规则已覆盖）"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

@@ -8,6 +8,7 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getPi } from "../utils/pi-state.js";
+import { recallWiki } from "../utils/wiki-recall.js";
 import { execShell } from "../utils/exec.js";
 import {
   loadPlan,
@@ -39,7 +40,7 @@ export async function handleGooBrainstorm(direction: string, ctx: ExtensionConte
 
   // 1. Wiki recall
   ctx.ui.notify("正在检索 Goo-wiki 项目经验和上下文...", "info");
-  const wikiContext = await recallWikiContext(cwd, direction, ctx);
+  const wikiContext = await recallWikiContext(cwd, direction);
 
   // 2. Present to user — the LLM handles the actual brainstorm generation
   ctx.ui.notify(`头脑风暴方向: ${direction}`, "info");
@@ -73,80 +74,19 @@ export async function handleGooBrainstorm(direction: string, ctx: ExtensionConte
 }
 
 // ── Wiki recall helper ──────────────────────────────────────────────────────
-
+// 统一走 utils/wiki-recall.ts。
+//
+// 历史教训：这里曾经**根本没调用脚本**，而是 readdir(wiki/projects) 把整个
+// 目录列表当作 sources 返回（42 个项目 = 42 条"召回结果"），
+// 相关性匹配用 content.includes(整个方向字符串)，几乎永不命中。
+// 用户看到的一长串 `wiki/projects/xxx/` 就是这个假召回的输出。
 async function recallWikiContext(
   cwd: string,
   direction: string,
-  ctx: ExtensionContext,
 ): Promise<{ sources: string[]; knowledge: string[] }> {
-  const sources: string[] = [];
-  const knowledge: string[] = [];
-
-  // Check Goo-wiki
-  const wikiDir = await resolveWikiDir(cwd);
-  if (existsSync(wikiDir)) {
-    // Search wiki/projects/
-    const projectsDir = join(wikiDir, "wiki/projects");
-    if (existsSync(projectsDir)) {
-      try {
-        const { readdir } = await import("node:fs/promises");
-        const projects = await readdir(projectsDir, { withFileTypes: true });
-        for (const p of projects) {
-          if (p.isDirectory()) {
-            sources.push(`wiki/projects/${p.name}/`);
-            // Check for index/project file
-            const projFile = join(projectsDir, p.name, `${p.name}.md`);
-            if (existsSync(projFile)) {
-              const content = readFileSync(projFile, "utf-8").slice(0, 500);
-              if (content.toLowerCase().includes(direction.toLowerCase())) {
-                knowledge.push(`项目 ${p.name}: 相关内容匹配`);
-              }
-            }
-          }
-        }
-      } catch {}
-    }
-
-    // Search wiki/concepts/
-    const conceptsDir = join(wikiDir, "wiki/concepts");
-    if (existsSync(conceptsDir)) {
-      try {
-        const { readdir } = await import("node:fs/promises");
-        const concepts = await readdir(conceptsDir);
-        for (const c of concepts) {
-          if (c.endsWith(".md")) {
-            const content = readFileSync(join(conceptsDir, c), "utf-8").slice(0, 500);
-            if (content.toLowerCase().includes(direction.toLowerCase())) {
-              knowledge.push(`概念 ${c.replace(".md", "")}: 相关内容匹配`);
-              sources.push(`wiki/concepts/${c}`);
-            }
-          }
-        }
-      } catch {}
-    }
-
-    // Check weekly journals
-    const weeklyDir = join(wikiDir, "journal/weekly");
-    if (existsSync(weeklyDir)) {
-      sources.push("journal/weekly/");
-    }
-  }
-
-  // Check existing brainstorm.json
-  const bsPath = projectBrainstormPath(cwd);
-  if (existsSync(bsPath)) {
-    sources.push(".goo/brainstorm.json (已有候选)");
-    try {
-      const bs = JSON.parse(readFileSync(bsPath, "utf-8"));
-      if (bs.candidate_goals?.length) {
-        knowledge.push(`已有 ${bs.candidate_goals.length} 个候选目标`);
-      }
-    } catch {}
-  }
-
-  if (sources.length === 0) {
-    knowledge.push("未找到相关 Goo-wiki 上下文");
-  }
-
-  return { sources, knowledge };
+  const result = await recallWiki(cwd, direction);
+  return {
+    sources: result.hits.map((h) => h.path),
+    knowledge: result.hits.map((h) => `${h.title}${h.headings.length ? `（${h.headings[0]}）` : ""}`),
+  };
 }

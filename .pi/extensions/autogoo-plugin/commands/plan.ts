@@ -31,6 +31,7 @@ import {
   type Goal,
 } from "../utils/plan.js";
 import { getPi } from "../utils/pi-state.js";
+import { recallWiki, toLegacyShape } from "../utils/wiki-recall.js";
 import { loadProjectConfig,
   REPO_ROOT,
   RESOLVE_ROOT_SH,
@@ -78,7 +79,7 @@ export async function handleGooPlan(taskDescription: string, ctx: ExtensionConte
   let wikiContext: WikiContext = { found: false, sources: [], reused_knowledge: [] };
   if (recallEnabled) {
     ctx.ui.notify("正在召回 Goo-wiki 经验...", "info");
-    wikiContext = await recallWiki(cwd, taskDescription, ctx);
+    wikiContext = await recallWikiForPlan(cwd, taskDescription);
   } else {
     ctx.ui.notify("已按配置跳过 Goo-wiki 召回（planning.recall_wiki=false）", "info");
   }
@@ -239,40 +240,12 @@ async function resolveThread(cwd: string, ctx: ExtensionContext): Promise<{ thre
 }
 
 // ── Wiki recall ────────────────────────────────────────────────────────────
-
-interface WikiContext {
-  found: boolean;
-  sources: string[];
-  reused_knowledge: string[];
-}
-
-async function recallWiki(cwd: string, task: string, ctx: ExtensionContext): Promise<WikiContext> {
-  const wikiScript = join(REPO_ROOT, "skills/auto-goo/scripts/wiki-graph-assist.py");
-  if (!existsSync(wikiScript)) {
-    return { found: false, sources: [], reused_knowledge: [] };
-  }
-
-  try {
-    // P14：传 --wiki-dir（config wiki_dir / env 覆盖）与 --project-slug
-    // （config archive.project_slug fallback basename），避免全库搜索且绕过
-    // config wiki_dir 的问题。
-    const wikiDir = await resolveWikiDir(cwd);
-    const projectSlug = await resolveProjectSlug(cwd);
-    const result = execPython(
-      wikiScript,
-      ["--compact", "--query", task, "--wiki-dir", wikiDir, "--project-slug", projectSlug],
-      cwd,
-      { timeout: 30000 },
-    );
-    const lines = result.stdout?.split("\n").filter(Boolean) || [];
-    return {
-      found: lines.length > 2,
-      sources: lines.filter(l => l.startsWith("source:")).map(l => l.slice(7).trim()),
-      reused_knowledge: lines.filter(l => !l.startsWith("source:") && !l.startsWith("[")),
-    };
-  } catch {
-    return { found: false, sources: [], reused_knowledge: [] };
-  }
+// 统一走 utils/wiki-recall.ts。历史教训：这里曾经自己拼参数并传了脚本不支持的
+// `--compact`，argparse exit 2 → stdout 空 → 静默 found:false，
+// 导致 /goo-plan 的 wiki 召回从未成功过一次。
+async function recallWikiForPlan(cwd: string, task: string): Promise<WikiContext> {
+  const result = await recallWiki(cwd, task);
+  return toLegacyShape(result);
 }
 
 // ── Brainstorm loading ──────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ import {
 } from "../utils/plan.js";
 import {
   UPDATE_STEP_PY,
+  GOO_STATUS_PY,
   projectPlanPath,
   loadProjectConfig,
   writeExecutionModelConfig,

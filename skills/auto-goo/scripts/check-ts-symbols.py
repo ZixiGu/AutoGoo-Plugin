@@ -224,6 +224,13 @@ def looks_like_signature(code: str, call_start: int) -> bool:
     return rest.startswith(":")
 
 
+# 全大写常量引用（UPPER_SNAKE）：作为**变量**使用（传参、赋值、比较），
+# 不是函数调用，BARE_CALL_RE 扫不到。
+# 回归：GOO_STATUS_PY 在 tools-execution.ts 里被使用但未 import，
+# `auto_goo_dag_status` 一调用就 ReferenceError，而检查器当时报「全部通过」。
+CONST_REF_RE = re.compile(r"(?<![.\w$])([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b")
+
+
 def scan(path: Path) -> list[str]:
     code = strip_type_declarations(strip_noise(path.read_text(encoding="utf-8")))
     declared = collect_declared(code)
@@ -236,6 +243,19 @@ def scan(path: Path) -> list[str]:
             continue
         line = code[: match.start()].count("\n") + 1
         problems.append(f"{path}:{line} {name}(…)")
+    # 常量引用：同样要求已声明/已导入
+    seen: set[str] = set()
+    for match in CONST_REF_RE.finditer(code):
+        name = match.group(1)
+        if name in declared or name in KNOWN_GLOBALS or name in seen:
+            continue
+        # 对象字面量键名 / 类型字段（`{ FOO: "1" }`、`FOO?: string`）不是引用
+        tail = code[match.end() : match.end() + 2]
+        if tail.startswith(":") or tail.startswith("?"):
+            continue
+        seen.add(name)
+        line = code[: match.start()].count("\n") + 1
+        problems.append(f"{path}:{line} {name} (undefined constant)")
     return problems
 
 

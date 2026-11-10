@@ -3196,6 +3196,159 @@ else
   fail "有命令把提示词塞进输入框 —— 用户需手动按 Enter 才发送"
 fi
 
+# ── 35. 调用脚本时不得传它不支持的参数 ──
+# 回归：plan.ts 给 wiki-graph-assist.py 传了 `--compact`（脚本没这个参数），
+# argparse 直接 exit 2 → stdout 空 → 静默 found:false，
+# /goo-plan 的 wiki 召回从未成功过一次。
+echo ""
+echo "── 35. 脚本参数真实性 ──"
+
+if python3 - "$ROOT" <<'EOFPY35'
+"""
+校验 TS 调用 Python 脚本时，传的参数确实是脚本支持的。
+
+精确匹配策略（避免把同文件里别的脚本的参数算进来）：
+  1. 建立「变量 -> 脚本名」映射：`const VAR = join(..., "foo.py")` 或 `const VAR = "...foo.py"`
+  2. 只检查 `execPython(VAR, [ ... ])` / `execPythonAsync(VAR, [ ... ])` 的数组字面量
+  3. 直接内联字符串的调用 `execPython("...foo.py", [...])` 也支持
+
+历史 bug：plan.ts 给 wiki-graph-assist.py 传了 `--compact`（脚本没这个参数），
+argparse exit 2 → stdout 空 → 静默 found:false，召回从未成功过。
+"""
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+ext = root / ".pi/extensions/autogoo-plugin"
+scripts = root / "skills/auto-goo/scripts"
+
+help_cache: dict[str, set[str] | None] = {}
+
+
+def supported(script: str):
+    if script in help_cache:
+        return help_cache[script]
+    path = scripts / script
+    if not path.exists():
+        help_cache[script] = None
+        return None
+    try:
+        out = subprocess.run(
+            [sys.executable, str(path), "--help"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        opts = set(re.findall(r"--[a-z0-9][a-z0-9-]*", out.stdout + out.stderr))
+        help_cache[script] = opts
+        return opts
+    except Exception:
+        help_cache[script] = None
+        return None
+
+
+def array_literal(code: str, start: int) -> str:
+    """code[start] 应为 '['；返回匹配的 [...] 片段。"""
+    if start >= len(code) or code[start] != "[":
+        return ""
+    depth = 0
+    for i in range(start, len(code)):
+        ch = code[i]
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return code[start : i + 1]
+    return ""
+
+
+problems = []
+
+for f in ext.rglob("*.ts"):
+    if "__tests__" in f.parts:
+        continue
+    text = f.read_text(encoding="utf-8")
+
+    # 1) 变量赋值位置清单（同一变量名在文件里会被不同函数重复使用，
+    #    所以不能做全局映射 —— 必须取「调用点之前、距离最近」的那次赋值）
+    decls: list[tuple[int, str, str]] = []  # (pos, var, script)
+    for m in re.finditer(
+        r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*[^;\n]*?\"([a-zA-Z0-9/_.-]+\.py)\"",
+        text,
+    ):
+        decls.append((m.start(), m.group(1), m.group(2).rsplit("/", 1)[-1]))
+
+    def script_for_var(var: str, at: int):
+        """取 at 之前最近的同名变量赋值。"""
+        best = None
+        for pos, name, script in decls:
+            if name == var and pos < at:
+                if best is None or pos > best[0]:
+                    best = (pos, script)
+        return best[1] if best else None
+
+    # 2) execPython(VAR, [ ... ]) / execPython("x.py", [ ... ])
+    for m in re.finditer(
+        r"\bexec(?:Python|PythonAsync)\s*\(\s*(?:\"([a-zA-Z0-9/_.-]+\.py)\"|([A-Za-z_$][\w$]*))\s*,\s*",
+        text,
+    ):
+        if m.group(1):
+            script = m.group(1).rsplit("/", 1)[-1]
+        else:
+            script = script_for_var(m.group(2) or "", m.start())
+        if not script:
+            continue
+        opts = supported(script)
+        if opts is None:
+            continue
+        # 逗号后跳过空白，期望数组字面量；也可能是变量，则解引用到它的赋值
+        pos = m.end()
+        while pos < len(text) and text[pos] in " \t\n":
+            pos += 1
+        arr = ""
+        if pos < len(text) and text[pos] == "[":
+            arr = array_literal(text, pos)
+        elif pos < len(text) and (text[pos].isalpha() or text[pos] in "_$"):
+            vm = re.match(r"([A-Za-z_$][\w$]*)", text[pos:])
+            if vm:
+                vname = vm.group(1)
+                # 就近向前找 `const vname = [ ... ]`
+                best = -1
+                for dm in re.finditer(
+                    rf"\b(?:const|let|var)\s+{re.escape(vname)}\s*(?::[^=]+)?=\s*\[", text
+                ):
+                    if dm.start() < pos:
+                        best = dm.start()
+                if best >= 0:
+                    bpos = text.index("[", best)
+                    arr = array_literal(text, bpos)
+                    # 加上后续 args.push("--flag") 形式的追加
+                    tail = text[pos : pos + 3000]
+                    arr += "".join(
+                        re.findall(rf"{re.escape(vname)}\.push\(([^)]*)\)", tail)
+                    )
+        if not arr:
+            continue
+        for flag in sorted(set(re.findall(r"\"(--[a-z0-9][a-z0-9-]*)\"", arr))):
+            if flag not in opts:
+                line = text[: m.start()].count("\n") + 1
+                problems.append(f"{f.name}:{line} {script} 不支持 {flag}")
+
+if problems:
+    print("; ".join(problems[:8]), file=sys.stderr)
+    raise SystemExit(1)
+
+EOFPY35
+then
+  pass "TS 调用的脚本参数均真实存在（脚本 -h 校验）"
+else
+  fail "有 TS 传给脚本的参数脚本并不支持 —— 会 exit 2 且通常静默失败"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

@@ -61,6 +61,23 @@ describe("wiki-recall", { skip: hasWiki ? false : "本机无 Goo-wiki，跳过�
     assert.equal(typeof r.elapsedMs, "number");
   });
 
+  it("与 query 完全无关时返回 0 条（评分不得因项目归属而虚高）", async () => {
+    // 回归：曾有两个叠加的 bug 让召回命中率恒为 100%
+    //   1. `query_terms` 里拼了 project_slug → 项目内每页路径都含 slug，
+    //      `term in low_rel` 恒真 → relevance 恒 > 0
+    //   2. `if project_slug in low_rel: score += 12` 无条件加分
+    // 结果 query 填「完全不存在」也能召回满 12 条。
+    const r = await recallWiki(REPO_ROOT, "zzz-完全不存在的内容-zzz", { source: "test" });
+    assert.equal(r.hits.length, 0, `无关 query 不应召回任何页面，实际 ${r.hits.length} 条: ${r.hits.slice(0, 3).map((h) => h.path).join(", ")}`);
+    assert.equal(r.found, false);
+  });
+
+  it("正常 query 仍能召回到结果（不能为了去噪把召回弄死）", async () => {
+    const r = await recallWiki(REPO_ROOT, "memory 系统", { source: "test" });
+    assert.ok(r.hits.length > 0, "正常 query 应召回到内容");
+    assert.ok(r.hits[0].score >= 10, `首条 score 应 >= 10，实际 ${r.hits[0]?.score}`);
+  });
+
   it("renderRecallSection 无命中时返回空串", async () => {
     const r = await recallWiki(REPO_ROOT, "zzz-不存在的内容-zzz", { minScore: 999 });
     assert.equal(r.found, false);

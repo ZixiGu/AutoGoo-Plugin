@@ -35,6 +35,7 @@ import {
 import {
   generateWikiPacket,
   buildSubagentTaskPrompt,
+  measureWikiPaths,
   heartbeatTick,
   type WikiPacketResult,
 } from "../utils/dispatch.js";
@@ -476,6 +477,7 @@ async function runSchedule(
           packetGenerated,
           memory_layer: packet.memory_layer,
           stepContract,
+          wikiPathSizes: await measureWikiPaths(cwd, packet.wiki_paths),
         }),
         cwd,
         signal, // P12：透传用户中断信号，防止子进程成孤儿

@@ -1,10 +1,13 @@
 import json
 import importlib.util
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / "skills/auto-goo/scripts"
 
 
 def test_versions_are_consistent() -> None:
@@ -101,3 +104,70 @@ def test_claude_components_are_registered() -> None:
     hooks = json.loads((ROOT / "hooks/hooks.json").read_text(encoding="utf-8"))
     assert hooks["hooks"]["SessionStart"]
     assert (ROOT / "skills/auto-goo/scripts/session-start.py").exists()
+
+
+# ── wiki frontmatter 校验脚本 ────────────────────────────────────────────────
+
+def test_wiki_frontmatter_script_exists_and_runs():
+    """memory_layer 曾是「文档要求但零强制」的字段（实测覆盖率仅 50%）。
+
+    这个脚本把约定变成可执行检查。它必须能跑、能识别缺失、且能给出层级建议。
+    """
+    script = SCRIPTS / "check-wiki-frontmatter.py"
+    assert script.exists(), "check-wiki-frontmatter.py 缺失"
+
+    # --suggest：项目入口应判为 L3
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "wiki/projects").mkdir(parents=True)
+        entry = root / "wiki/projects/demo.md"
+        entry.write_text("---\ntitle: Demo\ntype: project\n---\n\n# Demo\n", encoding="utf-8")
+
+        r = subprocess.run(
+            ["python3", str(script), "--suggest", str(entry)],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == "L3", f"项目入口应建议 L3，实际 {r.stdout.strip()}"
+
+        # --check：缺 memory_layer 必须失败
+        r = subprocess.run(
+            ["python3", str(script), "--check", str(entry)],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert r.returncode == 1, "缺 memory_layer 时应当失败"
+        assert "memory_layer" in (r.stderr + r.stdout)
+
+        # 补上后应当通过
+        entry.write_text(
+            "---\ntitle: Demo\ntype: project\nmemory_layer: L3\n---\n\n# Demo\n",
+            encoding="utf-8",
+        )
+        r = subprocess.run(
+            ["python3", str(script), "--check", str(entry)],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert r.returncode == 0, r.stderr
+
+        # 非法值必须被抓
+        entry.write_text("---\ntitle: Demo\nmemory_layer: L9\n---\n", encoding="utf-8")
+        r = subprocess.run(
+            ["python3", str(script), "--check", str(entry)],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert r.returncode == 1, "非法 memory_layer 值应当失败"
+
+
+def test_wiki_recall_supports_layer_filter():
+    """召回必须能按 memory_layer 过滤 —— 否则字段填了也没人用。"""
+    script = SCRIPTS / "wiki-graph-assist.py"
+    r = subprocess.run(
+        ["python3", str(script), "--help"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert r.returncode == 0
+    assert "--layer" in r.stdout, "wiki-graph-assist.py 缺少 --layer"
+    assert "--exclude-unlabeled" in r.stdout, (
+        "缺少 --exclude-unlabeled：存量约一半笔记没有 memory_layer，"
+        "默认丢弃会让召回凭空变差，必须显式可选"
+    )

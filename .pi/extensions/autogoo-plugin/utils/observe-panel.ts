@@ -64,13 +64,18 @@ export interface ObserveSnapshot {
   steps: ObserveStep[];
   shellLogs: ObserveShellLog[];
   commands?: Record<string, string>;
+  /** 召回观测统计（来自 .goo/logs/recall.jsonl） */
+  recall?: import("./recall-observe.js").RecallStats;
 }
 
-export type ObserveTab = "steps" | "overview" | "env" | "shell";
+export type ObserveTab = "steps" | "overview" | "recall" | "env" | "shell";
 
-const TAB_ORDER: ObserveTab[] = ["steps", "overview", "env", "shell"];
+const TAB_ORDER: ObserveTab[] = ["steps", "overview", "recall", "env", "shell"];
 
 export type ObserveAction = { action: "quit" } | { action: "refresh" };
+
+export { renderRecallTab } from "./recall-tab.js";
+import { renderRecallTab } from "./recall-tab.js";
 
 export class ObservePanel implements Component {
   private tabIndex: number;
@@ -190,7 +195,7 @@ export class ObservePanel implements Component {
     out.push(
       keyHelp(
         [
-          { keys: "←→/1-4", label: "切 tab" },
+          { keys: "←→/1-5", label: "切 tab" },
           { keys: "↑↓", label: "移动" },
           { keys: "r", label: "刷新" },
           { keys: "q", label: "退出" },
@@ -251,6 +256,10 @@ export class ObservePanel implements Component {
         }
       }
       return L;
+    }
+
+    if (this.tab === "recall") {
+      return renderRecallTab(d.recall, w, this.theme);
     }
 
     if (this.tab === "overview") {

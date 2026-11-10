@@ -2529,10 +2529,19 @@ else
   fail "status-panel.ts 仍存在或有残留引用（两套面板会再次分叉）"
 fi
 
-if grep -q 'TAB_ORDER: ObserveTab\[\] = \["steps", "overview", "env", "shell"\]' "$OPANEL"; then
-  pass "ObservePanel 提供 steps/overview/env/shell 四个 tab"
+# 断言绑「语义」而非写死的 tab 清单：必须有 TAB_ORDER，且覆盖
+# steps / overview / recall / env / shell 各自的分支。
+# （之前写死四个 tab，新增 recall tab 后误报。）
+_obs_tabs_missing=""
+for _tab in steps overview recall env shell; do
+  if ! grep -q "_tab === \"$_tab\"" "$OPANEL" && ! grep -q "renderRecallTab" "$OPANEL"; then
+    _obs_tabs_missing="$_obs_tabs_missing $_tab"
+  fi
+done
+if grep -q 'TAB_ORDER: ObserveTab\[\]' "$OPANEL" && [[ -z "${_obs_tabs_missing// /}" ]]; then
+  pass "ObservePanel 的 TAB_ORDER 与各 tab 渲染分支齐全（steps/overview/recall/env/shell）"
 else
-  fail "ObservePanel 缺少四个 tab"
+  fail "ObservePanel 缺少 tab 或渲染分支:${_obs_tabs_missing:- TAB_ORDER 未定义}"
 fi
 
 if grep -q "export class ObservePanel" "$OPANEL" 2>/dev/null \
@@ -3347,6 +3356,68 @@ then
   pass "TS 调用的脚本参数均真实存在（脚本 -h 校验）"
 else
   fail "有 TS 传给脚本的参数脚本并不支持 —— 会 exit 2 且通常静默失败"
+fi
+
+# ── 36. memory_layer 强制机制存在 ──
+# SKILL.md 要求归档必填 memory_layer，但长期只有文字约定、零强制
+# （实测覆盖率 50%，L3 仅 11 篇）。断言的不是"文档写了"，而是
+# "有可执行脚本能查、召回能按层过滤"。
+echo ""
+echo "── 36. memory_layer 强制机制 ──"
+
+WFM="$ROOT/skills/auto-goo/scripts/check-wiki-frontmatter.py"
+if [[ -f "$WFM" ]] && python3 "$WFM" --help >/dev/null 2>&1; then
+  pass "check-wiki-frontmatter.py 存在且可运行"
+else
+  fail "缺少 check-wiki-frontmatter.py —— memory_layer 又只剩文档约定"
+fi
+
+# 项目入口（L3）必须有 memory_layer 支持：--suggest 对 type: project 判 L3
+if [[ -f "$WFM" ]]; then
+  _tmp="$(mktemp -d)"
+  mkdir -p "$_tmp/wiki/projects"
+  printf -- '---\ntitle: X\ntype: project\n---\n' > "$_tmp/wiki/projects/x.md"
+  _l3=$(python3 "$WFM" --suggest "$_tmp/wiki/projects/x.md" 2>/dev/null)
+  if [[ "$_l3" == "L3" ]]; then
+    pass "层级推断：项目入口判为 L3"
+  else
+    fail "层级推断错误：项目入口应为 L3，实际 '$_l3'"
+  fi
+  rm -rf "$_tmp"
+fi
+
+if python3 "$ROOT/skills/auto-goo/scripts/wiki-graph-assist.py" --help 2>&1 | grep -q -- "--layer"; then
+  pass "召回支持 --layer 按记忆层过滤"
+else
+  fail "召回不支持 --layer —— memory_layer 填了也不会被使用"
+fi
+
+# ── 37. wiki 治理脚本必须只读 ──
+# wiki 已达 800+ 篇，需要去重/过期机制，但"自动整理"的风险远大于收益：
+# 删错、合并错都是不可逆的。所以治理脚本只允许**只读扫描 + 打印建议**。
+echo ""
+echo "── 37. wiki 治理只读 ──"
+
+WGOV="$ROOT/skills/auto-goo/scripts/wiki-gov.py"
+if [[ -f "$WGOV" ]] && python3 "$WGOV" --help >/dev/null 2>&1; then
+  pass "wiki-gov.py 存在且可运行"
+else
+  fail "缺少 wiki-gov.py —— wiki 规模治理无从下手"
+fi
+
+if [[ -f "$WGOV" ]]; then
+  # 静态：脚本里不得出现删除/移动/写入 API
+  if grep -qE "os\.remove|os\.unlink|shutil\.rmtree|os\.rename|\.unlink\(|\.rmdir\(|write_text\(|write_bytes\(" "$WGOV"; then
+    fail "wiki-gov.py 含写/删/移动操作 —— 治理脚本必须只读"
+  else
+    pass "wiki-gov.py 无删除/移动/写入操作"
+  fi
+  # 必须显式声明只读承诺
+  if grep -q "不修改任何文件\|只读" "$WGOV"; then
+    pass "wiki-gov.py 显式声明只读承诺"
+  else
+    fail "wiki-gov.py 未声明只读承诺"
+  fi
 fi
 
 # ── 结果汇总 ──

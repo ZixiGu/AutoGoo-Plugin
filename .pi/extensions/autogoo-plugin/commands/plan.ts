@@ -244,7 +244,9 @@ async function resolveThread(cwd: string, ctx: ExtensionContext): Promise<{ thre
 // `--compact`，argparse exit 2 → stdout 空 → 静默 found:false，
 // 导致 /goo-plan 的 wiki 召回从未成功过一次。
 async function recallWikiForPlan(cwd: string, task: string): Promise<WikiContext> {
-  const result = await recallWiki(cwd, task);
+  // 计划阶段取 L3（项目画像）+ L2（场景知识）：主 Agent 要的是"这个项目
+  // 的整体经验和场景做法"，不是逐条原始记录（L0）。
+  const result = await recallWiki(cwd, task, { source: "plan", layers: ["L3", "L2"] });
   return toLegacyShape(result);
 }
 

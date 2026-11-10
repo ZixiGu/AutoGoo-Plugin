@@ -9,7 +9,86 @@
 
 import type { Theme } from "@earendil-works/pi-tui";
 import { logError } from "./log.js";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+
+/**
+ * 显示宽度与截断 —— **本地实现，不依赖 pi-tui 运行时**。
+ *
+ * 为什么自己写：`@earendil-works/pi-tui` 只在 pi 运行时注入，在测试环境
+ * （tsx --test）里 import 不到，导致**所有面板都无法单测**。
+ * 这正是 `ReferenceError: total is not defined` 能漏到线上的原因 ——
+ * 面板代码从来没有被测试执行过。
+ *
+ * 换成自包含实现后，面板渲染可以被 node:test 直接测（含超宽断言）。
+ * 语义与 pi-tui 保持一致：ANSI 转义序列宽度为 0，CJK/emoji 宽度为 2。
+ */
+
+const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
+
+/** 去掉 ANSI 转义序列。 */
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_RE, "");
+}
+
+/** 单个码点的显示宽度：CJK / 全角 / emoji 算 2，其余算 1。 */
+function charWidth(cp: number): number {
+  if (cp === 0x200d) return 0; // ZWJ
+  if (cp >= 0x0300 && cp <= 0x036f) return 0; // 组合音标
+  if (
+    (cp >= 0x1100 && cp <= 0x115f) ||
+    (cp >= 0x2e80 && cp <= 0xa4cf) ||
+    (cp >= 0xac00 && cp <= 0xd7a3) ||
+    (cp >= 0xf900 && cp <= 0xfaff) ||
+    (cp >= 0xfe30 && cp <= 0xfe6f) ||
+    (cp >= 0xff00 && cp <= 0xff60) ||
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x1f300 && cp <= 0x1faff) ||
+    (cp >= 0x20000 && cp <= 0x3fffd)
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
+/** 可见宽度（忽略 ANSI）。 */
+export function visibleWidth(text: string): number {
+  let w = 0;
+  for (const ch of stripAnsi(text)) {
+    w += charWidth(ch.codePointAt(0) ?? 0);
+  }
+  return w;
+}
+
+/**
+ * 截断到指定显示宽度，保留 ANSI 序列完整性（截断后补 `\x1b[0m` 防止串色）。
+ */
+export function truncateToWidth(text: string, maxWidth: number): string {
+  if (maxWidth <= 0) return "";
+  let out = "";
+  let w = 0;
+  let i = 0;
+  let sawAnsi = false;
+  while (i < text.length) {
+    // ANSI 序列整段保留（宽度 0）
+    ANSI_RE.lastIndex = 0;
+    const rest = text.slice(i);
+    const m = rest.match(ANSI_RE);
+    if (m && m.index === 0) {
+      out += m[0];
+      sawAnsi = true;
+      i += m[0].length;
+      continue;
+    }
+    const cp = text.codePointAt(i) ?? 0;
+    const ch = String.fromCodePoint(cp);
+    const cw = charWidth(cp);
+    if (w + cw > maxWidth) break;
+    out += ch;
+    w += cw;
+    i += ch.length;
+  }
+  if (sawAnsi) out += "\x1b[0m";
+  return out;
+}
 
 export interface KeyHelpItem {
   /** 按键提示，如 "↑↓" / "⏎" / "q" */

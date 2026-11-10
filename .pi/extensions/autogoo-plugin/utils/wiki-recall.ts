@@ -34,6 +34,7 @@ import { execPython } from "./exec.js";
 import { resolveWikiDir } from "./paths.js";
 import { resolveProjectSlug } from "./dispatch.js";
 import { REPO_ROOT } from "./paths.js";
+import { logRecall, hashQuery } from "./recall-observe.js";
 
 /** 单次召回的默认字符预算：超过则按 score 降序截断。 */
 export const DEFAULT_RECALL_CHAR_BUDGET = 6000;
@@ -73,6 +74,52 @@ export interface RecallOptions {
   minScore?: number;
   /** python 子进程超时，默认 15s */
   timeoutMs?: number;
+  /** 调用来源（plan/brainstorm/subagent/manual），用于观测归类 */
+  source?: string;
+  /**
+   * 只保留这些记忆层（如 ["L2","L3"]）。undefined 表示不过滤。
+   *
+   * 分层原则（references/setup.md）：
+   *   L0 原始日志 —— 不主动召回（噪音大）
+   *   L1 原子事实 —— Subagent 按 step 需要取
+   *   L2 场景知识 —— 默认召回
+   *   L3 项目画像 —— 主 Agent 启动时最该读的层
+   */
+  layers?: string[];
+  /**
+   * 使用 layers 时，是否丢弃没有 memory_layer 字段的页面。
+   * 默认 **false** —— 存量约一半笔记缺该字段（420/843），
+   * 默认丢弃会让召回凭空变差。
+   */
+  excludeUnlabeled?: boolean;
+}
+
+/** 从 cwd 推断 .goo 目录（观测日志落盘位置）。 */
+function resolveGooDir(cwd: string): string {
+  return join(cwd, ".goo");
+}
+
+/** 统一的观测上报：无论成功失败都记一条。 */
+function emitRecall(
+  cwd: string,
+  source: string,
+  query: string,
+  result: WikiRecallResult,
+  extra: { belowMinScore?: number } = {},
+): void {
+  logRecall(resolveGooDir(cwd), {
+    source,
+    query_hash: hashQuery(query),
+    query_len: query.length,
+    hits: result.hits.length,
+    dropped: result.dropped,
+    score_max: result.hits.length ? Math.max(...result.hits.map((h) => h.score)) : 0,
+    chars: result.rendered.length,
+    ms: result.elapsedMs,
+    ok: result.error === null,
+    error: result.error ?? undefined,
+    below_min_score: extra.belowMinScore,
+  });
 }
 
 function emptyResult(error: string | null, elapsedMs: number): WikiRecallResult {
@@ -86,6 +133,18 @@ function emptyResult(error: string | null, elapsedMs: number): WikiRecallResult 
  * 但一定会 logWarn，让问题可见。
  */
 export async function recallWiki(
+  cwd: string,
+  query: string,
+  opts: RecallOptions = {},
+): Promise<WikiRecallResult> {
+  const source = opts.source || "manual";
+  const result = await recallWikiImpl(cwd, query, opts);
+  emitRecall(cwd, source, query, result, { belowMinScore: (result as any).__belowMinScore });
+  return result;
+}
+
+/** 实际实现（不含观测），由 {@link recallWiki} 包装以便统一上报。 */
+async function recallWikiImpl(
   cwd: string,
   query: string,
   opts: RecallOptions = {},
@@ -130,6 +189,10 @@ export async function recallWiki(
     "--wiki-dir", wikiDir,
     "--project-slug", projectSlug,
   ];
+  if (opts.layers?.length) {
+    for (const l of opts.layers) args.push("--layer", l.toUpperCase());
+    if (opts.excludeUnlabeled) args.push("--exclude-unlabeled");
+  }
 
   let stdout: string;
   let exitCode: number;
@@ -158,6 +221,7 @@ export async function recallWiki(
   }
 
   const raw: any[] = Array.isArray(parsed?.suggested_links) ? parsed.suggested_links : [];
+  const beforeCount = raw.length;
   const scored: WikiHit[] = raw
     .filter((x) => x && typeof x.path === "string")
     .map((x) => ({
@@ -193,6 +257,8 @@ export async function recallWiki(
     dropped,
     error: null,
     elapsedMs: Date.now() - started,
+    // 供观测使用：低于阈值被过滤掉的噪音条数
+    ...({ __belowMinScore: beforeCount - scored.length } as any),
   };
 }
 

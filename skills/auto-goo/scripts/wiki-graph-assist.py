@@ -31,6 +31,7 @@ class PageHit:
     headings: list[str]
     links: list[str]
     snippet: str
+    memory_layer: str | None = None
 
 
 def expand_path(value: str | None) -> Path:
@@ -57,17 +58,23 @@ def iter_markdown(wiki_dir: Path, search_paths: Iterable[str]) -> Iterable[Path]
             yield from root.rglob("*.md")
 
 
-def frontmatter_title(text: str) -> str | None:
+def frontmatter_field(text: str, key: str) -> str | None:
+    """读取 frontmatter 的单个标量字段（不引入 yaml 依赖）。"""
     if not text.startswith("---\n"):
         return None
     end = text.find("\n---", 4)
     if end < 0:
         return None
     fm = text[4:end]
+    prefix = f"{key}:"
     for line in fm.splitlines():
-        if line.startswith("title:"):
+        if line.startswith(prefix):
             return line.split(":", 1)[1].strip().strip("'\"") or None
     return None
+
+
+def frontmatter_title(text: str) -> str | None:
+    return frontmatter_field(text, "title")
 
 
 def first_heading(text: str) -> str | None:
@@ -91,24 +98,41 @@ def compact_snippet(text: str, query_terms: set[str], limit: int = 180) -> str:
 
 
 def score_page(rel: str, title: str, text: str, query_terms: set[str], project_slug: str | None) -> int:
+    """给页面打分。
+
+    关键设计：**query 相关性为 0 时直接返回 0**，即使路径命中所属项目。
+
+    历史 bug：原先 `if project_slug in low_rel: score += 12` 是**无条件加分**，
+    结果 autogoo-plugin 项目的每一页都保底 12 分 —— query 填 "zzz-不存在"
+    也能召回满 12 条，命中率恒为 100%。这让召回指标完全失去意义，
+    也让 prompt 里塞进大量无关页面。
+
+    项目归属是**加权信号**，不能替代相关性：只有当页面与 query 有实质匹配时，
+    属于当前项目的页面才获得额外权重。
+    """
     low_rel = rel.lower()
     low_title = title.lower()
     low_text = text.lower()
-    score = 0
-    if project_slug and project_slug.lower() in low_rel:
-        score += 12
+
+    relevance = 0
     for term in query_terms:
         if not term:
             continue
         if term in low_title:
-            score += 8
+            relevance += 8
         if term in low_rel:
-            score += 5
+            relevance += 5
         count = low_text.count(term)
         if count:
-            score += min(count, 6)
-    # Boost score for project entry pages (named after project slug, not index.md)
-    return score
+            relevance += min(count, 6)
+
+    if relevance <= 0:
+        # 与 query 毫无交集 → 不返回（哪怕它属于本项目）
+        return 0
+
+    # 项目归属加权：仅在已有相关性时生效，且有上限，避免喧宾夺主
+    project_boost = 12 if (project_slug and project_slug.lower() in low_rel) else 0
+    return relevance + project_boost
 
 
 def wikilink(rel: str, title: str | None = None) -> str:
@@ -119,8 +143,28 @@ def wikilink(rel: str, title: str | None = None) -> str:
     return f"[[{target}]]"
 
 
-def find_related(wiki_dir: Path, query: str, project_slug: str | None, search_paths: list[str], limit: int) -> list[PageHit]:
-    query_terms = words(" ".join([query, project_slug or ""]))
+def find_related(
+    wiki_dir: Path,
+    query: str,
+    project_slug: str | None,
+    search_paths: list[str],
+    limit: int,
+    layers: set[str] | None = None,
+    include_unlabeled: bool = True,
+    min_score: int = 3,
+) -> list[PageHit]:
+    """按 query 召回页面。
+
+    layers: 只保留这些 memory_layer（如 {"L2","L3"}）；None 表示不过滤。
+    include_unlabeled: 无 memory_layer 字段的页面是否保留。
+        注意默认保留 —— 存量笔记中约一半没有该字段（420/843），
+        默认丢弃会让召回突然变差。
+    """
+    # ⚠ 不能把 project_slug 拼进 query_terms：
+    # 那样项目内每一页的路径都含 slug，`term in low_rel` 恒真 →
+    # relevance 恒 > 0 → 任何 query 都能召回满额结果。
+    # 项目归属由 score_page 的 project_boost 单独处理（且仅在已有相关性时生效）。
+    query_terms = words(query)
     hits: list[PageHit] = []
     for path in iter_markdown(wiki_dir, search_paths):
         try:
@@ -129,12 +173,22 @@ def find_related(wiki_dir: Path, query: str, project_slug: str | None, search_pa
             continue
         rel = path.relative_to(wiki_dir).as_posix()
         title = page_title(path, text)
+        layer = frontmatter_field(text, "memory_layer")
+        if layers is not None:
+            if layer is None:
+                if not include_unlabeled:
+                    continue
+            elif layer not in layers:
+                continue
         score = score_page(rel, title, text, query_terms, project_slug)
-        if score <= 0:
+        # min_score 过滤掉「单词偶然命中一次」级别的噪音。
+        # 实测：query "zzz-完全不存在-zzz" 仍会因某文件里恰有一个 zzz
+        # 占位符而得 1 分被召回 —— 单次文本匹配不构成相关性。
+        if score < min_score:
             continue
         headings = [m.group(1).strip() for m in re.finditer(r"^##\s+(.+)$", text, re.M)][:5]
         links = re.findall(r"\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]", text)[:8]
-        hits.append(PageHit(path, rel, title, score, headings, links, compact_snippet(text, query_terms)))
+        hits.append(PageHit(path, rel, title, score, headings, links, compact_snippet(text, query_terms), layer))
     hits.sort(key=lambda hit: (-hit.score, hit.rel))
     return hits[:limit]
 
@@ -245,6 +299,22 @@ def main() -> int:
     parser.add_argument("--search-path", action="append", help="Additional or overriding search path; can be repeated")
     parser.add_argument("--max-pages", type=int, default=12, help="Maximum related pages to return")
     parser.add_argument("--format", choices=("md", "json"), default="md")
+    parser.add_argument(
+        "--layer",
+        action="append",
+        help="Only include pages with this memory_layer (L0/L1/L2/L3); repeatable",
+    )
+    parser.add_argument(
+        "--min-score",
+        type=int,
+        default=3,
+        help="Drop hits scoring below this (default 3; 1 = only drop zero-relevance)",
+    )
+    parser.add_argument(
+        "--exclude-unlabeled",
+        action="store_true",
+        help="When --layer is used, also drop pages that have no memory_layer field",
+    )
     parser.add_argument("--update-index", action="store_true", help="Update project index recent-record marker")
     parser.add_argument("--append-log", action="store_true", help="Append a compact linked activity entry to log.md")
     args = parser.parse_args()
@@ -252,7 +322,17 @@ def main() -> int:
     wiki_dir = expand_path(args.wiki_dir)
     search_paths = args.search_path or list(DEFAULT_SEARCH_PATHS)
     title = args.title or args.query.strip().splitlines()[0][:80]
-    hits = find_related(wiki_dir, args.query, args.project_slug, search_paths, args.max_pages)
+    layers = {x.strip().upper() for x in args.layer} if args.layer else None
+    hits = find_related(
+        wiki_dir,
+        args.query,
+        args.project_slug,
+        search_paths,
+        args.max_pages,
+        layers=layers,
+        include_unlabeled=not args.exclude_unlabeled,
+        min_score=args.min_score,
+    )
 
     changed: list[str] = []
     if args.update_index:
@@ -289,6 +369,7 @@ def main() -> int:
                     "score": hit.score,
                     "headings": hit.headings,
                     "snippet": hit.snippet,
+                    "memory_layer": hit.memory_layer,
                 }
                 for hit in hits
             ],

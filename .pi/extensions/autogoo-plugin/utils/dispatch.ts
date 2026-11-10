@@ -10,6 +10,8 @@
  */
 
 import { basename, join } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { globSync } from "node:fs";
 import { logWarn } from "./log.js";
 import { writeFile, mkdir } from "node:fs/promises";
 import { execPython } from "./exec.js";
@@ -36,6 +38,89 @@ export async function resolveProjectSlug(cwd: string): Promise<string> {
 }
 
 // ── Wiki graph packet ───────────────────────────────────────────────────────
+
+/** 单次 Read/Grep 的字符预算上限（与 SKILL.md「按需调用原则」一致）。 */
+export const WIKI_READ_CHAR_BUDGET = 20_000;
+
+/**
+ * 探测 wiki_paths 展开后的实际体积。
+ *
+ * 为什么需要：`< 20k 字符预算` 原本只是 prompt 里的一句嘱咐，**没有任何
+ * 运行时强制**。实测 autogoo-plugin 的一个 step，wiki_paths 指向的 12 篇
+ * 页面合计 169KB —— 超预算 8.5 倍，而单篇 `autogoo-plugin.md` 就有 34KB。
+ * 若 subagent 老老实实逐篇 Read，会一次吃掉 165KB 上下文。
+ *
+ * 这里只做**测量与标注**，不阻止读取（有些 step 确实需要读大文件，
+ * 应该用 offset/limit 分段读，而不是一刀切禁止）。
+ */
+export interface WikiPathSizes {
+  /** 展开后的文件数 */
+  files: number;
+  /** 合计字节数 */
+  totalBytes: number;
+  /** 超过预算的单文件（相对路径 -> 字节数），按大小降序 */
+  oversized: Array<{ path: string; bytes: number }>;
+}
+
+/**
+ * 展开 wiki_paths（支持 glob 与普通路径）并统计体积。
+ *
+ * ⚠ wiki_paths 是**相对 wiki 根目录**的（如 `wiki/projects/x.md`），
+ * 不是相对 cwd。第一版按 cwd 拼接导致永远统计到 0 个文件 ——
+ * 护栏「看起来装上了但什么都没测」。
+ */
+export async function measureWikiPaths(cwd: string, wikiPaths: string[]): Promise<WikiPathSizes> {
+  const seen = new Set<string>();
+  const sizes: Array<{ path: string; bytes: number }> = [];
+
+  let wikiRoot = cwd;
+  try {
+    wikiRoot = await resolveWikiDir(cwd);
+  } catch {
+    /* 解析失败时退化为 cwd（至少能测到项目内路径） */
+  }
+
+  for (const pattern of wikiPaths) {
+    const abs = pattern.startsWith("/")
+      ? pattern
+      : join(wikiRoot, pattern);
+    let matched: string[] = [];
+    try {
+      if (/[*?[\]]/.test(pattern)) {
+        matched = globSync(abs) as unknown as string[];
+      } else if (existsSync(abs)) {
+        matched = [abs];
+      }
+    } catch {
+      /* glob 语法错误时忽略该项 */
+    }
+    for (const f of matched) {
+      if (seen.has(f)) continue;
+      seen.add(f);
+      try {
+        const st = statSync(f);
+        if (st.isFile()) sizes.push({ path: f.replace(`${wikiRoot}/`, ""), bytes: st.size });
+      } catch {
+        /* 不可读则跳过 */
+      }
+    }
+  }
+
+  const oversized = sizes
+    .filter((s) => s.bytes > WIKI_READ_CHAR_BUDGET)
+    .sort((a, b) => b.bytes - a.bytes);
+  return {
+    files: sizes.length,
+    totalBytes: sizes.reduce((a, b) => a + b.bytes, 0),
+    oversized,
+  };
+}
+
+function humanBytes(n: number): string {
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${(n / 1024 / 1024).toFixed(1)}MB`;
+}
 
 export interface WikiPacketResult {
   packet: DispatchPacket;
@@ -103,6 +188,34 @@ export interface SubagentPromptOptions {
   taskPrompt?: string;
   /** Step 契约行（execute.ts runSchedule 注入） */
   stepContract?: string[];
+  /** wiki_paths 展开后的体积（由 measureWikiPaths 计算） */
+  wikiPathSizes?: WikiPathSizes;
+}
+
+/**
+ * 把体积实测结果渲染成给 subagent 的**警告行**。
+ *
+ * 目的不是恐吓，而是让 subagent 有据可依地选择读法：
+ * 超预算的文件必须分段读，而不是一次 Read 到底。
+ */
+function formatSizeWarning(s: WikiPathSizes): string[] {
+  const lines: string[] = [];
+  const ratio = s.totalBytes / WIKI_READ_CHAR_BUDGET;
+  if (s.files === 0) return lines;
+  if (ratio > 1) {
+    lines.push(
+      `- ⚠️ 实测体积：wiki_paths 展开共 ${s.files} 个文件 / ${humanBytes(s.totalBytes)}` +
+        `（预算 ${WIKI_READ_CHAR_BUDGET / 1000}k 的 ${ratio.toFixed(1)} 倍）—— 不要全部通读`,
+    );
+  }
+  if (s.oversized.length > 0) {
+    lines.push(`- 以下文件单篇即超预算，必须用 offset/limit 分段读或先 Grep 定位:`);
+    for (const f of s.oversized.slice(0, 6)) {
+      lines.push(`    ${humanBytes(f.bytes)}  ${f.path}`);
+    }
+    if (s.oversized.length > 6) lines.push(`    …另有 ${s.oversized.length - 6} 个`);
+  }
+  return lines;
 }
 
 /** 组装 Subagent 任务 prompt：wiki_paths glob + graph packet 引用 + 执行要求。 */
@@ -124,7 +237,8 @@ export function buildSubagentTaskPrompt(o: SubagentPromptOptions): string {
     o.packetGenerated
       ? `- 紧凑 graph packet 已生成在 ${o.wiki_graph_packet_path};优先 Read 它代替自行 grep/glob 全量扫描`
       : `- ⚠️ graph packet 生成失败(超时或 wiki-graph-assist.py 错误),fallback 到按 wiki_paths glob 自行 Read(遵守字符预算 < 20k)`,
-    `- 单次 Read/Grep 受字符预算 (< 20k) + 超时 (< 30s) 双重约束;超出时用 Read + limit/offset 或 Grep -n`,
+    `- 单次 Read/Grep 受字符预算 (< ${WIKI_READ_CHAR_BUDGET / 1000}k 字符) + 超时 (< 30s) 双重约束;超出时用 Read + limit/offset 或 Grep -n`,
+    ...(o.wikiPathSizes ? formatSizeWarning(o.wikiPathSizes) : []),
     `- memory_layer 默认 ${o.memory_layer || "L2"};L0 原始日志、L3 项目画像只按 step 显式需要才读`,
     `- 跨 step 引用用 [[Wikilink]] 按需点开;不要 Read 整篇 wiki 笔记`,
     ``,

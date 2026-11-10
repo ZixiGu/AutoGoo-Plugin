@@ -6,6 +6,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { readRecallStats } from "../utils/recall-observe.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { execPython } from "../utils/exec.js";
@@ -82,6 +83,10 @@ export async function openObservePanel(
       steps,
       shellLogs: Array.isArray(env.shell_logs) ? env.shell_logs : [],
       commands: env.commands ?? {},
+      // 召回观测：读 .goo/logs/recall.jsonl 汇总。
+      // 召回坏了是**静默降级**（任务照样跑完，只是用不上 wiki 经验），
+      // 所以必须有一个地方能直接看到失败次数。
+      recall: readRecallStats(join(cwd, ".goo")),
     };
   };
 

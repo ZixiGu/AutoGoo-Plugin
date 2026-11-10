@@ -27,7 +27,7 @@ import { runSubagent, resolveSubagentModel, resolveOrPromptSubagentModel } from 
 import { getRolePrompt, getTaskAgentPrompt } from "../utils/prompts.js";
 import { uiSelect, uiInput, uiConfirm } from "../utils/ui.js";
 import { updateStatusBar } from "../utils/status.js";
-import { generateWikiPacket, buildSubagentTaskPrompt, heartbeatTick } from "../utils/dispatch.js";
+import { generateWikiPacket, buildSubagentTaskPrompt, heartbeatTick, measureWikiPaths } from "../utils/dispatch.js";
 import { checkPlanLocks, acquirePlanLocks, releasePlanLocks, describeConflicts } from "../utils/locks.js";
 import { describeMessageContent, describeToolResult } from "../utils/tool-summary.js";
 import { activityBus } from "../utils/activity.js";
@@ -305,6 +305,8 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
         wiki_graph_packet_path: packet.wiki_graph_packet_path,
         packetGenerated,
         memory_layer: packet.memory_layer,
+        // 实测体积，让 subagent 知道该不该逐篇通读（预算只是嘱咐，不会强制）
+        wikiPathSizes: await measureWikiPaths(cwd, packet.wiki_paths),
       });
 
       // 3. Spawn 独立 pi 子进程执行 Subagent 任务（pi 子进程模式，2026-08-10 迁移）。

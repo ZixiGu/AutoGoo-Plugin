@@ -439,6 +439,47 @@ print(f"  {fmt_col(c('Total Tokens', MUTED), 22, '<')}")
 - 静态检查要用词边界匹配，不能用子串包含；
 - `publish` / `archive` 等由 Python 脚本消费的段不在 TS 检查范围内。
 
+### 让模型干活的提示词必须直接发送，不能塞输入框
+
+pi 扩展有两个容易混淆的接口：
+
+| 接口 | 行为 | 适用 |
+| --- | --- | --- |
+| `ctx.ui.setEditorText(text)` | 只把文字**放进输入框**，用户还得自己按 Enter | 展示给用户阅读的内容（如 plan 摘要） |
+| `pi.sendUserMessage(text)` | **直接发送**给 agent，触发新一轮 | 让模型执行任务的提示词 |
+
+**症状**：用户选了选项后"没反应"，提示词文字躺在输入框里等着被手动发送。
+
+**发生过的地方**（全部改为直发）：
+`goo-brainstorm` / `goo-research` / `goo-usage-analyse` / `goo-improve` / `goo-benchmark`，
+以及 `goo-plan` 选「修改计划」之后。
+
+`goo-plan` 生成后的 plan 摘要**保留** `setEditorText`（那是给用户读的），
+但文案必须写明「以上内容仅供阅读，不会发送」，否则用户同样会困惑。
+
+`other.ts` 统一封装 `dispatchPrompt(ctx, prompt, okMsg?)`：
+有 pi 实例就直发，否则降级 `setEditorText`（非交互上下文）。
+
+`check-plugin.sh` §34 静态校验：这些 handler 必须出现
+`dispatchPrompt(` 或 `sendUserMessage(`，否则报错。
+
+### ⚠ 用脚本生成检查代码时，`\b` 会被吃掉
+
+本项目的检查脚本由 Python 生成，用三引号字符串写正则时踩过这个坑：
+
+```python
+new = '''m = re.search(rf"...{h}\b", text)'''   # 写入文件后 \b 变成退格符 0x08
+```
+
+**后果极隐蔽**：正则变成「函数名后紧跟退格符」，永远不匹配，
+于是检查**永远通过**——它看起来在保护，实际什么都没查。
+
+**规则**：
+1. 生成含正则/转义的代码时，优先用 `edit` 工具直接写，别用 Python 字符串拼接；
+2. 生成后必须 `od -c` 或扫控制字符验证；
+3. **任何新的静态检查都必须做一次反向验证**：故意把代码改回错误状态，
+   确认检查会报红。不报红的检查等于没有。
+
 ### 工具参数必须用 TypeBox，不能传原生 JSON Schema
 
 `pi.registerTool<TParams extends TSchema>` 要求 **TypeBox** schema：

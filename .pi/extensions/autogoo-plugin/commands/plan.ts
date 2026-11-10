@@ -30,6 +30,7 @@ import {
   type Step,
   type Goal,
 } from "../utils/plan.js";
+import { getPi } from "../utils/pi-state.js";
 import { loadProjectConfig,
   REPO_ROOT,
   RESOLVE_ROOT_SH,
@@ -155,18 +156,21 @@ export async function handleGooPlan(taskDescription: string, ctx: ExtensionConte
   // Also save compat plan.json
   await savePlan(cwd, plan);
 
-  // ── Step 7: Show plan in editor and get confirmation ───────────────────────
-  // Show plan summary in the editor so user can see the full content
+  // ── Step 7: 展示计划并获取确认 ─────────────────────────────────────────────
+  // 这里把计划摘要放进编辑器是**展示用途**（给用户读），不是发给模型的 prompt。
+  // 注意与下方"修改计划"区分：那处是给 LLM 的指令，必须 sendUserMessage 直接发送。
+  // 文案要讲清楚，否则用户会以为"计划卡在输入框里没发出去"。
   const planSummary = formatPlanSummary(plan);
   ctx.ui.setEditorText(
     `📋 计划已生成，请审阅并确认：\n\n${planSummary}\n\n` +
     `─────────────────\n` +
-    `请在下方选择操作：`
+    `（以上内容仅供阅读，不会发送；清空输入框不影响计划）`
   );
-  ctx.ui.notify(`📋 计划已生成！共 ${plan.steps.length} 步，请在编辑器中查看并确认。`, "info");
+  ctx.ui.notify(`📋 计划已生成！共 ${plan.steps.length} 步，已放入输入框供查看。`, "info");
 
   // 高影响操作：超时会直接进入执行阶段，因此超时一律取消，等用户显式确认。
   const reviewChoice = await uiSelect(ctx, TEMPLATE_PLAN_REVIEW_START.header, TEMPLATE_PLAN_REVIEW_START.options, { onTimeout: "cancel" });
+
 
   if (reviewChoice === "cancel") {
     ctx.ui.setEditorText("");
@@ -182,10 +186,16 @@ export async function handleGooPlan(taskDescription: string, ctx: ExtensionConte
       modify_dag: "（调整 DAG 依赖关系后重新运行 /goo-plan）",
       modify_goal: "（调整目标或约束后重新运行 /goo-plan）",
     };
-    ctx.ui.setEditorText(
-      `请修改以下计划${hints[reviewChoice] || ""}：\n\n${planSummary}`
-    );
-    ctx.ui.notify(`请在编辑器中修改计划后重新运行 /goo-plan。`, "info");
+    // 这是**给 LLM 的修改指令**，直接发送；之前塞进输入框 + 提示"请在编辑器
+    // 中修改"，两者语义冲突（到底是我改还是 LLM 改？）。
+    const pi = getPi();
+    const prompt = `请修改以下计划${hints[reviewChoice] || ""}：\n\n${planSummary}`;
+    if (pi) {
+      pi.sendUserMessage(prompt);
+      ctx.ui.notify("已发送修改请求，模型会给出调整方案。", "success");
+    } else {
+      ctx.ui.setEditorText(prompt);
+    }
     return;
   }
 

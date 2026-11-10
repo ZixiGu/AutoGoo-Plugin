@@ -3149,6 +3149,53 @@ else
   warn "未安装 python3.10/3.11，跳过真机解析（静态规则已覆盖）"
 fi
 
+# ── 34. 「让 LLM 干活」的提示词必须直接发送 ──
+# 回归：goo-brainstorm / goo-research / goo-usage-report / goo-improve /
+# goo-benchmark 都用 setEditorText() 塞提示词 —— 文字进了输入框，用户必须
+# 再按一次 Enter 才发送，表现就是"选了之后没反应，文字跑到输入框里"。
+# 展示给用户看的内容（如 plan 摘要）用 setEditorText 是正确的，不计入。
+echo ""
+echo "── 34. 提示词直发（而非塞输入框）──"
+
+if python3 - "$ROOT" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+cmds = root / ".pi/extensions/autogoo-plugin/commands"
+offenders = []
+# 这些 handler 的末尾 setEditorText 都是「让模型执行」的 prompt
+DISPATCH_HANDLERS = (
+    "handleGooBrainstorm",
+    "handleGooResearch",
+    "handleGooUsageAnalyse",
+    "handleGooImprove",
+    "handleGooBenchmark",
+)
+for path in cmds.glob("*.ts"):
+    text = path.read_text(encoding="utf-8")
+    for h in DISPATCH_HANDLERS:
+        m = re.search(rf"(?:export )?async function {h}\b", text)
+        if not m:
+            continue
+        # 取函数体（到下一个顶层 export/async function 为止）
+        nxt = re.search(r"\n(?:export )?async function ", text[m.end():])
+        body = text[m.end(): m.end() + (nxt.start() if nxt else len(text))]
+        # 允许 dispatchPrompt(...) 形式，或用 getPi() 后 sendUserMessage
+        if "dispatchPrompt(" in body or "sendUserMessage(" in body:
+            continue
+        if "setEditorText(" in body:
+            offenders.append(f"{path.name}:{h}")
+if offenders:
+    raise SystemExit("prompt sent to editor instead of agent: " + "; ".join(offenders))
+PY
+then
+  pass "所有 LLM 任务型命令都直接发送（dispatchPrompt / sendUserMessage）"
+else
+  fail "有命令把提示词塞进输入框 —— 用户需手动按 Enter 才发送"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

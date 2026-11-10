@@ -7,6 +7,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getPi } from "../utils/pi-state.js";
 import { execShell } from "../utils/exec.js";
 import {
   loadPlan,
@@ -48,7 +49,10 @@ export async function handleGooBrainstorm(direction: string, ctx: ExtensionConte
     ? `\n\n## 相关 Wiki 上下文\n${wikiContext.sources.map((s: string) => `- ${s}`).join("\n")}\n\n${wikiContext.knowledge.map((k: string) => `- ${k}`).join("\n")}`
     : "";
 
-  ctx.ui.setEditorText(
+  // 直接发给 agent（不是塞进输入框）——用户选了方向就该立刻开始头脑风暴，
+  // 之前用 setEditorText 需要用户再按一次 Enter 才发送，像"卡住了"。
+  const pi = getPi();
+  const prompt =
     `## AutoGoo-Plugin Brainstorm: ${direction}\n` +
     `\n请基于以下方向进行头脑风暴，生成候选目标列表：\n\n` +
     `**方向**: ${direction}\n` +
@@ -58,8 +62,14 @@ export async function handleGooBrainstorm(direction: string, ctx: ExtensionConte
     `2. 合并去重为 3-7 个最终候选\n` +
     `3. 每个候选包含：id、name、why（为什么值得做）、expected_output（交付物）、acceptance_criteria（验收标准）、risk（风险）、prerequisites（前置条件）、first_step（第一步动作）\n` +
     `4. 输出为 JSON 格式，写入 .goo/brainstorm.json\n` +
-    `5. 在聊天中向用户展示候选列表，等待用户选择后再进入 goo-plan 阶段`
-  );
+    `5. 在聊天中向用户展示候选列表，等待用户选择后再进入 goo-plan 阶段`;
+  if (pi) {
+    pi.sendUserMessage(prompt);
+    ctx.ui.notify("已发送头脑风暴请求", "success");
+  } else {
+    // 拿不到 pi 实例时降级（例如非交互上下文）
+    ctx.ui.setEditorText(prompt);
+  }
 }
 
 // ── Wiki recall helper ──────────────────────────────────────────────────────

@@ -14,6 +14,7 @@ export function setPi(pi: ExtensionAPI): void {
 import { REPO_ROOT, GOO_STATUS_PY, GOO_PUBLISH_PY, projectPlanPath, scriptsDir } from "../utils/paths.js";
 import { execPython, execShell } from "../utils/exec.js";
 import { guardRender } from "../utils/tui-kit.js";
+import { getPi } from "../utils/pi-state.js";
 import { UsagePanel, type UsageAction, type UsageData } from "../utils/usage-panel.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -63,6 +64,22 @@ export async function handleGooPublish(args: string, ctx: ExtensionContext): Pro
 
 // ── goo-research ────────────────────────────────────────────────────────────
 
+/**
+ * 把「让 LLM 干活」的提示词直接发给 agent。
+ * 之前这些位置用 ctx.ui.setEditorText()，文字只进输入框，用户还得手动按
+ * Enter 才发送 —— 表现就是"选了之后没反应，文字跑到了输入框里"。
+ * 拿不到 pi 实例时（非交互上下文）降级为 setEditorText。
+ */
+function dispatchPrompt(ctx: ExtensionContext, prompt: string, okMsg?: string): void {
+  const pi = getPi();
+  if (pi) {
+    pi.sendUserMessage(prompt);
+    if (okMsg) ctx.ui.notify(okMsg, "success");
+  } else {
+    ctx.ui.setEditorText(prompt);
+  }
+}
+
 export async function handleGooResearch(args: string, ctx: ExtensionContext): Promise<void> {
   const trimmed = args.trim();
   if (!trimmed) {
@@ -73,9 +90,11 @@ export async function handleGooResearch(args: string, ctx: ExtensionContext): Pr
   ctx.ui.notify(`研究主题: ${trimmed}`, "info");
 
   // Guide the LLM to do the research using its own capabilities
-  ctx.ui.setEditorText(
+  dispatchPrompt(
+    ctx,
     `请调研以下主题，输出结构化研究报告（包含背景、方法、关键发现、代码/数据可用性、结论）：\n\n${trimmed}\n\n` +
-    `调研完成后，将结果归档到 Goo-wiki。`
+    `调研完成后，将结果归档到 Goo-wiki。`,
+    "已发送调研请求",
   );
 }
 
@@ -177,10 +196,12 @@ export async function handleGooUsageAnalyse(args: string, ctx: ExtensionContext)
   try {
     const usage = execPython(scriptPath, ["--json", ...(args ? args.split(" ") : [])], cwd);
     ctx.ui.notify((usage.stdout || "分析完成").slice(0, 300), "info");
-    ctx.ui.setEditorText(
+    dispatchPrompt(
+      ctx,
       `基于以下 usage 数据和 Goo-wiki 知识，请生成 token 降本分析报告：\n\n` +
       `${usage.stdout?.slice(0, 2000) || "无数据"}\n\n` +
-      `要求：归因 token 开销热点，给出可落地的节省方案。`
+      `要求：归因 token 开销热点，给出可落地的节省方案。`,
+      "已发送降本分析请求",
     );
   } catch (err: any) {
     ctx.ui.notify(`分析失败: ${err.message}`, "error");
@@ -210,13 +231,15 @@ export async function handleGooDailyReport(args: string, ctx: ExtensionContext):
 
 export async function handleGooImprove(args: string, ctx: ExtensionContext): Promise<void> {
   ctx.ui.notify("AutoGoo-Plugin 自改进功能", "info");
-  ctx.ui.setEditorText(
+  dispatchPrompt(
+    ctx,
     `请审查 AutoGoo-Plugin 框架（位于 ${REPO_ROOT}）的执行表现，识别以下方面的问题和改进机会：\n\n` +
     `1. 工作流效率 — DAG 调度、心跳、并发执行\n` +
     `2. 可靠性 — session 恢复、失败处理、日志完整性\n` +
     `3. 用户体验 — 交互流程、提示清晰度、归档质量\n` +
     `4. 文档完整性 — SKILL.md、references、交互模板\n\n` +
-    `基于分析结果，给出具体改进建议。`
+    `基于分析结果，给出具体改进建议。`,
+    "已发送自改进审查请求",
   );
 }
 
@@ -229,14 +252,16 @@ export async function handleGooBenchmark(args: string, ctx: ExtensionContext): P
     return;
   }
 
-  ctx.ui.setEditorText(
+  dispatchPrompt(
+    ctx,
     `请对以下目标执行性能评测：\n\n${trimmed}\n\n` +
     `要求：\n` +
     `1. 定义评测指标和基线\n` +
     `2. 运行评测并记录结果\n` +
     `3. 生成评测报告\n` +
     `4. 分析瓶颈和改进方向\n` +
-    `5. 结果归档到 Goo-wiki`
+    `5. 结果归档到 Goo-wiki`,
+    "已发送评测请求",
   );
 }
 

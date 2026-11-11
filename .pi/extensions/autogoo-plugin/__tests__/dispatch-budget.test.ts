@@ -19,6 +19,7 @@ import { join } from "node:path";
 import {
   measureWikiPaths,
   buildSubagentTaskPrompt,
+  expandLayerRange,
   WIKI_READ_CHAR_BUDGET,
 } from "../utils/dispatch.js";
 
@@ -115,5 +116,31 @@ describe("buildSubagentTaskPrompt 体积警告", () => {
       prompt.includes(`< ${WIKI_READ_CHAR_BUDGET / 1000}k`),
       "prompt 里的预算数字必须由常量推导",
     );
+  });
+});
+
+describe("expandLayerRange（memory_layer 下限展开）", () => {
+  it("声明的层是下限，向抽象方向展开", () => {
+    // 为什么这样设计：audit 类 step 声明 L0（原始 trace），
+    // 若只返回 L0 页面，subagent 拿到一堆没有上下文的原始日志反而更难干活。
+    // 但方向必须单向：exec 声明 L2 不该被 L0 噪音稀释。
+    assert.deepEqual(expandLayerRange("L0"), ["L0", "L1", "L2", "L3"]);
+    assert.deepEqual(expandLayerRange("L1"), ["L1", "L2", "L3"]);
+    assert.deepEqual(expandLayerRange("L2"), ["L2", "L3"]);
+    assert.deepEqual(expandLayerRange("L3"), ["L3"]);
+  });
+
+  it("大小写不敏感，非法值退化为默认 L2", () => {
+    assert.deepEqual(expandLayerRange("l1"), ["L1", "L2", "L3"]);
+    assert.deepEqual(expandLayerRange(undefined), ["L2", "L3"]);
+    assert.deepEqual(expandLayerRange(null), ["L2", "L3"]);
+    assert.deepEqual(expandLayerRange("L9"), ["L2", "L3"]);
+    assert.deepEqual(expandLayerRange(""), ["L2", "L3"]);
+  });
+
+  it("展开结果必须包含声明层本身（否则过滤会把自己过滤掉）", () => {
+    for (const l of ["L0", "L1", "L2", "L3"]) {
+      assert.ok(expandLayerRange(l).includes(l), `${l} 的展开结果应包含自身`);
+    }
   });
 });

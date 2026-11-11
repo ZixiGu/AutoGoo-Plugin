@@ -116,6 +116,32 @@ export async function measureWikiPaths(cwd: string, wikiPaths: string[]): Promis
   };
 }
 
+/**
+ * 把 step 声明的 memory_layer 展开成「召回层集合」。
+ *
+ * 语义：**声明的层是下限，向抽象方向展开**。
+ *
+ * 为什么不硬过滤成单一层：`audit` 类 step 声明 L0（原始 trace），
+ * 若只返回 L0 页面，subagent 会拿到一堆没有上下文的原始日志，
+ * 反而更难完成任务。理解原始记录需要 L1/L2 的事实与场景，
+ * 也需要 L3 的项目方向感。
+ *
+ * 反方向则必须截断：`exec` step 声明 L2，不应该被 L0 原始日志稀释
+ * （那是噪音，不是上下文）。这正是这个字段应有的作用。
+ *
+ *   L0 → [L0, L1, L2, L3]   追溯原始记录，但需要全栈上下文
+ *   L1 → [L1, L2, L3]       查具体事实，需要场景与画像
+ *   L2 → [L2, L3]           默认：场景知识 + 项目画像
+ *   L3 → [L3]               只要项目画像
+ */
+export function expandLayerRange(declared: string | undefined | null): string[] {
+  const norm = (declared || "L2").toUpperCase();
+  const order = ["L0", "L1", "L2", "L3"];
+  const idx = order.indexOf(norm);
+  if (idx < 0) return ["L2", "L3"]; // 非法值退化为默认
+  return order.slice(idx);
+}
+
 function humanBytes(n: number): string {
   if (n < 1024) return `${n}B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
@@ -152,6 +178,10 @@ export async function generateWikiPacket(
         "--query", query,
         "--title", `step-${step.id}-dispatch`,
         ...searchPathArgs,
+        // 按 step 声明的 memory_layer 过滤（声明的层是下限，向抽象层展开）。
+        // 曾经这里完全没传 --layer —— memory_layer 算出来了却无人消费，
+        // audit 与 review 类 step 拿到的 packet 内容一模一样。
+        ...expandLayerRange(packet.memory_layer).flatMap((l) => ["--layer", l]),
         "--max-pages", "12",
         "--format", "md",
       ],

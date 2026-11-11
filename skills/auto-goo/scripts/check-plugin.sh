@@ -3420,6 +3420,27 @@ if [[ -f "$WGOV" ]]; then
   fi
 fi
 
+# ── 38. memory_layer 在派发路径上必须有消费点 ──
+# 回归：packet.memory_layer 算得完全正确（audit→L0、review→L1），
+# 但 generateWikiPacket 从未把它传给 wiki-graph-assist.py 的 --layer，
+# 于是 audit 与 review 类 step 拿到的 packet 内容一模一样 ——
+# 字段算出来了却无人消费，又一次「声明存在 ≠ 有人消费」。
+echo ""
+echo "── 38. memory_layer 派发消费 ──"
+
+DISP="$ROOT/.pi/extensions/autogoo-plugin/utils/dispatch.ts"
+if grep -q "expandLayerRange" "$DISP" && grep -q '"--layer"' "$DISP"; then
+  pass "generateWikiPacket 按 memory_layer 传 --layer"
+else
+  fail "packet.memory_layer 未传给 --layer —— 该字段在派发路径上是死的"
+fi
+
+if grep -q "export function expandLayerRange" "$DISP"; then
+  pass "层范围展开逻辑存在（声明层为下限）"
+else
+  fail "缺少 expandLayerRange —— 硬过滤单层会让 audit step 失去上下文"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

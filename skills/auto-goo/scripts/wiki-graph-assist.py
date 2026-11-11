@@ -34,6 +34,11 @@ class PageHit:
     memory_layer: str | None = None
 
 
+# 未标注 memory_layer 的页面得分折扣（约一半存量笔记没填该字段，
+# 直接丢弃会让召回凭空少一半；完全平等又会让层过滤失去意义）。
+UNLABELED_WEIGHT = 0.8
+
+
 def expand_path(value: str | None) -> Path:
     if value:
         return Path(os.path.expandvars(os.path.expanduser(value))).resolve()
@@ -181,6 +186,11 @@ def find_related(
             elif layer not in layers:
                 continue
         score = score_page(rel, title, text, query_terms, project_slug)
+        # 未标注层的页面降权：存量约一半没填 memory_layer（408/832），
+        # 直接丢弃会让召回凭空少一半；完全平等对待又会让层过滤失去意义。
+        # 折中：保留但打 8 折 —— 标注过的优先，未标的仍有机会被召回。
+        if layer is None and score > 0:
+            score = max(1, int(score * UNLABELED_WEIGHT))
         # min_score 过滤掉「单词偶然命中一次」级别的噪音。
         # 实测：query "zzz-完全不存在-zzz" 仍会因某文件里恰有一个 zzz
         # 占位符而得 1 分被召回 —— 单次文本匹配不构成相关性。

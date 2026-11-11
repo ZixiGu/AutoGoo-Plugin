@@ -1,7 +1,7 @@
 ---
 name: goo-workflow
 description: "Use when the user says '/auto-goo:goo-init', '/auto-goo:goo-brainstorm', '/auto-goo:goo-plan', '/auto-goo:goo-start', '/auto-goo:goo-research', '/auto-goo:goo-daily-report', '/auto-goo:goo-usage', '/auto-goo:goo-usage-analyse', '/auto-goo:goo-observe', '/auto-goo:goo-publish', '找目标', '开始任务', 'run:', '日报', '周报', 'usage', 'token统计', 'token降本', '后台观察', '发布HTML', '自改进', or gives a goal-clear multi-step task that can be decomposed into sub-tasks. Runs Goo workflow: config init, wiki-based brainstorm, wiki recall, DAG planning, subagent execution, research material archiving, status/observe, HTML publishing, optimization, Goo-wiki archiving, usage monitor, usage cost analysis, daily reports, and plugin self-improvement. Compatible with Claude Code and Codex."
-version: 0.26.1
+version: 0.26.2
 tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent, wait_agent, request_user_input]
 ---
 
@@ -69,6 +69,15 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 3. L0 原始日志只用于 trace/audit，经 recorder 提炼为 L1/L2 后才进入 wiki。
 4. 项目入口 `<project-slug>.md` 显式标注自身为 L3，作为 wiki 的最高抽象层。
 5. Recorder 在归档时必须判断并填写 `memory_layer`，不得留空。
+
+**判定标准见 `references/setup.md` 的「记忆分层（memory_layer）判定标准」**，要点：
+
+- 核心判据只有一句：**三个月后另一个任务会来看它吗？来看它的哪一部分？**
+- 来不及判断时用 `check-wiki-frontmatter.py --suggest <file>` 取路径建议，
+  但它只覆盖 91%（实测 9% 冲突），**冲突时以语义为准**
+- 两种高频误判：长文档 ≠ 高层级（16KB 的 references 仍属 L2）；
+  `execution/` 不全都是 L1（`record.md` / `evidence-index.md` 是 L0）
+- 归档后跑 `check-wiki-frontmatter.py --check <file>` 校验，缺失会 exit 1
 
 命令模式：
 - `/auto-goo:goo-init --user`：初始化用户级 `~/.auto-goo/config.json` 与用户级约定单源 `~/.auto-goo/goo.md`（除非 `--skip-claude-md`），并按 `--write-user-pointer` / `--skip-user-pointer`（默认写）写用户级指针 `~/.claude/CLAUDE.md`、`~/.codex/AGENTS.md`；作为所有项目的默认配置。

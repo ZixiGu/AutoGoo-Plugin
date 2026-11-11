@@ -3441,6 +3441,42 @@ else
   fail "缺少 expandLayerRange —— 硬过滤单层会让 audit step 失去上下文"
 fi
 
+# ── 39. 分层判据必须可达（文档 + Recorder prompt）──
+# memory_layer 曾长期「有定义无判据」：SKILL.md 只写必须填，
+# 但没说怎么判断，Recorder 只能凭感觉。这里断言判据在**两个入口**都可达：
+#   1. references/setup.md 的判定标准章节（人读）
+#   2. Recorder role prompt（subagent 归档时读）
+echo ""
+echo "── 39. 分层判据可达性 ──"
+
+SETUP="$ROOT/skills/auto-goo/references/setup.md"
+if grep -q "记忆分层（memory_layer）判定标准" "$SETUP"; then
+  pass "setup.md 含记忆分层判定标准章节"
+else
+  fail "setup.md 缺少判定标准 —— Recorder 只能凭感觉填"
+fi
+
+# 判据的核心一句必须出现（防止章节被改写后只剩空壳）
+if grep -q "三个月后另一个任务会来看它吗" "$SETUP"; then
+  pass "判据核心问题存在（复用价值）"
+else
+  fail "判据核心问题缺失 —— 分层退化为按路径猜"
+fi
+
+PROMPTS="$ROOT/.pi/extensions/autogoo-plugin/utils/prompts.ts"
+if grep -q "三个月后另一个任务" "$PROMPTS" && grep -q "L0 原始记录" "$PROMPTS"; then
+  pass "Recorder role prompt 已内联判定标准"
+else
+  fail "Recorder prompt 未内联判定标准 —— subagent 不会主动去读 setup.md"
+fi
+
+# SKILL.md 必须指向 setup.md（避免两处各写一套漂移）
+if grep -q "记忆分层（memory_layer）判定标准" "$ROOT/skills/auto-goo/SKILL.md"; then
+  pass "SKILL.md 指向 setup.md 判定标准（单一事实源）"
+else
+  fail "SKILL.md 未指向判据 —— 两处定义会漂移"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

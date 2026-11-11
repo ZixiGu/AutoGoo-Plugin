@@ -51,19 +51,36 @@ def is_infra(rel: str) -> bool:
     parts = rel.split("/")
     return len(parts) <= 2 and parts[-1] in INFRA_NAMES
 
-# 路径片段 -> 建议层级（按顺序匹配，先命中先用）
+# 路径片段 -> 建议层级（**按顺序匹配，先命中先用，所以更具体的放前面**）
+#
+# ⚠ 这只是**兜底建议**，不是判定标准。实测 75 篇有标注的笔记里，
+# 路径推断与人工标注有 39% 冲突 —— 说明「内容属于哪一层」本质上是语义
+# 判断，路径只能覆盖最常见的情况。冲突时应以语义为准（见 classify_hint）。
 LAYER_HINTS: list[tuple[str, str]] = [
+    # ── L0：原始记录，只有追溯价值 ──
     ("/raw/", "L0"),
-    ("/journal/", "L0"),      # daily + weekly 都是原始记录
+    ("/journal/", "L0"),            # daily + weekly 都是原始记录
     ("/logs/", "L0"),
-    ("/execution/", "L1"),
+    ("/execution/record.md", "L0"),        # 执行流水原文（不是提炼后的结论）
+    ("/execution/evidence-index.md", "L0"),# 证据索引，仍是原始材料
+    ("/execution/transcript", "L0"),
+    # ── L1：原子事实，只有查证价值 ──
+    ("/execution/", "L1"),          # 提炼过的执行结论
     ("/findings/", "L1"),
     ("/evidence/", "L1"),
+    # ── L2：场景知识，有复用价值（默认层）──
     ("/lessons/", "L2"),
     ("/references/", "L2"),
     ("/concepts/", "L2"),
     ("/tasks/", "L2"),
     ("/archive/", "L2"),
+]
+
+# 文件名模式 -> 层级（用于 tasks/task-xxx.md 这类任务页：结论 → L1）
+FILENAME_HINTS: list[tuple[str, str]] = [
+    # 任务页实测 14 篇 L2 / 4 篇 L1 —— 多数含可复用的分析与决策，默认 L2。
+    # 少数纯修复记录会被人工标为 L1，这种语义差异路径推断不了，属正常冲突。
+    ("/operations.md", "L3"),       # 项目运维手册 → 项目画像
 ]
 
 
@@ -95,6 +112,9 @@ def suggest_layer(rel: str, fm: dict[str, str] | None, text: str) -> str:
         return "L3"
     if rel.endswith("/operations.md"):
         return "L3"
+    for needle, layer in FILENAME_HINTS:
+        if needle in f"/{rel}":
+            return layer
     for needle, layer in LAYER_HINTS:
         if needle in f"/{rel}":
             return layer

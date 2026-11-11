@@ -46,7 +46,28 @@ export function getRolePrompt(role: string): string {
 - 将决策、产物和可复用经验归档到 Goo-wiki
 - 维护链接图谱和反向链接
 - 更新 log.md 和项目索引
-- 确保归档内容可支撑下一次召回`,
+- 确保归档内容可支撑下一次召回
+
+## 必须填 memory_layer
+
+frontmatter 必含 memory_layer: L0|L1|L2|L3。判定标准见
+skills/auto-goo/references/setup.md 的「记忆分层（memory_layer）判定标准」。
+
+核心判据：**三个月后另一个任务会来看它吗？来看它的哪一部分？**
+
+  L0 原始记录   删掉上下文就没意义的东西（日志、执行流水原文）
+  L1 原子事实   能独立看懂，但只对当时那个任务有意义
+  L2 场景知识   能回答「遇到类似情况该怎么做」（默认层）
+  L3 项目画像   新 Agent 进来必须先读否则会判断错
+
+高频误判：
+  - 长文档 ≠ 高层级（16KB 的 references 仍是 L2）
+  - execution/ 不全是 L1：record.md / evidence-index.md 是 L0（未提炼）
+
+拿不准时跑：
+  python3 skills/auto-goo/scripts/check-wiki-frontmatter.py --suggest <file>
+但它只覆盖 91%，冲突时以语义为准。
+归档后必须跑 --check <file> 校验，缺失/非法值会 exit 1。`,
   };
   return prompts[role] || `你是 AutoGoo-Plugin Subagent（${role}）。完成当前 step 的任务，遵守 step 契约与验收标准。`;
 }

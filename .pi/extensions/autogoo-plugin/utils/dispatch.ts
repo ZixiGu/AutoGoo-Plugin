@@ -13,6 +13,7 @@ import { basename, join } from "node:path";
 import { existsSync, statSync } from "node:fs";
 import { globSync } from "node:fs";
 import { logWarn } from "./log.js";
+import { DEFAULT_MEMORY_LAYER } from "../constants.js";
 import { writeFile, mkdir } from "node:fs/promises";
 import { execPython } from "./exec.js";
 import { loadPlan, buildDispatchPacket, type DispatchPacket } from "./plan.js";
@@ -119,27 +120,32 @@ export async function measureWikiPaths(cwd: string, wikiPaths: string[]): Promis
 /**
  * 把 step 声明的 memory_layer 展开成「召回层集合」。
  *
- * 语义：**声明的层是下限，向抽象方向展开**。
+ * 层语义（**数字越大越原始**，与 CPU 缓存 / TencentDB Agent Memory 一致）：
+ *   L0 profile    项目画像   最热，启动必读
+ *   L1 knowledge  场景知识   默认层
+ *   L2 fact       原子事实   按需查证
+ *   L3 raw        原始记录   最冷，只做追溯
  *
- * 为什么不硬过滤成单一层：`audit` 类 step 声明 L0（原始 trace），
- * 若只返回 L0 页面，subagent 会拿到一堆没有上下文的原始日志，
- * 反而更难完成任务。理解原始记录需要 L1/L2 的事实与场景，
- * 也需要 L3 的项目方向感。
+ * 展开规则：**声明层是下限（最深的允许层），向 L0 方向补齐**。
  *
- * 反方向则必须截断：`exec` step 声明 L2，不应该被 L0 原始日志稀释
- * （那是噪音，不是上下文）。这正是这个字段应有的作用。
+ * 为什么补齐而不是只取单层：`audit` 声明 L3（原始 trace），若只返回 L3
+ * 页面，subagent 会拿到一堆没有上下文的原始日志，反而更难完成任务 ——
+ * 理解原始记录需要 L1/L2 的事实与场景，也需要 L0 的项目方向感。
  *
- *   L0 → [L0, L1, L2, L3]   追溯原始记录，但需要全栈上下文
- *   L1 → [L1, L2, L3]       查具体事实，需要场景与画像
- *   L2 → [L2, L3]           默认：场景知识 + 项目画像
- *   L3 → [L3]               只要项目画像
+ * 反方向必须截断：`exec` 声明 L1，不该被 L3 原始日志稀释（那是噪音，
+ * 不是上下文）。这正是这个字段应有的作用。
+ *
+ *   L0 → [L0]                只要项目画像
+ *   L1 → [L0, L1]            默认：场景知识 + 项目画像
+ *   L2 → [L0, L1, L2]        查事实，需要场景与画像
+ *   L3 → [L0, L1, L2, L3]    追溯原始，但需要全栈上下文
  */
 export function expandLayerRange(declared: string | undefined | null): string[] {
-  const norm = (declared || "L2").toUpperCase();
-  const order = ["L0", "L1", "L2", "L3"];
-  const idx = order.indexOf(norm);
-  if (idx < 0) return ["L2", "L3"]; // 非法值退化为默认
-  return order.slice(idx);
+  const norm = (declared || DEFAULT_MEMORY_LAYER).toUpperCase();
+  const all = ["L0", "L1", "L2", "L3"];
+  const idx = all.indexOf(norm);
+  if (idx < 0) return all.slice(0, all.indexOf(DEFAULT_MEMORY_LAYER) + 1); // 非法值退化
+  return all.slice(0, idx + 1);
 }
 
 function humanBytes(n: number): string {
@@ -269,7 +275,7 @@ export function buildSubagentTaskPrompt(o: SubagentPromptOptions): string {
       : `- ⚠️ graph packet 生成失败(超时或 wiki-graph-assist.py 错误),fallback 到按 wiki_paths glob 自行 Read(遵守字符预算 < 20k)`,
     `- 单次 Read/Grep 受字符预算 (< ${WIKI_READ_CHAR_BUDGET / 1000}k 字符) + 超时 (< 30s) 双重约束;超出时用 Read + limit/offset 或 Grep -n`,
     ...(o.wikiPathSizes ? formatSizeWarning(o.wikiPathSizes) : []),
-    `- memory_layer 默认 ${o.memory_layer || "L2"};L0 原始日志、L3 项目画像只按 step 显式需要才读`,
+    `- memory_layer 默认 ${o.memory_layer || DEFAULT_MEMORY_LAYER};L0 项目画像最热,L3 原始日志最冷且只做追溯`,
     `- 跨 step 引用用 [[Wikilink]] 按需点开;不要 Read 整篇 wiki 笔记`,
     ``,
     `## 执行要求`,

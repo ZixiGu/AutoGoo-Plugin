@@ -14,6 +14,7 @@
 
 import { Type } from "typebox";
 import { logWarn } from "../utils/log.js";
+import { DEFAULT_MEMORY_LAYER } from "../constants.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execPython, execShell } from "../utils/exec.js";
 import { runSubagent, resolveSubagentModel, resolveOrPromptSubagentModel } from "../utils/subagent.js";
@@ -420,7 +421,7 @@ async function runSchedule(
     toDispatch.map(async (step: any) => {
       const agentId = agentIds.get(String(step.id)) ?? `agent-${step.id}-${Date.now()}`;
       const { packet, packetGenerated } = packets.get(String(step.id)) ?? {
-        packet: { wiki_paths: [] as string[], wiki_graph_packet_path: "", memory_layer: "L2" },
+        packet: { wiki_paths: [] as string[], wiki_graph_packet_path: "", memory_layer: DEFAULT_MEMORY_LAYER },
         packetGenerated: false,
       };
       const stepContract = [

@@ -15,7 +15,7 @@ import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadPlan, getCurrentThreadId, loadThreadMeta, type Plan, type Step } from "./plan.js";
 import { projectThreadDir } from "./paths.js";
-import { DEFAULT_MEMORY_LAYER_BY_STEP_TYPE } from "../constants.js";
+import { DEFAULT_MEMORY_LAYER, DEFAULT_MEMORY_LAYER_BY_STEP_TYPE } from "../constants.js";
 
 const STATUS_KEY = "autogoo-plugin";
 
@@ -246,7 +246,7 @@ export async function snapshotPlan(cwd: string): Promise<PlanSnapshot | null> {
   if (cur) {
     currentStepName = cur.name;
     if (cur.started_at) currentStepElapsed = formatDuration(now - new Date(cur.started_at).getTime());
-    memoryLayer = (cur as any).memory_layer || DEFAULT_MEMORY_LAYER_BY_STEP_TYPE[cur.type] || "L2";
+    memoryLayer = (cur as any).memory_layer || DEFAULT_MEMORY_LAYER_BY_STEP_TYPE[cur.type] || DEFAULT_MEMORY_LAYER;
     wikiPacketGenerated = await checkWikiPacket(cwd, threadId, cur.id);
   }
   const pending = steps.filter((s) => s.status === "pending").length;

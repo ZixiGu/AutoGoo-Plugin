@@ -53,34 +53,39 @@ def is_infra(rel: str) -> bool:
 
 # 路径片段 -> 建议层级（**按顺序匹配，先命中先用，所以更具体的放前面**）
 #
-# ⚠ 这只是**兜底建议**，不是判定标准。实测 75 篇有标注的笔记里，
-# 路径推断与人工标注有 39% 冲突 —— 说明「内容属于哪一层」本质上是语义
-# 判断，路径只能覆盖最常见的情况。冲突时应以语义为准（见 classify_hint）。
+# 层语义（数字越大越原始，与 CPU 缓存 / TencentDB Agent Memory 一致）：
+#   L0 profile    项目画像   KB 级，启动必读      最热
+#   L1 knowledge  场景知识   MB 级，默认读取
+#   L2 fact       原子事实   GB 级，按需查证
+#   L3 raw        原始记录   大而冷，只做追溯      最冷
+#
+# ⚠ 路径推断是**兜底建议**，不是判定标准。实测冲突率约 9%，
+# 剩余冲突是语义边界（短修复记录 vs 有分析价值的任务页），需人工定。
 LAYER_HINTS: list[tuple[str, str]] = [
-    # ── L0：原始记录，只有追溯价值 ──
-    ("/raw/", "L0"),
-    ("/journal/", "L0"),            # daily + weekly 都是原始记录
-    ("/logs/", "L0"),
-    ("/execution/record.md", "L0"),        # 执行流水原文（不是提炼后的结论）
-    ("/execution/evidence-index.md", "L0"),# 证据索引，仍是原始材料
-    ("/execution/transcript", "L0"),
-    # ── L1：原子事实，只有查证价值 ──
-    ("/execution/", "L1"),          # 提炼过的执行结论
-    ("/findings/", "L1"),
-    ("/evidence/", "L1"),
-    # ── L2：场景知识，有复用价值（默认层）──
-    ("/lessons/", "L2"),
-    ("/references/", "L2"),
-    ("/concepts/", "L2"),
-    ("/tasks/", "L2"),
-    ("/archive/", "L2"),
+    # ── L3：原始记录，只有追溯价值 ──
+    ("/raw/", "L3"),
+    ("/journal/", "L3"),               # daily + weekly 都是原始记录
+    ("/logs/", "L3"),
+    ("/execution/record.md", "L3"),         # 执行流水原文（未提炼）
+    ("/execution/evidence-index.md", "L3"), # 证据索引，仍是原始材料
+    ("/execution/transcript", "L3"),
+    # ── L2：原子事实，只有查证价值 ──
+    ("/execution/", "L2"),             # 提炼过的执行结论
+    ("/findings/", "L2"),
+    ("/evidence/", "L2"),
+    # ── L1：场景知识，有复用价值（默认层）──
+    ("/lessons/", "L1"),
+    ("/references/", "L1"),
+    ("/concepts/", "L1"),
+    ("/tasks/", "L1"),
+    ("/archive/", "L1"),
 ]
 
 # 文件名模式 -> 层级（用于 tasks/task-xxx.md 这类任务页：结论 → L1）
 FILENAME_HINTS: list[tuple[str, str]] = [
     # 任务页实测 14 篇 L2 / 4 篇 L1 —— 多数含可复用的分析与决策，默认 L2。
     # 少数纯修复记录会被人工标为 L1，这种语义差异路径推断不了，属正常冲突。
-    ("/operations.md", "L3"),       # 项目运维手册 → 项目画像
+    ("/operations.md", "L0"),       # 项目运维手册 → 项目画像
 ]
 
 
@@ -106,10 +111,10 @@ def suggest_layer(rel: str, fm: dict[str, str] | None, text: str) -> str:
     """按路径推断层级；项目入口文件优先判为 L3。"""
     fm = fm or {}
     if fm.get("type") == "project":
-        return "L3"
+        return "L0"
     # 项目入口：wiki/projects/<slug>.md（两层，末尾是文件名）
     if re.match(r"^wiki/projects/[^/]+\.md$", rel):
-        return "L3"
+        return "L0"
     if rel.endswith("/operations.md"):
         return "L3"
     for needle, layer in FILENAME_HINTS:
@@ -118,7 +123,7 @@ def suggest_layer(rel: str, fm: dict[str, str] | None, text: str) -> str:
     for needle, layer in LAYER_HINTS:
         if needle in f"/{rel}":
             return layer
-    return "L2"
+    return "L1"
 
 
 def check_file(path: Path, wiki_root: Path | None = None) -> list[str]:

@@ -120,22 +120,28 @@ describe("buildSubagentTaskPrompt 体积警告", () => {
 });
 
 describe("expandLayerRange（memory_layer 下限展开）", () => {
-  it("声明的层是下限，向抽象方向展开", () => {
-    // 为什么这样设计：audit 类 step 声明 L0（原始 trace），
-    // 若只返回 L0 页面，subagent 拿到一堆没有上下文的原始日志反而更难干活。
-    // 但方向必须单向：exec 声明 L2 不该被 L0 噪音稀释。
-    assert.deepEqual(expandLayerRange("L0"), ["L0", "L1", "L2", "L3"]);
-    assert.deepEqual(expandLayerRange("L1"), ["L1", "L2", "L3"]);
-    assert.deepEqual(expandLayerRange("L2"), ["L2", "L3"]);
-    assert.deepEqual(expandLayerRange("L3"), ["L3"]);
+  it("声明层是最深层，向 L0 方向补齐", () => {
+    // 层语义：数字越大越原始（L0 项目画像最热，L3 原始日志最冷）。
+    // audit 声明 L3（原始 trace），补齐全栈否则拿不到上下文；
+    // exec 声明 L1，不该被 L3 原始日志稀释。
+    assert.deepEqual(expandLayerRange("L0"), ["L0"]);
+    assert.deepEqual(expandLayerRange("L1"), ["L0", "L1"]);
+    assert.deepEqual(expandLayerRange("L2"), ["L0", "L1", "L2"]);
+    assert.deepEqual(expandLayerRange("L3"), ["L0", "L1", "L2", "L3"]);
   });
 
-  it("大小写不敏感，非法值退化为默认 L2", () => {
-    assert.deepEqual(expandLayerRange("l1"), ["L1", "L2", "L3"]);
-    assert.deepEqual(expandLayerRange(undefined), ["L2", "L3"]);
-    assert.deepEqual(expandLayerRange(null), ["L2", "L3"]);
-    assert.deepEqual(expandLayerRange("L9"), ["L2", "L3"]);
-    assert.deepEqual(expandLayerRange(""), ["L2", "L3"]);
+  it("大小写不敏感，非法值退化为默认 L1", () => {
+    assert.deepEqual(expandLayerRange("l1"), ["L0", "L1"]);
+    assert.deepEqual(expandLayerRange(undefined), ["L0", "L1"]);
+    assert.deepEqual(expandLayerRange(null), ["L0", "L1"]);
+    assert.deepEqual(expandLayerRange("L9"), ["L0", "L1"]);
+    assert.deepEqual(expandLayerRange(""), ["L0", "L1"]);
+  });
+
+  it("L0 是项目画像（最热），展开只有自身；L3 最原始，展开覆盖全栈", () => {
+    // 防止编号方向再次被反转（本项目曾把 L0 定义成"原始日志"）
+    assert.equal(expandLayerRange("L0").length, 1, "L0 最热，不该展开出更原始的层");
+    assert.deepEqual(expandLayerRange("L3"), ["L0", "L1", "L2", "L3"], "L3 最冷，追溯需全栈上下文");
   });
 
   it("展开结果必须包含声明层本身（否则过滤会把自己过滤掉）", () => {

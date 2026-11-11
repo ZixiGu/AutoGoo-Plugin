@@ -77,7 +77,7 @@ export interface RecallOptions {
   /** 调用来源（plan/brainstorm/subagent/manual），用于观测归类 */
   source?: string;
   /**
-   * 只保留这些记忆层（如 ["L2","L3"]）。undefined 表示不过滤。
+   * 只保留这些记忆层（如 ["L0","L1"]）。undefined 表示不过滤。
    *
    * 分层原则（references/setup.md）：
    *   L0 原始日志 —— 不主动召回（噪音大）

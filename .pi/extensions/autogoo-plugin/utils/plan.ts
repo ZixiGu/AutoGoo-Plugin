@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { projectPlanPath, projectCurrentThreadPath, projectThreadsDir, projectThreadDir } from "./paths.js";
-import { DEFAULT_WIKI_PATHS_BY_STEP_TYPE, DEFAULT_MEMORY_LAYER_BY_STEP_TYPE } from "../constants.js";
+import { DEFAULT_WIKI_PATHS_BY_STEP_TYPE, DEFAULT_MEMORY_LAYER, DEFAULT_MEMORY_LAYER_BY_STEP_TYPE } from "../constants.js";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -359,7 +359,7 @@ export function buildDispatchPacket(
 
   // 3. memory_layer 默认值
   const memory_layer =
-    step.memory_layer || DEFAULT_MEMORY_LAYER_BY_STEP_TYPE[stepType] || "L2";
+    step.memory_layer || DEFAULT_MEMORY_LAYER_BY_STEP_TYPE[stepType] || DEFAULT_MEMORY_LAYER;
 
   return { wiki_paths, wiki_graph_packet_path, memory_layer };
 }

@@ -735,14 +735,27 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py --cached-onl
 归档笔记的 frontmatter 必须含 `memory_layer: L0|L1|L2|L3`。
 本节是**判定标准**，不只是定义 —— Recorder subagent 凭感觉填是这类字段失效的常见原因。
 
+### 编号方向：数字越大越原始
+
+与 CPU 缓存、TencentDB Agent Memory 一致：
+
+| 层 | 名称 | 内容 | 容量 | 访问频度 |
+| --- | --- | --- | --- | --- |
+| **L0** | 项目画像 | 项目入口、operations.md、跨项目元教训 | KB 级 | **最热**，启动必读 |
+| **L1** | 场景知识 | lessons、references、concepts、任务页 | MB 级 | **默认层** |
+| **L2** | 原子事实 | 提炼后的决策、指标、错误码 | GB 级 | 按需查证 |
+| **L3** | 原始记录 | step log、命令输出、execution/record.md | 大而冷 | 只做追溯 |
+
+> **历史**：0.27.0 之前方向是反的（L0=原始日志、L3=项目画像），
+> 与 CPU 缓存和命名来源 TencentDB 相反。已全量翻转 426 篇 wiki + 全部代码。
+> 迁移脚本 `--dry-run` 默认只预览，翻转两次即回滚。
+
 ### 两套规则，回答不同问题
 
 | 规则 | 回答 | 位置 | 用在 |
 | --- | --- | --- | --- |
 | 按 **step 类型** | 「这个任务**需要**什么层」 | `constants.ts` `DEFAULT_MEMORY_LAYER_BY_STEP_TYPE` | 召回（读） |
 | 按 **笔记路径** | 「这篇笔记**属于**什么层」 | `check-wiki-frontmatter.py` `LAYER_HINTS` | 归档（写） |
-
-两者不冲突：前者决定 subagent 读什么，后者决定笔记怎么标。
 
 ### 核心判据：离开当前任务后的复用价值
 
@@ -752,71 +765,68 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py --cached-onl
 
 | 层 | 复用形态 | 读者要它做什么 | 判据信号 |
 | --- | --- | --- | --- |
-| **L0** 原始记录 | 无复用，只有**追溯** | 「当时到底跑了什么命令 / 原始输出长什么样」 | 删掉上下文就没意义 |
-| **L1** 原子事实 | 查证**事实** | 「这个错误码是啥意思 / 那个指标当时的数值」 | 能独立看懂，但只对当时那个任务有意义 |
-| **L2** 场景知识 | 复用**方法** | 「这类问题该怎么处理」 | 能回答「遇到类似情况该怎么做」 |
-| **L3** 项目画像 | 提供**方向** | 「这个项目是什么、边界在哪、有哪些铁律」 | 新 Agent 进来必须先读否则会判断错 |
+| **L0** 项目画像 | 提供**方向** | 「这个项目是什么、边界在哪、有哪些铁律」 | 新 Agent 进来必须先读，否则会判断错 |
+| **L1** 场景知识 | 复用**方法** | 「这类问题该怎么处理」 | 能回答「遇到类似情况该怎么做」 |
+| **L2** 原子事实 | 查证**事实** | 「这个错误码是啥意思 / 当时那个指标是多少」 | 能独立看懂，但只对当时那个任务有意义 |
+| **L3** 原始记录 | 无复用，只有**追溯** | 「当时到底跑了什么命令 / 原始输出长什么样」 | 删掉上下文就没意义 |
 
 ### 每层的具体载体
 
-**L0 —— 原始记录**
+**L0 —— 项目画像**
+
+- 项目入口 `wiki/projects/<slug>.md`（`type: project`）
+- `operations.md`（运维手册）
+- **跨项目通用**的元级教训（如 `lessons/silent-failure-pattern.md`）
+- `CLAUDE.md` 里的项目约定
+
+**L1 —— 场景知识**
+
+- `lessons/`（踩了什么坑，下次怎么避）
+- `references/`（技术调研、架构分析）
+- `concepts/`（可复用的概念定义）
+- 有分析价值的任务页（多数 `tasks/task-*.md`，实测 301:77 偏 L1）
+
+**L2 —— 原子事实**
+
+- 已提炼成可独立理解的单个事实：「`--compact` 参数不存在导致 exit 2」
+- 短小的修复记录（如 `tasks/task-*-status-bar-auto-refresh.md`）
+- `tasks/<x>/execution/` 下提炼后的结论
+
+**L3 —— 原始记录**
 
 - step log、原始命令输出、未脱敏 transcript
 - `raw/thoughts/`、`journal/daily|weekly`
 - `tasks/<x>/execution/record.md`（执行流水原文）
 - `tasks/<x>/execution/evidence-index.md`（证据索引，仍是原始材料）
 
-**L1 —— 原子事实**
-
-- 已提炼成可独立理解的单个事实：「`--compact` 参数不存在导致 exit 2」
-- 短小的修复记录（如 `tasks/task-*-status-bar-auto-refresh.md`）
-- `tasks/<x>/execution/` 下提炼后的结论
-
-**L2 —— 场景知识**
-
-- `lessons/`（踩了什么坑，下次怎么避）
-- `references/`（技术调研、架构分析）
-- `concepts/`（可复用的概念定义）
-- 有分析价值的任务页（多数 `tasks/task-*.md`，实测 14:4 偏 L2）
-
-**L3 —— 项目画像**
-
-- 项目入口 `wiki/projects/<slug>.md`（`type: project`）
-- `operations.md`（运维手册）
-- **跨项目通用**的元级教训（如 `lessons/silent-failure-pattern.md`）
-
-> ⚠️ L3 最容易误判：`lessons/` 默认是 L2，只有当一条教训适用于**任何项目**
-> （如「配置项存在 ≠ 有人消费」）时才升格为 L3。
-
 ### 两种常见误判
 
 **误判 1：把长文档当高层**
 
 `references/memory-systems/tencentdb-agent-memory.md` 有 16KB、10 个章节，
-但它是 `references/` → **L2**，不是 L3。**长度 ≠ 层级**，看的是复用形态。
+但它是 `references/` → **L1**，不是 L0。**长度 ≠ 层级**，看的是复用形态。
 
-**误判 2：把 `execution/` 全判成 L1**
+**误判 2：把 `execution/` 全判成 L2**
 
 ```
-tasks/x/execution/record.md          → L0（执行流水原文）
-tasks/x/execution/evidence-index.md  → L0（证据索引）
-tasks/x/execution/summary.md         → L1（提炼后的结论）
+tasks/x/execution/record.md          → L3（执行流水原文）
+tasks/x/execution/evidence-index.md  → L3（证据索引）
+tasks/x/execution/summary.md         → L2（提炼后的结论）
 ```
 
 区别在于**有没有被提炼过**。
 
 ### 自动推断的边界（路径规则只覆盖 91%）
 
-`check-wiki-frontmatter.py --suggest` 按路径推断，当前实测
-**68 一致 / 7 冲突 = 9% 冲突**（修正前是 39%，因为规则曾把
-`execution/*` 全判 L1、`tasks/*` 全判 L2）。
+`check-wiki-frontmatter.py --suggest` 按路径推断，实测
+**68 一致 / 7 冲突 = 9% 冲突**。
 
 剩余冲突都是路径推断不了的语义边界：
 
 | 实际 | 推断 | 典型文件 | 原因 |
 | --- | --- | --- | --- |
-| L1 | L2 | `tasks/task-*-status-bar-auto-refresh.md` | 短修复记录，只有事实价值 |
-| L3 | L2 | `lessons/silent-failure-pattern.md` | 跨项目通用教训，需人工升格 |
+| L2 | L1 | `tasks/task-*-status-bar-auto-refresh.md` | 短修复记录，只有事实价值 |
+| L0 | L1 | `lessons/silent-failure-pattern.md` | 跨项目通用教训，需人工升格 |
 
 **结论：路径规则只是兜底，语义判断优先。冲突时必须人工定，不要盲从 `--suggest`。**
 
@@ -831,27 +841,26 @@ python3 skills/auto-goo/scripts/check-wiki-frontmatter.py --audit ~/workspace/Go
 python3 skills/auto-goo/scripts/check-wiki-frontmatter.py --suggest <file.md>
 ```
 
-### 召回时层怎么用：声明层是下限
+### 召回时层怎么用：声明层是下限（最深层），向 L0 补齐
 
-`expandLayerRange()`（`utils/dispatch.ts`）把 step 声明的层**向抽象方向展开**：
+`expandLayerRange()`（`utils/dispatch.ts`）：
 
 ```
-step 声明 L0 → 召回 [L0, L1, L2, L3]   追溯原始，但需要全栈上下文
-step 声明 L1 → 召回 [L1, L2, L3]
-step 声明 L2 → 召回 [L2, L3]           ← 默认
-step 声明 L3 → 召回 [L3]
+step 声明 L0 → 召回 [L0]                只要项目画像
+step 声明 L1 → 召回 [L0, L1]            ← 默认：场景知识 + 项目画像
+step 声明 L2 → 召回 [L0, L1, L2]        查事实，需要场景与画像
+step 声明 L3 → 召回 [L0, L1, L2, L3]    追溯原始，但需要全栈上下文
 ```
 
-**为什么不硬过滤成单一层**：`audit` 声明 L0（原始 trace），若只返回 L0 页面，
-subagent 会拿到一堆没有上下文的原始日志，反而更难完成任务 ——
-理解原始记录需要 L1/L2 的事实与场景，也需要 L3 的方向感。
+**为什么补齐而不是只取单层**：`audit` 声明 L3（原始 trace），若只返回 L3 页面，
+subagent 会拿到一堆没有上下文的原始日志 —— 理解原始记录需要 L1/L2 的事实
+与场景，也需要 L0 的项目方向感。
 
-**反方向必须截断**：`exec` 声明 L2 不该被 L0 噪音稀释。这正是该字段的用途。
+**反方向必须截断**：`exec` 声明 L1 不该被 L3 原始日志稀释。这正是该字段的用途。
 
 **未标层页面降权**：存量约半数笔记没填 `memory_layer`，
 `--exclude-unlabeled` 默认关闭（硬丢会让召回凭空少一半）；
-开启 `--layer` 时未标页面得分 × 0.8（`UNLABELED_WEIGHT`），
-标注过的优先，未标的仍有机会。
+开启 `--layer` 时未标页面得分 × 0.8（`UNLABELED_WEIGHT`）。
 
 ### 这条规则曾经完全失效
 
@@ -859,7 +868,7 @@ subagent 会拿到一堆没有上下文的原始日志，反而更难完成任�
 
 - `grep -rn "memory_layer" skills/auto-goo/scripts/*.py` → **无输出**
 - 843 篇 wiki 中仅 423 篇填了（50%）
-- L3 项目画像仅 11 篇，且 `autogoo-plugin` 项目自己 **L3 = 0**
+- L0 项目画像仅 11 篇，且 `autogoo-plugin` 项目自己 **L0 = 0**
 - 召回不支持按层过滤 → 填了也没人用
 - 派发路径算出了 `packet.memory_layer` 却**从未传给 `--layer`**
 
@@ -872,7 +881,7 @@ subagent 会拿到一堆没有上下文的原始日志，反而更难完成任�
 | --- | --- |
 | 写 | `check-wiki-frontmatter.py --check` 拒绝缺失/非法值 |
 | 读 | `--layer` 过滤 + `expandLayerRange` 下限展开 |
-| 防回归 | `check-plugin.sh` §36（机制存在）/ §38（派发路径有消费点） |
+| 防回归 | `check-plugin.sh` §36（机制存在）/ §38（派发路径有消费点）/ §39（判据可达） |
 
 ## goo.md 归档原则与 agent 指针
 

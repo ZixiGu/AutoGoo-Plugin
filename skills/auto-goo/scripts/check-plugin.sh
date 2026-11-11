@@ -3378,10 +3378,10 @@ if [[ -f "$WFM" ]]; then
   mkdir -p "$_tmp/wiki/projects"
   printf -- '---\ntitle: X\ntype: project\n---\n' > "$_tmp/wiki/projects/x.md"
   _l3=$(python3 "$WFM" --suggest "$_tmp/wiki/projects/x.md" 2>/dev/null)
-  if [[ "$_l3" == "L3" ]]; then
-    pass "层级推断：项目入口判为 L3"
+  if [[ "$_l3" == "L0" ]]; then
+    pass "层级推断：项目入口判为 L0（最热层，启动必读）"
   else
-    fail "层级推断错误：项目入口应为 L3，实际 '$_l3'"
+    fail "层级推断错误：项目入口应为 L0，实际 '$_l3'"
   fi
   rm -rf "$_tmp"
 fi
@@ -3464,7 +3464,7 @@ else
 fi
 
 PROMPTS="$ROOT/.pi/extensions/autogoo-plugin/utils/prompts.ts"
-if grep -q "三个月后另一个任务" "$PROMPTS" && grep -q "L0 原始记录" "$PROMPTS"; then
+if grep -q "三个月后另一个任务" "$PROMPTS" && grep -q "L0 项目画像" "$PROMPTS"; then
   pass "Recorder role prompt 已内联判定标准"
 else
   fail "Recorder prompt 未内联判定标准 —— subagent 不会主动去读 setup.md"
@@ -3475,6 +3475,35 @@ if grep -q "记忆分层（memory_layer）判定标准" "$ROOT/skills/auto-goo/S
   pass "SKILL.md 指向 setup.md 判定标准（单一事实源）"
 else
   fail "SKILL.md 未指向判据 —— 两处定义会漂移"
+fi
+
+# ── 40. 记忆层编号方向必须与存储层级一致 ──
+# 回归：本项目曾把 L0 定义成「原始日志」（最冷），L3 定义成「项目画像」（最热），
+# 与 CPU 缓存、与命名来源 TencentDB Agent Memory 的方向完全相反 ——
+# 读者按「L0 最优先」的直觉必然填反。已于 0.27.0 全量翻转。
+echo ""
+echo "── 40. 记忆层编号方向 ──"
+
+CONST="$ROOT/.pi/extensions/autogoo-plugin/constants.ts"
+# L0 = 项目画像（最热）；exec/research 等默认层必须是 L1（场景知识）
+if grep -q 'export const DEFAULT_MEMORY_LAYER = "L1"' "$CONST"; then
+  pass "默认层为 L1（场景知识），不是 L2"
+else
+  fail "默认层不是 L1 —— 编号方向可能又被改回去了"
+fi
+
+# audit 需要原始 trace → 必须声明 L3（最冷），不能是 L0
+if grep -qE '^\s*audit: "L3"' "$CONST"; then
+  pass "audit step 声明 L3（原始 trace）"
+else
+  fail "audit step 未声明 L3 —— 层语义可能被反转"
+fi
+
+# 项目入口在 wiki 里应标 L0
+if grep -qE "^memory_layer: L0" "$HOME/workspace/Goo-wiki/wiki/projects/autogoo-plugin.md" 2>/dev/null; then
+  pass "项目入口 frontmatter 为 L0（最热层）"
+else
+  warn "项目入口未标 L0（wiki 可能未迁移或路径不同）"
 fi
 
 # ── 结果汇总 ──

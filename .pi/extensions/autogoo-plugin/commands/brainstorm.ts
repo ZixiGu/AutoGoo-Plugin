@@ -84,7 +84,7 @@ async function recallWikiContext(
   cwd: string,
   direction: string,
 ): Promise<{ sources: string[]; knowledge: string[] }> {
-  const result = await recallWiki(cwd, direction, { source: "brainstorm", layers: ["L3", "L2"] });
+  const result = await recallWiki(cwd, direction, { source: "brainstorm", layers: ["L0", "L1"] });
   return {
     sources: result.hits.map((h) => h.path),
     knowledge: result.hits.map((h) => `${h.title}${h.headings.length ? `（${h.headings[0]}）` : ""}`),

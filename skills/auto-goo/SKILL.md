@@ -1,7 +1,7 @@
 ---
 name: goo-workflow
 description: "Use when the user says '/auto-goo:goo-init', '/auto-goo:goo-brainstorm', '/auto-goo:goo-plan', '/auto-goo:goo-start', '/auto-goo:goo-research', '/auto-goo:goo-daily-report', '/auto-goo:goo-usage', '/auto-goo:goo-usage-analyse', '/auto-goo:goo-observe', '/auto-goo:goo-publish', '找目标', '开始任务', 'run:', '日报', '周报', 'usage', 'token统计', 'token降本', '后台观察', '发布HTML', '自改进', or gives a goal-clear multi-step task that can be decomposed into sub-tasks. Runs Goo workflow: config init, wiki-based brainstorm, wiki recall, DAG planning, subagent execution, research material archiving, status/observe, HTML publishing, optimization, Goo-wiki archiving, usage monitor, usage cost analysis, daily reports, and plugin self-improvement. Compatible with Claude Code and Codex."
-version: 0.26.2
+version: 0.27.0
 tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent, wait_agent, request_user_input]
 ---
 
@@ -55,19 +55,26 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 
 ## 记忆分层原则(Memory Layering)
 
-**原则**：Subagent prompt、归档笔记和 wiki 页面应显式区分 L0/L1/L2/L3 四层记忆；检索时先 L2/L3 引导，具体事实回退 L1。
+**原则**：Subagent prompt、归档笔记和 wiki 页面应显式区分 L0/L1/L2/L3 四层记忆；检索时先 L0/L1 引导，具体事实回退 L2，L3 仅追溯。
 
-层级定义：
-- **L0 — 原始记录**：`.goo/logs/` 下的 step log、原始命令输出、未脱敏的 transcript。**不进入 Subagent 默认上下文**。
-- **L1 — 原子事实**：从 step 产物中提炼的关键决策、指标、命令、错误码；放在 step 报告的 "关键决策" 段。
-- **L2 — 场景知识**：任务页、lessons、references，跨任务可复用的判断和方法。**Subagent 默认读取的层级**。
-- **L3 — 项目画像**：项目入口 `<project-slug>.md`、`wiki/projects/<slug>/lessons/` 高频经验、CLAUDE.md 的项目约定。**主 Agent 启动时读取（作为方向感），Subagent 按 loadout 决定是否读**。
+层级定义 — **数字越大越原始，与 CPU 缓存 / TencentDB Agent Memory 的 L0→L3 方向一致**：
+
+| 层 | 名称 | 内容 | 容量 | 访问频度 |
+| --- | --- | --- | --- | --- |
+| **L0** | 项目画像 | 项目入口 `<slug>.md`、`operations.md`、跨项目元教训、CLAUDE.md 项目约定 | KB 级 | **最热**：主 Agent 启动必读 |
+| **L1** | 场景知识 | 任务页、lessons、references、concepts，跨任务可复用的判断与方法 | MB 级 | **默认层**：Subagent 默认读取 |
+| **L2** | 原子事实 | 从 step 产物提炼的关键决策、指标、命令、错误码 | GB 级 | 按需查证 |
+| **L3** | 原始记录 | `.goo/logs/` step log、原始命令输出、未脱敏 transcript、`execution/record.md` | 大而冷 | 只做 trace/audit |
+
+> 历史说明：早期版本的编号方向是反的（L0=原始日志、L3=项目画像），
+> 与 CPU 缓存和命名来源 TencentDB 相反，已于 0.27.0 全量翻转。
+> 若看到旧笔记里 "L0 原始日志" 的说法，那是旧语义。
 
 规则：
 1. 归档笔记的 YAML frontmatter 必须含 `memory_layer: L0|L1|L2|L3` 字段，便于检索时按层级过滤。
-2. 检索策略：主 Agent 启动先读 L3 项目入口作为方向感；L2 相关任务页/lessons 的召回由 collector（wiki-gatherer）采集并回传 evidence packet，主模型不亲自 grep/glob 全量 wiki；具体事实必要时回退 L1 step 决策；**Subagent 默认只看 L2，除非 plan 显式要求 L1**。
-3. L0 原始日志只用于 trace/audit，经 recorder 提炼为 L1/L2 后才进入 wiki。
-4. 项目入口 `<project-slug>.md` 显式标注自身为 L3，作为 wiki 的最高抽象层。
+2. 检索策略：主 Agent 启动先读 **L0 项目入口**作为方向感；L1 相关任务页/lessons 的召回由 collector（wiki-gatherer）采集并回传 evidence packet，主模型不亲自 grep/glob 全量 wiki；具体事实必要时回退 L2 step 决策；**Subagent 默认只看 L1，除非 plan 显式要求 L2**。
+3. L3 原始日志只用于 trace/audit，经 recorder 提炼为 L1/L2 后才进入 wiki。
+4. 项目入口 `<project-slug>.md` 显式标注自身为 **L0**，作为 wiki 的最高抽象层（最热）。
 5. Recorder 在归档时必须判断并填写 `memory_layer`，不得留空。
 
 **判定标准见 `references/setup.md` 的「记忆分层（memory_layer）判定标准」**，要点：

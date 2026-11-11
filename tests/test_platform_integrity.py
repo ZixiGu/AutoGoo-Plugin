@@ -128,7 +128,7 @@ def test_wiki_frontmatter_script_exists_and_runs():
             capture_output=True, text=True, timeout=60,
         )
         assert r.returncode == 0, r.stderr
-        assert r.stdout.strip() == "L3", f"项目入口应建议 L3，实际 {r.stdout.strip()}"
+        assert r.stdout.strip() == "L0", f"项目入口应建议 L0（最热层），实际 {r.stdout.strip()}"
 
         # --check：缺 memory_layer 必须失败
         r = subprocess.run(
@@ -140,7 +140,7 @@ def test_wiki_frontmatter_script_exists_and_runs():
 
         # 补上后应当通过
         entry.write_text(
-            "---\ntitle: Demo\ntype: project\nmemory_layer: L3\n---\n\n# Demo\n",
+            "---\ntitle: Demo\ntype: project\nmemory_layer: L0\n---\n\n# Demo\n",
             encoding="utf-8",
         )
         r = subprocess.run(

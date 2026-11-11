@@ -325,14 +325,29 @@ export const DEFAULT_WIKI_PATHS_BY_STEP_TYPE: Record<string, string[]> = {
 /**
  * 默认 memory_layer 表 — 按 step.type 给默认层级。
  */
+/**
+ * step 类型 -> 该 step 需要的**最深**记忆层（声明层 = 下限）。
+ *
+ * 层语义（数字越大越原始，与 CPU 缓存 / TencentDB Agent Memory 一致）：
+ *   L0 profile    项目画像      KB 级，启动必读      ← 最热
+ *   L1 knowledge  场景知识      MB 级，默认读取
+ *   L2 fact       原子事实      GB 级，按需查证
+ *   L3 raw        原始记录      大而冷，只做追溯      ← 最冷
+ *
+ * 注意：历史上前四个 step 声明的是 "L2"（旧语义 L2=场景知识）。
+ * 方向修正后场景知识是 L1，所以这里同步改成 L1。
+ */
+/** 默认记忆层（场景知识）。集中定义，避免散落的 "L1" 字面量漂移。 */
+export const DEFAULT_MEMORY_LAYER = "L1";
+
 export const DEFAULT_MEMORY_LAYER_BY_STEP_TYPE: Record<string, string> = {
-  research: "L2",
-  exec: "L2",
-  optimize: "L2",
-  eval: "L2",
-  review: "L1",
-  audit: "L0",
-  archive: "L2",  // archive 步骤需要全栈但默认 L2 即可
+  research: "L1",   // 场景知识即可
+  exec: "L1",
+  optimize: "L1",
+  eval: "L1",
+  review: "L2",     // 需要具体事实
+  audit: "L3",      // 需要原始 trace（展开后覆盖全层）
+  archive: "L1",
 };
 
 export const AUTOGOO_PLUGIN_SYSTEM_PROMPT = `

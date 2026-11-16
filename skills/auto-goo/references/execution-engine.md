@@ -47,6 +47,15 @@ Subagent 只对被分配的步骤负责，不能改写整体计划、扩大任�
 
 Evidence-Packet 协议：分析型 Subagent（researcher / evaluator / auditor）回传的 packet 至少应含 `purpose`、`findings[]`（每项 `claim`/`evidence_path`/`confidence`）、`change_list[]`（每项 `target`/`action`/`why`/`detail`），紧凑供主模型直接综合，避免回传全文。
 
+packet 落盘后由 evaluator 跑一次形状校验，避免主模型拿到散文式 packet 后漏读证据：
+
+```bash
+python3 skills/auto-goo/scripts/packet-validate.py .goo/threads/<id>/artifacts/<step>-packet.json
+# 评审型 packet（必须给出可执行改动清单）加 --require-change-list
+```
+
+校验项：`purpose` 非空、`findings[]` 非空且三项齐全、`evidence_path` 是可追溯路径（不是「见聊天记录」）、`confidence` 为 0~1 数字或 `high`/`medium`/`low`、`change_list[]` 存在时每项 `target`/`action`/`why` 齐全（`detail` 缺失只告警）；拼错的字段名会作为未知字段告警。
+
 ## 权限分层
 
 AutoGoo-Plugin 的权限交互由主 Agent 统一处理，后台 Subagent 不做平凡 approval 弹窗。
@@ -454,7 +463,7 @@ fi
   - 默认 L2 层:`wiki/projects/<project-slug>/{tasks,lessons,references}/**`;L3 项目入口按需。
   - 主 Agent 已在派发前用 `wiki-graph-assist.py` 生成紧凑 graph packet,路径见 `{wiki_graph_packet_path}`;优先用它代替自行 grep/glob 全量扫描。
 - 单次 Read/Grep 受**字符预算 (< 20k) + 超时 (< 30s)** 双重约束;超出时优先 `Read` + `limit/offset` 或 `Grep -n`,不跳级 Read 全文。
-- `memory_layer` 默认 L2(场景知识);L0 原始日志、L3 项目画像只按 step 显式需要才读。
+- `memory_layer` 默认 L2(场景知识);L0 原始日志、L3 项目总览只按 step 显式需要才读。
 - 跨 step 引用用 `[[Wikilink]]` 按需点开;不要 Read 整篇 wiki 笔记。
 
 ## 权限处理
@@ -593,7 +602,7 @@ python3 "$auto_goo_root/skills/auto-goo/scripts/update-step.py" --plan .goo/thre
        step = ready_queue.pop(0)
        → 检查 step.subagent 是否合法
          → 合法: 按 step.subagent 读取 agents/roles/<role>.md，再按 step.task_agent 读取 agents/tasks/<department>/<task>.md，合成 Subagent Prompt 后启动 Agent (run_in_background；mode=worktree 且 HEAD 可解析时传 isolation="worktree"，mode=none 不传 isolation；mode=none 若仍触发 HEAD 解析失败则记录 compatibility.agent_requires_git_head 并阻塞，不再 probe)
-         → subagent 或 task_agent 不合法/缺失: 暂停派发，先修正 plan 或创建新角色/任务画像
+         → subagent 或 task_agent 不合法/缺失: 暂停派发，先修正 plan 或创建新角色/任务细分
        → 主 Agent 先调用 `thread-locks.py check-plan --plan <thread-plan>`，无冲突后调用 `thread-locks.py acquire-plan --plan <thread-plan>` 获取写资源锁，再调用 `update-step.py --start --progress 5 --agent-id <agent>` 写入 status、started_at、首个 heartbeat_at 和 step log
        → 调用 `goo-status.py --update-status` 后运行 `goo-status.py`，向用户展示 RUNNING 心跳摘要
        → 等待 3-5s（错峰）

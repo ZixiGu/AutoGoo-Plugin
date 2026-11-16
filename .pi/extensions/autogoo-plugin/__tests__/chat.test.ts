@@ -58,7 +58,9 @@ function setThreadIn(dir: string, threadId: string | null) {
   } else {
     try {
       rmSync(join(dir, ".goo", "current_thread.json"), { force: true });
-    } catch {}
+    } catch {
+      /* 测试夹具：文件本来就不存在时 rmSync 也可能报错，无需处理 */
+    }
   }
 }
 

@@ -998,7 +998,7 @@ code {
       <section class="page-title">
         <div>
           <h2>子代理角色图</h2>
-          <p>调整为稳定角色到 task_agent 画像的列式映射，突出执行加载契约。</p>
+          <p>调整为稳定角色到 task_agent 细分的列式映射，突出执行加载契约。</p>
         </div>
         <div class="live-pill"><span class="live-dot"></span><span id="liveClock">状态加载中</span></div>
       </section>
@@ -1010,11 +1010,11 @@ code {
   <div class="panel-head">
     <div>
       <h3>子代理角色图</h3>
-      <span>稳定角色在上，task_agent 画像在角色列内，避免和 available_skills 混用。</span>
+      <span>稳定角色在上，task_agent 细分在角色列内，避免和 available_skills 混用。</span>
     </div>
-    <span class="status running">角色 / 画像映射</span>
+    <span class="status running">角色 / 任务映射</span>
   </div>
-  <div class="flow-scroll" aria-label="子代理角色与任务画像映射">
+  <div class="flow-scroll" aria-label="子代理角色与任务细分映射">
     <div class="subagent-board">
       <div class="role-column searchable">
         <h4>collector</h4>
@@ -1047,13 +1047,13 @@ code {
 </section>
 
   <section class="panel">
-    <div class="panel-head"><h3>执行加载契约</h3><span>角色文件 + 任务画像文件</span></div>
+    <div class="panel-head"><h3>执行加载契约</h3><span>角色文件 + 细分任务文件</span></div>
     <div class="table-scroll">
       <table class="workflow-table">
         <thead><tr><th>概念</th><th>来源</th><th>在计划中的含义</th></tr></thead>
         <tbody>
           <tr class="searchable"><td><code>subagent</code></td><td><code>agents/roles/&lt;role&gt;.md</code></td><td>稳定角色，如 researcher、collector、implementer、recorder。</td></tr>
-          <tr class="searchable"><td><code>task_agent</code></td><td><code>agents/tasks/&lt;department&gt;/&lt;task&gt;.md</code></td><td>角色下的细分任务画像，如 codebase-scout。</td></tr>
+          <tr class="searchable"><td><code>task_agent</code></td><td><code>agents/tasks/&lt;department&gt;/&lt;task&gt;.md</code></td><td>角色下的细分任务，如 codebase-scout。</td></tr>
           <tr class="searchable"><td><code>available_skills</code></td><td>本地 skill allowlist</td><td>只限制可用技能，不替代 task_agent。</td></tr>
         </tbody>
       </table>

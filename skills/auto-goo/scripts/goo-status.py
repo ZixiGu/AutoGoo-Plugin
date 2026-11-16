@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from _paths import (
     compute_plan_status,
+    derive_plan_timestamps,
     dump_json,
     find_config_dir,
     load_json,
@@ -183,19 +184,22 @@ def main() -> int:
     now = datetime.now(timezone.utc)
 
     # Auto-update plan status if requested
+    # 时间戳单一事实源 = 步骤级 started_at/completed_at；plan 时间窗口一律派生，
+    # 不能再写 wall-clock now（否则重同步会把 started_at 推晚于步骤起始，算出负耗时）。
+    repaired: dict[str, dict[str, Any]] = {}
     if args.update_status:
-        old_status = data.get("status")
         new_status = compute_plan_status(data)
-        if old_status != new_status:
-            data["status"] = new_status
-            if new_status == "running" and not data.get("started_at"):
-                data["started_at"] = now.isoformat().replace("+00:00", "Z")
-            if new_status in ("completed", "failed"):
-                data["completed_at"] = now.isoformat().replace("+00:00", "Z")
-            elif old_status == "completed":
-                # 状态从 completed 回退(重新打开步骤)时清除旧的完成时间
-                data["completed_at"] = None
-            dump_json(plan_path, data)
+        data["status"] = new_status
+        if new_status not in ("completed", "failed"):
+            # 非终态时清掉遗留的 completed_at：否则 plan 窗口早于最后一步完成，
+            # 耗时会算出偏小甚至为负的值。
+            data["completed_at"] = None
+        repaired = derive_plan_timestamps(data)
+        if new_status == "running" and not data.get("started_at"):
+            data["started_at"] = now.isoformat().replace("+00:00", "Z")
+        if new_status in ("completed", "failed") and not data.get("completed_at"):
+            data["completed_at"] = now.isoformat().replace("+00:00", "Z")
+        dump_json(plan_path, data)
         sync_thread_status(plan_path)
 
     total = len(steps)
@@ -225,6 +229,10 @@ def main() -> int:
     notices = []
     if stored_plan_status and stored_plan_status != plan_status:
         notices.append(f"plan 顶层 status={stored_plan_status} 与步骤状态推导={plan_status} 不一致；可用 --update-status 修正")
+    for field, change in (repaired or {}).items():
+        notices.append(
+            f"plan.{field} 与步骤时间线不一致，已按步骤派生重算: {change.get('old')} → {change.get('new')}"
+        )
     missing_completed_logs = 0
     if not logs_dir.exists():
         active_traceable = [s for s in steps if status_of(s) in LOG_REQUIRED_STATUSES]

@@ -1088,7 +1088,7 @@ code {
       <dt>acceptance_criteria</dt><dd><ul class="detail-list"><li>每个候选目标展示 why、expected_output、acceptance_criteria、evidence、risk。</li><li>Plan step 展示 depends_on、subagent、task_agent、inputs、outputs、validation、allowed paths。</li><li>长路径和嵌套字段不溢出。</li></ul></dd>
       <dt>evidence</dt><dd><ul class="detail-list"><li>用户明确要求“头脑风暴和计划展示的信息一定要完整详细”。</li><li>Plan 是执行阶段的源文件，不能依赖主会话记忆。</li></ul></dd>
       <dt>risk</dt><dd>字段过多会降低扫读效率，需要分组和紧凑布局。</dd>
-      <dt>prerequisites</dt><dd>确认 AutoGoo-Plugin step contract：subagent 是稳定角色，task_agent 是具体任务画像。</dd>
+      <dt>prerequisites</dt><dd>确认 AutoGoo-Plugin step contract：subagent 是稳定角色，task_agent 是具体任务细分。</dd>
       <dt>readiness_checklist</dt><dd><ul class="detail-list"><li>读取现有模板。</li><li>同步脚本生成页和静态模板。</li><li>运行插件自检。</li></ul></dd>
       <dt>first_step</dt><dd>更新 publish 模板中的 Brainstorm/Plan 示例结构。</dd>
     </dl>

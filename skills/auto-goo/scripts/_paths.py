@@ -44,6 +44,34 @@ def stamp() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
+def parse_iso(value: Any) -> datetime | None:
+    """Parse an ISO-8601 timestamp into an aware UTC datetime.
+
+    Returns None for empty/garbage values instead of raising, because plan
+    files written by older versions (or by hand) contain nulls and stray
+    strings; callers want to *skip* those, not crash the whole render.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def format_iso(moment: datetime) -> str:
+    """Format an aware datetime the way plan.json stores timestamps (…Z)."""
+    return moment.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 # ── JSON I/O ─────────────────────────────────────────────────────────────────
 
 def load_json(path: Path, default: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -254,3 +282,51 @@ def compute_plan_status(plan: dict[str, Any]) -> str:
     if any(s.get("status") == "failed" for s in steps):
         return "failed"
     return "pending"
+
+
+# 终态：之后不会再产生新的时间戳，plan 完成时间可以安全派生
+TERMINAL_STEP_STATUSES = frozenset({"completed", "failed"})
+
+
+def derive_plan_timestamps(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Recompute plan-level ``started_at`` / ``completed_at`` from step timestamps.
+
+    Single source of truth = the step timestamps themselves (written exactly
+    once, by update-step.py, at the moment a step really transitions).
+    Plan-level timestamps are *derived* values:
+
+    * ``plan.started_at``   = earliest ``step.started_at``
+    * ``plan.completed_at`` = latest ``step.completed_at`` when every step is terminal
+
+    Why this exists: the plan-level fields used to be stamped by whichever
+    writer happened to flip ``plan.status`` to ``running``
+    (update-step.py + goo-status.py ``--update-status``) using wall-clock
+    ``now``. Whenever a plan got re-synced/re-opened later, that stamped a
+    time *after* the steps had finished, so ``completed_at - started_at``
+    turned negative (measured: -465 min on 2026-08-04-memory-system-design).
+    Deriving the window from steps makes it an envelope of real work and
+    keeps it stable no matter how often status is recomputed.
+
+    Nothing is fabricated: fields are only rewritten when a step timestamp
+    exists to derive them from, and only the two schema fields above are
+    touched. Returns ``{field: {"old": ..., "new": ...}}`` for auditing.
+    """
+    changes: dict[str, dict[str, Any]] = {}
+    steps = [s for s in plan.get("steps", []) if isinstance(s, dict)]
+    starts = [t for t in (parse_iso(s.get("started_at")) for s in steps) if t]
+    ends = [t for t in (parse_iso(s.get("completed_at")) for s in steps) if t]
+
+    if starts:
+        derived_start = format_iso(min(starts))
+        if plan.get("started_at") != derived_start:
+            changes["started_at"] = {"old": plan.get("started_at"), "new": derived_start}
+            plan["started_at"] = derived_start
+
+    all_terminal = bool(steps) and all(s.get("status") in TERMINAL_STEP_STATUSES for s in steps)
+    if all_terminal and ends:
+        derived_end = format_iso(max(ends))
+        if plan.get("completed_at") != derived_end:
+            changes["completed_at"] = {"old": plan.get("completed_at"), "new": derived_end}
+            plan["completed_at"] = derived_end
+
+    return changes

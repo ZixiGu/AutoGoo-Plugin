@@ -3,7 +3,7 @@
 AutoGoo-Plugin 采用两级 agent 组织：
 
 - **Role Agent**：稳定的主角色，出现在 `plan.json` 的 `subagent` 字段中，负责调度边界、权限边界和交付口径。
-- **Task Agent**：Role Agent 下的细分任务画像，出现在 `task_agent` 或步骤说明中，用于更精确地选择提示词、工具范围、验收重点和输出格式。
+- **Task Agent**：Role Agent 下的细分任务，出现在 `task_agent` 或步骤说明中，用于更精确地选择提示词、工具范围、验收重点和输出格式。
 
 这样可以保持现有执行引擎简单稳定，同时让 Main Agent 在具体任务上分派更专业的执行单元，例如 `reviewer/code-reviewer`、`researcher/document-analyst`、`evaluator/test-runner`、`auditor/evidence-auditor`。
 
@@ -170,7 +170,7 @@ graph TD
 
 1. **目标拆解**：解析用户任务，生成 `plan.json` DAG。
 2. **角色选择**：为每个步骤选择稳定的 Role Agent，写入 `subagent`。
-3. **任务画像选择**：为步骤补充更细的 Task Agent，写入 `task_agent` 或任务说明。
+3. **任务细分选择**：为步骤补充更细的 Task Agent，写入 `task_agent` 或任务说明。
 4. **槽位调度**：扫描就绪步骤，按优先级（扇出度 > 预估耗时 > 同层剩余数）派发。
 5. **错峰派发**：`MAX_CONCURRENT` 槽位内，间隔 5-10s 下发 agent。
 6. **心跳巡检**：每 30s 检查 running agent，超时 >= `heartbeat_timeout_min`（默认 15min）标记失败。
@@ -198,7 +198,7 @@ Main Agent
 ```
 
 - `subagent` 只放 Role Agent 名称，保持执行引擎和状态看板稳定。
-- `task_agent` 放细分任务画像，作为 prompt、工具、验收重点的选择依据。
+- `task_agent` 放细分任务，作为 prompt、工具、验收重点的选择依据。
 - Task Agent 不直接绕过 Role Agent 写计划状态；状态、心跳、日志仍按 Role Agent 的协议执行。
 - 新增 Task Agent 优先复用现有 Role Agent 文件，只有当提示词差异稳定且高频时，再拆成独立 `.md` agent 文件。
 - 对并发写文件敏感的任务，Main Agent 需要先划定文件范围，避免多个 Task Agent 同时改同一片区域。
@@ -298,7 +298,7 @@ Task Agent 是可选字段，不改变原有 `subagent` 的主调度语义：
 }
 ```
 
-适配旧计划时，如果没有 `task_agent`，Main Agent 可根据 `type`、`title`、`files`、`acceptance` 临时推断，但不应回写含糊的任务画像。
+适配旧计划时，如果没有 `task_agent`，Main Agent 可根据 `type`、`title`、`files`、`acceptance` 临时推断，但不应回写含糊的任务细分。
 
 ## 典型流水线
 

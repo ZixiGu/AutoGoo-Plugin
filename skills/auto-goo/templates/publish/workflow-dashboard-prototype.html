@@ -1112,7 +1112,7 @@ code {
 <section class="metrics" aria-label="工作流指标">
   <a class="metric-card searchable" href="workflow-brainstorm.html"><div class="metric-label">候选目标</div><div class="metric-value">5</div><div class="metric-trend up">等待用户审阅</div></a>
   <a class="metric-card searchable" href="workflow-plan.html"><div class="metric-label">计划步骤</div><div class="metric-value">8</div><div class="metric-trend">3 个运行中 · 2 个阻塞</div></a>
-  <a class="metric-card searchable" href="workflow-subagents.html"><div class="metric-label">子代理角色</div><div class="metric-value">7</div><div class="metric-trend up">29 个任务画像</div></a>
+  <a class="metric-card searchable" href="workflow-subagents.html"><div class="metric-label">子代理角色</div><div class="metric-value">7</div><div class="metric-trend up">29 个细分任务</div></a>
   <a class="metric-card searchable" href="workflow-artifacts.html"><div class="metric-label">产物文件</div><div class="metric-value">24</div><div class="metric-trend down">3 个待归档</div></a>
   <a class="metric-card searchable" href="workflow-status.html"><div class="metric-label">心跳间隔</div><div class="metric-value">30s</div><div class="metric-trend">15 分钟判定过期</div></a>
 </section>
@@ -1206,7 +1206,7 @@ code {
       <div class="panel-head"><h3>执行告警</h3><span>3 个需要处理</span></div>
       <div class="alert-list">
         <div class="alert danger searchable"><strong>心跳过期</strong><p>步骤 #3 心跳时间超过 heartbeat_timeout_min。</p></div>
-        <div class="alert searchable"><strong>缺少任务画像</strong><p>步骤 #5 只有 subagent=recorder，缺少 task_agent。</p></div>
+        <div class="alert searchable"><strong>缺少细分任务</strong><p>步骤 #5 只有 subagent=recorder，缺少 task_agent。</p></div>
         <div class="alert searchable"><strong>等待归档</strong><p>brainstorm、plan、execution 尚未写入同一个 task_archive_root。</p></div>
       </div>
     </section>
@@ -1247,7 +1247,7 @@ code {
       "2026-03-12": [{ text: "补齐 plan 步骤状态展示", tokens: 18420 }, { text: "整理前台日志摘要", tokens: 7210 }],
       "2026-03-23": [{ text: "检查 workflow 原型信息架构", tokens: 15560 }, { text: "同步运行状态字段", tokens: 6320 }],
       "2026-04-08": [{ text: "更新 dashboard 总览指标", tokens: 20340 }, { text: "补充 artifact refs 展示", tokens: 9140 }],
-      "2026-04-11": [{ text: "新增 auditor 证据检查任务画像", tokens: 26780 }, { text: "同步 recorder 归档视图", tokens: 10520 }],
+      "2026-04-11": [{ text: "新增 auditor 证据检查任务细分", tokens: 26780 }, { text: "同步 recorder 归档视图", tokens: 10520 }],
       "2026-04-21": [{ text: "补充子代理角色映射", tokens: 22410 }, { text: "整理 task_agent 列展示", tokens: 8160 }],
       "2026-04-29": [{ text: "调整产物归档页面", tokens: 13900 }, { text: "验证日志尾部模板", tokens: 5980 }],
       "2026-05-08": [{ text: "梳理 workflow dashboard 的多页发布方向", tokens: 17480 }],

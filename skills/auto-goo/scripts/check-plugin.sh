@@ -357,7 +357,7 @@ done
 echo ""
 echo "── 6. 脚本文件 ──"
 
-SCRIPTS=("goo-init.sh" "init-plan.sh" "goo-status.py" "goo-observe.py" "update-step.py" "thread-state.py" "thread-locks.py" "goo-thread.py" "thread-doctor.py" "goo-plan-health.py" "goo-md.py" "goo-update-check.py" "bump-version.py" "change-requests.py" "brainstorm-validate.py" "wiki-graph-assist.py" "daily-report-sessions.py" "goo-usage.py" "goo-publish.py" "goo-ssh.sh" "remote-resources.py" "resolve-root.sh" "resolve-root.py" "session-start.py" "check-plugin.sh")
+SCRIPTS=("goo-init.sh" "init-plan.sh" "goo-status.py" "goo-observe.py" "update-step.py" "thread-state.py" "thread-locks.py" "goo-thread.py" "thread-doctor.py" "goo-plan-health.py" "goo-metrics.py" "goo-md.py" "goo-update-check.py" "bump-version.py" "change-requests.py" "brainstorm-validate.py" "wiki-graph-assist.py" "daily-report-sessions.py" "goo-usage.py" "goo-publish.py" "goo-ssh.sh" "remote-resources.py" "resolve-root.sh" "resolve-root.py" "session-start.py" "check-wiki-frontmatter.py" "doc-ref-check.py" "packet-validate.py" "goo-gc.py" "check-plugin.sh")
 for s in ${SCRIPTS[@]+"${SCRIPTS[@]}"}; do
   f="$ROOT/skills/auto-goo/scripts/$s"
   if [[ -f "$f" ]]; then
@@ -3464,7 +3464,7 @@ else
 fi
 
 PROMPTS="$ROOT/.pi/extensions/autogoo-plugin/utils/prompts.ts"
-if grep -q "三个月后另一个任务" "$PROMPTS" && grep -q "L0 项目画像" "$PROMPTS"; then
+if grep -q "三个月后另一个任务" "$PROMPTS" && grep -q "L0 项目总览" "$PROMPTS"; then
   pass "Recorder role prompt 已内联判定标准"
 else
   fail "Recorder prompt 未内联判定标准 —— subagent 不会主动去读 setup.md"
@@ -3478,14 +3478,14 @@ else
 fi
 
 # ── 40. 记忆层编号方向必须与存储层级一致 ──
-# 回归：本项目曾把 L0 定义成「原始日志」（最冷），L3 定义成「项目画像」（最热），
+# 回归：本项目曾把 L0 定义成「原始日志」（最冷），L3 定义成「项目总览」（最热），
 # 与 CPU 缓存、与命名来源 TencentDB Agent Memory 的方向完全相反 ——
 # 读者按「L0 最优先」的直觉必然填反。已于 0.27.0 全量翻转。
 echo ""
 echo "── 40. 记忆层编号方向 ──"
 
 CONST="$ROOT/.pi/extensions/autogoo-plugin/constants.ts"
-# L0 = 项目画像（最热）；exec/research 等默认层必须是 L1（场景知识）
+# L0 = 项目总览（最热）；exec/research 等默认层必须是 L1（场景知识）
 if grep -q 'export const DEFAULT_MEMORY_LAYER = "L1"' "$CONST"; then
   pass "默认层为 L1（场景知识），不是 L2"
 else
@@ -3504,6 +3504,373 @@ if grep -qE "^memory_layer: L0" "$HOME/workspace/Goo-wiki/wiki/projects/autogoo-
   pass "项目入口 frontmatter 为 L0（最热层）"
 else
   warn "项目入口未标 L0（wiki 可能未迁移或路径不同）"
+fi
+
+# ── 41. 文档引用一致性（脚本 / 命令零悬空）──
+# 回归：references/execution-engine.md:44 把 packet-validate.py 写成 evaluator 校验工具，
+# 但这脚本当时**并不存在** —— Subagent 会照着文档去调用一个永远找不到的文件，
+# 人工通读才能发现。同理 6 个 pi 独有 chat 命令没有 commands/*.md（平台能力差异，
+# 不是缺文档），必须在 README 里标注 pi 独有，否则 Claude Code 用户以为能直接用。
+echo ""
+echo "── 41. 文档引用一致性 ──"
+
+DOCREF="$ROOT/skills/auto-goo/scripts/doc-ref-check.py"
+
+if [[ -f "$DOCREF" ]] && PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/autogoo-plugin-check-pycache" python3 -m py_compile "$DOCREF" 2>/dev/null; then
+  pass "doc-ref-check.py 存在且可编译"
+else
+  fail "doc-ref-check.py 缺失或无法编译"
+fi
+
+if python3 "$DOCREF" --root "$ROOT" >/dev/null 2>&1; then
+  pass "文档中的 .py / goo-* 引用全部可解析（零悬空）"
+else
+  fail "文档存在悬空脚本/命令引用：跑 python3 skills/auto-goo/scripts/doc-ref-check.py 看明细"
+fi
+
+# 反向验证：扫描器自己必须能抓到注入的悬空引用，且示例词不误报
+if python3 "$DOCREF" --self-test >/dev/null 2>&1; then
+  pass "doc-ref-check 反向验证通过（注入悬空引用会报红，示例词零误报）"
+else
+  fail "doc-ref-check 反向验证失败：扫描器漏报或误报，结论不可信"
+fi
+
+# 扫描范围不得退化成只查 README（否则 references/ 里的悬空引用会漏检）
+if grep -qF 'skills/auto-goo/references/**/*.md' "$DOCREF" && grep -qF 'commands/*.md' "$DOCREF"; then
+  pass "doc-ref-check 扫描范围覆盖 references/ 与 commands/"
+else
+  fail "doc-ref-check 扫描范围不完整 —— references/ 悬空引用会漏检"
+fi
+
+# evaluator 校验工具必须真能跑（被文档引用的脚本不能只有文件壳）
+PACKETVAL="$ROOT/skills/auto-goo/scripts/packet-validate.py"
+PACKET_GOOD="${TMPDIR:-/tmp}/autogoo-plugin-packet-good-$$.json"
+PACKET_BAD="${TMPDIR:-/tmp}/autogoo-plugin-packet-bad-$$.json"
+cat > "$PACKET_GOOD" <<'JSON'
+{"purpose": "smoke", "findings": [{"claim": "c", "evidence_path": ".goo/logs/x.md", "confidence": 0.5}]}
+JSON
+cat > "$PACKET_BAD" <<'JSON'
+{"purpose": "", "findings": [{"claim": "c", "evidence_path": "见聊天记录", "confidence": 1.5}]}
+JSON
+if python3 "$PACKETVAL" "$PACKET_GOOD" >/dev/null 2>&1; then
+  pass "packet-validate.py 接受合法 packet"
+else
+  fail "packet-validate.py 误判合法 packet 为非法"
+fi
+if python3 "$PACKETVAL" "$PACKET_BAD" >/dev/null 2>&1; then
+  fail "packet-validate.py 放过了坏 packet（evidence_path 写散文、confidence 越界）—— 形同摆设"
+else
+  pass "packet-validate.py 拒绝坏 packet（反向验证）"
+fi
+rm -f "$PACKET_GOOD" "$PACKET_BAD"
+
+# ── 42. .goo 生命周期管理（goo-gc.py）默认零删除 ──
+# .goo 会单调增长（site 生成物 / 翻转备份 / 轮转日志），清理是必要的；
+# 但里面放着 plan.json 与 step log，一旦"自动清理"跑偏就是不可逆的数据丢失。
+# 因此本节锁定四条底线：
+#   1) 默认 dry-run：不带 --apply 时一个字节都不改
+#   2) --apply 只删 site/ + 旧 backups + 轮转日志
+#   3) .goo/plan.json、threads/*/plan.json、threads/*/logs/*.log 永不被删
+#   4) 输出必须含「删了会怎样 / 可释放」可复核清单
+echo ""
+echo "── 42. .goo 生命周期管理 ──"
+
+GGC="$ROOT/skills/auto-goo/scripts/goo-gc.py"
+if [[ -f "$GGC" ]]; then
+  pass "goo-gc.py 存在"
+else
+  fail "缺少 goo-gc.py —— .goo 仍无生命周期管理"
+fi
+
+if [[ -f "$GGC" ]] && python3 "$GGC" --help >/dev/null 2>&1; then
+  pass "goo-gc.py 可运行"
+else
+  fail "goo-gc.py 无法运行"
+fi
+
+if [[ -f "$GGC" ]]; then
+  if grep -q 'action="store_true"' "$GGC" && grep -q -- '"--apply"' "$GGC"; then
+    pass "goo-gc.py 的 --apply 是显式 store 开关（默认 dry-run）"
+  else
+    fail "goo-gc.py 未提供显式 --apply 开关"
+  fi
+  if grep -q 'PROTECTED_BASENAMES' "$GGC" && grep -q '"plan.json"' "$GGC"; then
+    pass "goo-gc.py 把 plan.json 列入硬闸门"
+  else
+    fail "goo-gc.py 未把 plan.json 列入硬闸门"
+  fi
+  if grep -q 'PROTECTED_SEGMENTS = {"threads"}' "$GGC"; then
+    pass "goo-gc.py 保护 .goo/threads/**（含 step log）"
+  else
+    fail "goo-gc.py 未保护 .goo/threads/**"
+  fi
+fi
+
+if [[ -f "$GGC" ]] && command -v python3 &>/dev/null && command -v md5sum &>/dev/null; then
+  GCT="${TMPDIR:-/tmp}/autogoo-plugin-check-gc-$$"
+  mkdir -p "$GCT/project/.goo/site" "$GCT/project/.goo/backups/old-1" \
+           "$GCT/project/.goo/backups/old-2" "$GCT/project/.goo/backups/new-3" \
+           "$GCT/project/.goo/threads/t1/logs" "$GCT/project/.goo/logs"
+  printf '%s\n' '{"workspace": {}}' > "$GCT/project/.goo/config.json"
+  printf '%s\n' '{"steps": []}' > "$GCT/project/.goo/plan.json"
+  printf '%s\n' '{"steps": []}' > "$GCT/project/.goo/threads/t1/plan.json"
+  printf 'step log\n' > "$GCT/project/.goo/threads/t1/logs/step-1.log"
+  printf '<html></html>\n' > "$GCT/project/.goo/site/index.html"
+  printf 'old\n' > "$GCT/project/.goo/backups/old-1/snap.tar.gz"
+  printf 'old\n' > "$GCT/project/.goo/backups/old-2/snap.tar.gz"
+  printf 'new\n' > "$GCT/project/.goo/backups/new-3/snap.tar.gz"
+  # 备份目录的 mtime 会被"新建文件"刷新成同一秒，必须显式给内容时间才能验证保留策略
+  touch -d '2026-01-01T00:00:00Z' "$GCT/project/.goo/backups/old-1/snap.tar.gz"
+  touch -d '2026-02-01T00:00:00Z' "$GCT/project/.goo/backups/old-2/snap.tar.gz"
+  touch -d '2026-03-01T00:00:00Z' "$GCT/project/.goo/backups/new-3/snap.tar.gz"
+  printf 'current\n' > "$GCT/project/.goo/logs/current.md"
+
+  GCT_BEFORE="$(cd "$GCT/project" && find .goo -type f | sort | xargs -r md5sum)"
+  python3 "$GGC" --root "$GCT/project" >"$GCT/dry.txt" 2>&1
+  GCT_AFTER="$(cd "$GCT/project" && find .goo -type f | sort | xargs -r md5sum)"
+  if [[ "$GCT_BEFORE" == "$GCT_AFTER" ]]; then
+    pass "goo-gc.py 默认运行零改动（dry-run）"
+  else
+    fail "goo-gc.py 默认运行改动了 .goo —— 必须保持只读"
+  fi
+  if grep -q "删了会怎样" "$GCT/dry.txt" && grep -q "可释放" "$GCT/dry.txt"; then
+    pass "goo-gc.py 输出「可释放 / 删了会怎样」可复核清单"
+  else
+    fail "goo-gc.py 缺少「可释放 / 删了会怎样」清单"
+  fi
+
+  python3 "$GGC" --root "$GCT/project" --apply --keep-backups 1 >"$GCT/apply.txt" 2>&1
+  if [[ -f "$GCT/project/.goo/plan.json" && -f "$GCT/project/.goo/threads/t1/plan.json" \
+     && -f "$GCT/project/.goo/threads/t1/logs/step-1.log" && -f "$GCT/project/.goo/config.json" ]]; then
+    pass "goo-gc.py --apply 未触碰 plan.json / step log / config.json"
+  else
+    fail "goo-gc.py --apply 删掉了 plan.json 或 step log —— 严重数据丢失"
+  fi
+  if [[ ! -f "$GCT/project/.goo/site/index.html" ]]; then
+    pass "goo-gc.py --apply 回收 site/"
+  else
+    fail "goo-gc.py --apply 未回收 site/（可重建物应当可清理）"
+  fi
+  if [[ ! -d "$GCT/project/.goo/backups/old-1" && -d "$GCT/project/.goo/backups/new-3" ]]; then
+    pass "goo-gc.py --apply 按保留份数淘汰旧备份"
+  else
+    fail "goo-gc.py 的 backups 保留策略失效"
+  fi
+  # 反向验证：受保护路径混进可清理目录时必须整体 abort（且不删任何东西）
+  printf '%s\n' '{"leak": true}' > "$GCT/project/.goo/site/plan.json"
+  printf 'keep\n' > "$GCT/project/.goo/site/keep.html"
+  if python3 "$GGC" --root "$GCT/project" --apply >"$GCT/abort.txt" 2>&1; then
+    fail "goo-gc.py 未对受保护路径 abort（plan.json 被放进 site/ 时应 exit 2）"
+  elif [[ -f "$GCT/project/.goo/site/keep.html" ]]; then
+    pass "goo-gc.py 命中受保护路径时整体 abort，零删除"
+  else
+    fail "goo-gc.py abort 时仍删除了文件"
+  fi
+  rm -rf "$GCT"
+fi
+
+# ── 43. plan 时间窗口必须由步骤时间戳派生（否则耗时可算出负数）──
+# 回归：plan.started_at/completed_at 曾被写入时刻的 wall-clock now 覆盖，
+# 重新同步/重新打开后 started_at 晚于所有步骤完成时间，实测算出 -465min。
+# 修复后步骤级时间戳是单一事实源，plan 窗口只是派生值。
+echo ""
+echo "── 43. plan 时间窗口单一事实源 ──"
+
+PATHS="$ROOT/skills/auto-goo/scripts/_paths.py"
+US="$ROOT/skills/auto-goo/scripts/update-step.py"
+GST="$ROOT/skills/auto-goo/scripts/goo-status.py"
+GM="$ROOT/skills/auto-goo/scripts/goo-metrics.py"
+
+if grep -q "def derive_plan_timestamps" "$PATHS" 2>/dev/null; then
+  pass "_paths.py 提供 derive_plan_timestamps（单一事实源）"
+else
+  fail "_paths.py 缺少 derive_plan_timestamps —— plan 窗口会重新按 now 写入"
+fi
+
+if grep -q "derive_plan_timestamps" "$US" && grep -q "derive_plan_timestamps" "$GST"; then
+  pass "update-step.py 与 goo-status.py 都走派生逻辑"
+else
+  fail "有写入点没走派生逻辑 —— 时间戳又会不同源"
+fi
+
+# 运行期反向验证：构造「plan.started_at 晚于所有步骤」的坏 plan，
+# 跑一次 update-step 后必须被重算为步骤包络，耗时为负即判定失败。
+TS_TMP="$(mktemp -d)"
+mkdir -p "$TS_TMP/.goo/threads/t1" "$TS_TMP/.goo/logs"
+printf '{"thread_id":"t1"}' > "$TS_TMP/.goo/current_thread.json"
+python3 - "$TS_TMP" <<'PYTS'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+plan = {
+    "task": "timestamp repro",
+    "status": "completed",
+    "started_at": "2026-08-04T17:04:11Z",
+    "completed_at": "2026-08-04T09:19:12Z",
+    "thread": {"id": "t1"},
+    "steps": [
+        {"id": 1, "name": "a", "status": "completed",
+         "started_at": "2026-08-04T09:06:02Z", "completed_at": "2026-08-04T09:12:00Z"},
+        {"id": 2, "name": "b", "status": "completed",
+         "started_at": "2026-08-04T09:12:00Z", "completed_at": "2026-08-04T09:19:12Z"},
+    ],
+}
+for rel in (".goo/plan.json", ".goo/threads/t1/plan.json"):
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / rel).write_text(json.dumps(plan, indent=2), encoding="utf-8")
+PYTS
+
+# 在临时项目里执行（cwd 决定 .goo 解析），并同时校验兼容入口与 thread plan ——
+# 两者必须一致，否则读哪个入口决定你看到哪个耗时。
+if ( cd "$TS_TMP" && python3 "$US" --plan .goo/plan.json --step-id 1 --heartbeat --progress 50 --note check >/dev/null 2>&1 ); then
+  if python3 - "$TS_TMP" <<'PYTS'
+import json
+import sys
+from datetime import datetime
+from pathlib import Path
+
+root = Path(sys.argv[1])
+parse = lambda v: datetime.fromisoformat(str(v).replace("Z", "+00:00")) if v else None
+checked = 0
+for rel in (".goo/plan.json", ".goo/threads/t1/plan.json"):
+    path = root / rel
+    assert path.is_file(), f"{rel} 丢失"
+    plan = json.loads(path.read_text(encoding="utf-8"))
+    start, end = parse(plan.get("started_at")), parse(plan.get("completed_at"))
+    step_starts = [parse(s.get("started_at")) for s in plan["steps"] if s.get("started_at")]
+    assert start is not None, f"{rel}: plan.started_at 被清空"
+    assert all(start <= s for s in step_starts), f"{rel}: plan.started_at={start} 晚于步骤起始 {step_starts}"
+    if end is not None:
+        assert (end - start).total_seconds() >= 0, f"{rel}: 耗时为负 {end - start}"
+    assert start.isoformat().startswith("2026-08-04T09:06:02"), f"{rel}: 未按步骤派生 {start}"
+    checked += 1
+assert checked == 2
+PYTS
+  then
+    pass "坏 plan 经派生修复：plan.started_at <= 任一 step.started_at，耗时非负"
+  else
+    fail "plan.started_at 仍未按步骤派生（负耗时回归）"
+  fi
+else
+  fail "update-step.py 在临时项目上执行失败（无法验证派生逻辑）"
+fi
+rm -rf "$TS_TMP"
+
+# 历史 thread 实测：所有 plan 窗口非负且不晚于步骤起始（缺时间戳的跳过，不伪造）
+if [[ -d "$ROOT/.goo/threads" ]]; then
+  if python3 - "$ROOT" <<'PYTS'
+import json
+import sys
+from datetime import datetime
+from pathlib import Path
+
+root = Path(sys.argv[1])
+parse = lambda v: datetime.fromisoformat(str(v).replace("Z", "+00:00")) if v else None
+bad = []
+checked = 0
+for plan_path in sorted(root.glob(".goo/threads/*/plan.json")):
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        continue
+    steps = [s for s in (plan.get("steps") or []) if isinstance(s, dict)]
+    start, end = parse(plan.get("started_at")), parse(plan.get("completed_at"))
+    step_starts = [parse(s.get("started_at")) for s in steps if s.get("started_at")]
+    if start and end and (end - start).total_seconds() < 0:
+        bad.append(f"{plan_path.parent.name}: 耗时为负 {(end - start).total_seconds() / 60:.0f}min")
+        continue
+    if start and step_starts:
+        checked += 1
+        if start > min(step_starts):
+            bad.append(f"{plan_path.parent.name}: plan.started_at={start} 晚于最早步骤 {min(step_starts)}")
+if bad:
+    raise SystemExit("; ".join(bad))
+print(f"checked={checked}")
+PYTS
+  then
+    pass "历史 thread 的 plan 窗口均非负且不晚于步骤起始"
+  else
+    fail "存在负耗时或 plan.started_at 晚于步骤起始的历史 plan（跑 goo-metrics.py --fix --write）"
+  fi
+fi
+
+# goo-metrics.py 必须能从步骤时间线重算耗时并给出可量化结论
+if [[ -f "$GM" ]] && python3 "$GM" --root "$ROOT" --json >/dev/null 2>&1; then
+  pass "goo-metrics.py 可对全部 thread 重算指标"
+else
+  fail "goo-metrics.py 缺失或运行失败"
+fi
+
+if [[ -f "$GM" ]] && python3 "$GM" --root "$ROOT" --markdown 2>/dev/null | grep -q "DAG 什么时候比直接做更慢"; then
+  pass "goo-metrics.py 输出含「DAG 何时更慢」边界结论"
+else
+  fail "goo-metrics.py 未输出 DAG 收益边界结论"
+fi
+
+# ── 44. 空 catch 必须留痕 ──
+# 回归：调度/配置/落盘路径上有 3 处 `} catch {}`（commands/plan.ts ×2、index.ts ×1）
+# 把异常吃得干干净净 —— 远程探测失败、配置读不出来全都表现为「静默无提示」，
+# 线上只能看到行为不对但日志里什么都没有。这里允许两种留痕方式：
+#   a) 加 logWarn/logError 记录异常；
+#   b) 保留静默降级，但必须在块内写一句 `/* 静默降级：... */` 说明为什么能吃。
+# 空块（连注释都没有）一律判红。
+echo ""
+echo "── 44. 空 catch 留痕 ──"
+
+EMPTY_CATCHES="$(python3 - "$ROOT/.pi/extensions/autogoo-plugin" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+# 只匹配「块内无任何内容」的 catch：注释算内容，因此带说明的空块不会被判红。
+pattern = re.compile(r"catch\s*(\([^)]*\))?\s*\{\s*\}")
+for path in sorted(root.rglob("*.ts")):
+    if "node_modules" in path.parts:
+        continue
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        continue
+    for match in pattern.finditer(text):
+        line_no = text.count("\n", 0, match.start()) + 1
+        print(f"{path.relative_to(root)}:{line_no}")
+PY
+)"
+
+if [[ -z "$EMPTY_CATCHES" ]]; then
+  pass "无无痕空 catch（要么 logWarn，要么 /* 静默降级 */ 说明）"
+else
+  fail "存在无痕空 catch：$(printf '%s' "$EMPTY_CATCHES" | tr '\n' ' ')"
+fi
+
+# ── 45. 术语咬文：profile 不能直译成中文旧词 ──
+# 回归：Goo-wiki L0 层的中文名曾是 project profile 的字面直译，中文读者会把它
+# 理解成一次性的数据侦察产物，而不是「常驻总览、启动必读」，用户已明确提出疑问。
+# 统一改成「项目总览」，task_agent 的旧词改「细分任务」，profiler 的旧词改「性能剖析」。
+# 判据由 rename-wording.py 提供（它同时是幂等改写器），避免文档里两套说法各写一份。
+echo ""
+echo "── 45. 术语一致性（无 profile 直译）──"
+
+RENAME_SCRIPT="$ROOT/skills/auto-goo/scripts/rename-wording.py"
+if [[ ! -f "$RENAME_SCRIPT" ]]; then
+  fail "rename-wording.py 缺失 —— 术语统一没有可执行的单一事实源"
+elif PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/autogoo-plugin-check-pycache" python3 "$RENAME_SCRIPT" --check >/dev/null 2>&1; then
+  pass "仓库内无 profile 直译残留（rename-wording.py --check 通过）"
+else
+  fail "仍有 profile 直译残留 —— 跑 rename-wording.py --apply"
+fi
+
+# 幂等：第二次运行必须 0 改动，否则脚本会把已改好的文本再改一遍
+if [[ -f "$RENAME_SCRIPT" ]]; then
+  RENAME_DRY="$(python3 "$RENAME_SCRIPT" 2>/dev/null | sed -n 's/^待改写 \([0-9]*\) 处.*/\1/p' | head -1)"
+  if [[ "${RENAME_DRY:-x}" == "0" ]]; then
+    pass "rename-wording.py 幂等（重跑 0 改动）"
+  else
+    fail "rename-wording.py 非幂等或仍有待改（dry-run=${RENAME_DRY:-?}）"
+  fi
 fi
 
 # ── 结果汇总 ──

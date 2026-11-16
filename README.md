@@ -2,7 +2,7 @@
 
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-Plugin-blue)
 ![Codex](https://img.shields.io/badge/Codex-Compatible-purple)
-![Version](https://img.shields.io/badge/version-0.27.0-green)
+![Version](https://img.shields.io/badge/version-0.28.0-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 AutoGoo-Plugin 是一个同时兼容 Claude Code 和 Codex 的智能体编排插件，用来把开放式任务拆成可执行计划、并行调用 subagent、记录运行状态，并把结果同步到 Goo-wiki / Obsidian。
@@ -102,7 +102,7 @@ pi install /path/to/AutoGoo-Plugin        # 仓库根即 pi 包
 }
 ```
 
-> Pi 扩展版本：**v0.27.0**。使用 Pi 原生 API（`ctx.ui`、自定义工具、事件系统）。卸载：`pi remove git:github.com/ZixiGu/AutoGoo-Plugin`。
+> Pi 扩展版本：**v0.28.0**。使用 Pi 原生 API（`ctx.ui`、自定义工具、事件系统）。卸载：`pi remove git:github.com/ZixiGu/AutoGoo-Plugin`。
 
 ## 在 Claude Code 中使用
 
@@ -197,6 +197,21 @@ pi install /path/to/AutoGoo-Plugin        # 仓库根即 pi 包
 
 Pi 扩展使用原生 API 注册 16 个自定义工具（`auto_goo_execute`、`auto_goo_dispatch`、`auto_goo_ssh_monitor`、`auto_goo_worktree_*` 等），所有平台差异封装在工具内部，model 不需要检测平台。支持 `ctx.ui.select/confirm/input` 作为用户交互，支持 `session_start`/`session_shutdown` hooks；worktree 不再在 session 退出时强制删除。
 
+### pi 独有命令（无 Claude Code slash command）
+
+下面 6 个命令**只有 pi 扩展实现**（依赖 pi session 注册表 + 文件信箱），`commands/` 下**刻意没有**对应 `.md` —— Claude Code / Codex 没有跨 session 对话能力，加一个空 shell 命令只会误导用户：
+
+| 命令 | 作用 |
+|---|---|
+| `/goo-chat <target> <message>` | 向已配对的 session 发送消息 |
+| `/goo-chat-read [target]` | 拉取未读消息并注入当前会话（带 target 只拉该来源） |
+| `/goo-pair <aliasA> <aliasB>` | 显式配对两个 session |
+| `/goo-unpair <aliasA> <aliasB>` | 解除显式配对（同 thread 自动配对仍有效） |
+| `/goo-chat-list` | 列出会话注册表、配对关系与本会话未读数 |
+| `/goo-alias <alias>` | 自定义本 session 别名 |
+
+机制细节（信箱目录、配对规则、消息落盘格式）见 `docs/session-chat.md`。`doc-ref-check.py` 会校验这些 **pi 独有** 命令在本节被明确标注，避免用户以为 Claude Code 也能用。
+
 ## 平台对比
 
 | 功能 | Claude Code | Codex | Pi Coding Agent |
@@ -221,6 +236,8 @@ Pi 扩展使用原生 API 注册 16 个自定义工具（`auto_goo_execute`、`a
 - **日志记录**：subagent 的过程信息写入当前 thread 的 `logs/`，前台只展示摘要、阻塞和下一步。
 - **归档记忆**：默认写入 Goo-wiki；没有配置时回退到 `.goo/obsidian/`。
 - **usage 数据源**：`goo-usage` 默认读取 Claude Code / Codex / Pi 三源，支持官方环境变量覆盖（`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`PI_CODING_AGENT_DIR`、`PI_CODING_AGENT_SESSION_DIR`、`PI_SESSION_FILE`）；用 `python3 skills/auto-goo/scripts/goo-usage.py --sources` 诊断路径与 jsonl 计数，未安装 Claude Code 的环境也能读取 Pi/Codex 数据。
+- **.goo 生命周期可管理**：`.goo/` 只会单调增长（`site/` 生成物、翻转备份、轮转日志），`goo-gc.py` 负责只读扫描 + 保留策略建议：**默认 dry-run**，`--apply` 才真删，且只清可重建物（`site/`、旧 `backups/`、轮转日志）。`.goo/plan.json`、`threads/*/plan.json`、`threads/*/logs/*.log` 是硬闸门 —— 候选命中即整体 abort，一个文件都不删；每次 `--apply` 写审计记录到 `.goo/logs/gc-<时间戳>.md`。
+- **文档引用零悬空**：`python3 skills/auto-goo/scripts/doc-ref-check.py` 扫描 README / SKILL / references / commands / agents / docs 里出现的 `.py` 脚本与 `/goo-*` 命令，和 `scripts/`、`commands/`、pi 命令表比对；代码块示例、占位符（`/goo-xxx`）、用户项目路径（`/src/parser/baseline.py`）按上下文豁免。`--self-test` 会注入悬空引用反向验证扫描器本身，`check-plugin.sh` 每次发布都跑一遍。
 - **约定单源化**：完整项目约定写入 `goo.md`；默认单源为用户级 `~/.auto-goo/goo.md`，项目级 `goo.md` 按需覆盖且优先级更高，`CLAUDE.md` / `AGENTS.md` 只保留 marker 指针。
 - **约定缺失可检测可恢复**：插件内置备份模板 `skills/auto-goo/templates/goo.md`。`goo-md.py --check` 报告当前生效的 goo.md（`project` / `user` / `missing`，missing 时 exit 1）；`goo-md.py --ensure` 在缺失时从模板恢复用户级 `~/.auto-goo/goo.md`（幂等，不覆盖已有内容，**不写 `~/.claude`/`~/.codex`**）。会话启动（`session-start.py` 与 pi `session_start`）在缺失时会给出可操作提示。
 - **更新自动提醒**：`goo-update-check.py` 比对本地 git HEAD 与远端分支 HEAD，有新提交时在会话启动时提醒并给出更新命令（只提醒，不自动更新）。只读（仅 `git ls-remote`）、带 24h 缓存、失败静默降级、`exit 0` 从不阻断启动；可用 `AUTOGOO_SKIP_UPDATE_CHECK` / `PI_SKIP_VERSION_CHECK` / `PI_OFFLINE` / `AUTOGOO_OFFLINE` 或 `update_check.enabled=false` 关闭。
@@ -331,7 +348,7 @@ bash skills/auto-goo/scripts/check-plugin.sh
 
 ## 版本
 
-当前版本：**v0.27.0**。
+当前版本：**v0.28.0**。
 
 ### 发版约定：每次提交都 bump
 

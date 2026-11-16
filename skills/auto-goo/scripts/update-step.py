@@ -11,6 +11,7 @@ from typing import Any
 
 from _paths import (
     compute_plan_status,
+    derive_plan_timestamps,
     dump_json,
     find_config_dir,
     load_json,
@@ -163,18 +164,26 @@ def log_event(plan_path: Path, step: dict[str, Any], stamp: str, action: str, de
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
 def update_plan_status(data: dict[str, Any], stamp: str) -> None:
+    """Recompute plan-level status and time window.
+
+    时间戳的单一事实源是**步骤级** started_at / completed_at（update-step 在
+    步骤真实发生状态跃迁时写一次）。plan 级时间窗口必须由 derive_plan_timestamps
+    派生，不能再用调用时的 wall-clock `stamp` 覆盖：否则 plan 被重新同步/重新
+    打开时会写入晚于步骤完成时间的时间戳，算出负耗时（实测 -465min）。
+    """
     new_status = compute_plan_status(data)
-    old_status = data.get("status")
-    if old_status == new_status:
-        return
     data["status"] = new_status
+    if new_status not in {"completed", "failed"}:
+        # 非终态保留旧 completed_at 会让 plan 窗口早于最后一步完成（窗口失真/为负）：
+        # 例如步骤重新打开后，旧完成时间仍在，derive 因「非全终态」不会重算。
+        data["completed_at"] = None
+    derive_plan_timestamps(data)
+    # 冷启动兜底：plan 已进入 running 但没有任何步骤留下 started_at
+    # （例如 --status running 而非 --start）时，仍需一个可比较的起点。
     if new_status == "running" and not data.get("started_at"):
         data["started_at"] = stamp
-    if new_status in {"completed", "failed"}:
+    if new_status in {"completed", "failed"} and not data.get("completed_at"):
         data["completed_at"] = stamp
-    elif old_status == "completed":
-        # 状态从 completed 回退(重新打开步骤)时清除旧的完成时间
-        data["completed_at"] = None
 
 
 def sync_thread(plan_path: Path) -> None:

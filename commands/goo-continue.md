@@ -115,7 +115,7 @@ test -f "<output_path>" && [ "$(wc -l < "<output_path>")" -gt 5 ]
 
 - 如果所有步骤已完成，提示"没有未完成的任务"
 - 关键路径上的失败步骤必须优先用结构化选择 UI 询问是否重试、跳过继续或停止
-- 恢复执行必须派发 Subagent；主 Agent 做状态修复、派发和审核。若 `subagent` 或 `task_agent` 不存在，先补 plan 或创建角色/任务画像，不由主 Agent 代执行
+- 恢复执行必须派发 Subagent；主 Agent 做状态修复、派发和审核。若 `subagent` 或 `task_agent` 不存在，先补 plan 或创建角色/任务细分，不由主 Agent 代执行
 - 恢复执行必须尊重缓存的 Subagent worktree 配置：优先读取 `runtime.subagent_isolation.mode` 和 `project_root`；缓存存在且根目录一致时直接复用。缓存缺失、根目录不匹配或执行目录明确变更时才重新询问是否启用 worktree。值为 `worktree` 才给 Agent tool 传 `isolation: "worktree"`，值为 `none` 则省略 `isolation`。若 `mode=none` 仍触发 `Failed to resolve base branch "HEAD"`，立即记录 `compatibility.agent_requires_git_head=true` 并阻塞等待用户选择启用 worktree；不得向父目录寻找 Git root，也不得重复 probe。
 - 恢复执行时使用 step 的 `available_skills` 作为 Subagent skill allowlist；缺失时先补为空数组
 - 如果 `.goo/brainstorm.json` 或 `.goo/plan.json` 仍是待审草案，恢复执行前必须先展示摘要并优先用结构化选择 UI 让用户确认、修改或停止；确认后如果 brainstorm 未归档，再归档最终版 brainstorm，然后恢复业务 step

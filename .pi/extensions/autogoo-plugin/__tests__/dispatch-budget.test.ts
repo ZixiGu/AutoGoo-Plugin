@@ -121,7 +121,7 @@ describe("buildSubagentTaskPrompt 体积警告", () => {
 
 describe("expandLayerRange（memory_layer 下限展开）", () => {
   it("声明层是最深层，向 L0 方向补齐", () => {
-    // 层语义：数字越大越原始（L0 项目画像最热，L3 原始日志最冷）。
+    // 层语义：数字越大越原始（L0 项目总览最热，L3 原始日志最冷）。
     // audit 声明 L3（原始 trace），补齐全栈否则拿不到上下文；
     // exec 声明 L1，不该被 L3 原始日志稀释。
     assert.deepEqual(expandLayerRange("L0"), ["L0"]);
@@ -138,7 +138,7 @@ describe("expandLayerRange（memory_layer 下限展开）", () => {
     assert.deepEqual(expandLayerRange(""), ["L0", "L1"]);
   });
 
-  it("L0 是项目画像（最热），展开只有自身；L3 最原始，展开覆盖全栈", () => {
+  it("L0 是项目总览（最热），展开只有自身；L3 最原始，展开覆盖全栈", () => {
     // 防止编号方向再次被反转（本项目曾把 L0 定义成"原始日志"）
     assert.equal(expandLayerRange("L0").length, 1, "L0 最热，不该展开出更原始的层");
     assert.deepEqual(expandLayerRange("L3"), ["L0", "L1", "L2", "L3"], "L3 最冷，追溯需全栈上下文");

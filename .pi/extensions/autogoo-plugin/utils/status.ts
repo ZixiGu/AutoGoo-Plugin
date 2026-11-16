@@ -234,10 +234,15 @@ export async function snapshotPlan(cwd: string): Promise<PlanSnapshot | null> {
     }
   }
   let elapsed: string | undefined;
-  // 用最早 step 的 started_at(实际工作时间)代替 plan.started_at(可能很早)
+  // 步骤时间戳是时间的单一事实源：plan.started_at/completed_at 由脚本从步骤派生
+  // (skills/auto-goo/scripts/_paths.py derive_plan_timestamps)。这里仍优先用最早的
+  // step.started_at 做防御：读到旧 plan 或第三方写入时也不会显示倒挂/负耗时。
   const firstStepStart = steps.map((s) => s.started_at).filter(Boolean).sort()[0];
   const startTime = firstStepStart || plan.started_at;
-  if (startTime) elapsed = formatDuration((plan.completed_at ? new Date(plan.completed_at).getTime() : now) - new Date(startTime).getTime());
+  const rawElapsed = startTime
+    ? new Date(plan.completed_at ? new Date(plan.completed_at).getTime() : now).getTime() - new Date(startTime).getTime()
+    : 0;
+  if (startTime) elapsed = formatDuration(Math.max(0, rawElapsed));
   const info = await getThreadInfo(cwd);
   const threadId = info?.id ?? plan.thread?.id;
   const cur = findCurrentStep(steps);

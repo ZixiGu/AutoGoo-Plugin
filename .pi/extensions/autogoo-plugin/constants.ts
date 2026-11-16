@@ -283,7 +283,7 @@ export const MEMORY_LAYERING_RULE = `
 - L0 原始记录 (.goo/logs/) — 不进 Subagent 默认上下文
 - L1 原子事实 (step 报告关键决策段)
 - L2 场景知识 (任务页/lessons/references) — Subagent 默认读取
-- L3 项目画像 (项目入口/高频 lessons) — 主 Agent 启动时读取
+- L3 项目总览 (项目入口/高频 lessons) — 主 Agent 启动时读取
 - 归档笔记 frontmatter 必含 memory_layer: L0|L1|L2|L3
 `.trim();
 
@@ -329,7 +329,7 @@ export const DEFAULT_WIKI_PATHS_BY_STEP_TYPE: Record<string, string[]> = {
  * step 类型 -> 该 step 需要的**最深**记忆层（声明层 = 下限）。
  *
  * 层语义（数字越大越原始，与 CPU 缓存 / TencentDB Agent Memory 一致）：
- *   L0 profile    项目画像      KB 级，启动必读      ← 最热
+ *   L0 profile    项目总览      KB 级，启动必读      ← 最热
  *   L1 knowledge  场景知识      MB 级，默认读取
  *   L2 fact       原子事实      GB 级，按需查证
  *   L3 raw        原始记录      大而冷，只做追溯      ← 最冷

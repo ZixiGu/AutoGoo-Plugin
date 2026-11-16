@@ -4,7 +4,7 @@
 为什么需要这个脚本
 ------------------
 SKILL.md 写着「归档笔记必须含 memory_layer: L0|L1|L2|L3」，但**没有任何强制
-机制**。实测结果：843 篇笔记里只有 423 篇填了（50%），L3 项目画像仅 11 篇
+机制**。实测结果：843 篇笔记里只有 423 篇填了（50%），L3 项目总览仅 11 篇
 （其中 autogoo-plugin 这个项目本身是 0）。
 
 配置项/字段「写了但没人执行」是本项目的反复出现的失效模式
@@ -22,7 +22,7 @@ SKILL.md 写着「归档笔记必须含 memory_layer: L0|L1|L2|L3」，但**没�
   L0 原始记录   .goo/logs、raw/、journal/daily —— 不进 Subagent 默认上下文
   L1 原子事实   execution/、findings/、step 报告
   L2 场景知识   lessons/、references/、concepts/、tasks/
-  L3 项目画像   项目入口 <slug>.md、operations.md —— 主 Agent 启动时读
+  L3 项目总览   项目入口 <slug>.md、operations.md —— 主 Agent 启动时读
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def is_infra(rel: str) -> bool:
 # 路径片段 -> 建议层级（**按顺序匹配，先命中先用，所以更具体的放前面**）
 #
 # 层语义（数字越大越原始，与 CPU 缓存 / TencentDB Agent Memory 一致）：
-#   L0 profile    项目画像   KB 级，启动必读      最热
+#   L0 profile    项目总览   KB 级，启动必读      最热
 #   L1 knowledge  场景知识   MB 级，默认读取
 #   L2 fact       原子事实   GB 级，按需查证
 #   L3 raw        原始记录   大而冷，只做追溯      最冷
@@ -85,7 +85,7 @@ LAYER_HINTS: list[tuple[str, str]] = [
 FILENAME_HINTS: list[tuple[str, str]] = [
     # 任务页实测 14 篇 L2 / 4 篇 L1 —— 多数含可复用的分析与决策，默认 L2。
     # 少数纯修复记录会被人工标为 L1，这种语义差异路径推断不了，属正常冲突。
-    ("/operations.md", "L0"),       # 项目运维手册 → 项目画像
+    ("/operations.md", "L0"),       # 项目运维手册 → 项目总览
 ]
 
 
@@ -260,7 +260,7 @@ def main() -> int:
             for item in report["missing"][:20]:
                 print(f"  {item['path']}  → 建议 {item['suggested']}")
         if report["projects_without_l3"]:
-            print(f"\n没有 L3 项目画像的项目（{len(report['projects_without_l3'])}）:")
+            print(f"\n没有 L3 项目总览的项目（{len(report['projects_without_l3'])}）:")
             for slug in report["projects_without_l3"][:20]:
                 print(f"  {slug}")
 

@@ -50,6 +50,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile, readFile, copyFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { execShell, execPython } from "../utils/exec.js";
+import { logWarn } from "../utils/log.js";
 import { uiSelect } from "../utils/ui.js";
 
 export async function handleGooPlan(taskDescription: string, ctx: ExtensionContext): Promise<void> {
@@ -244,7 +245,7 @@ async function resolveThread(cwd: string, ctx: ExtensionContext): Promise<{ thre
 // `--compact`，argparse exit 2 → stdout 空 → 静默 found:false，
 // 导致 /goo-plan 的 wiki 召回从未成功过一次。
 async function recallWikiForPlan(cwd: string, task: string): Promise<WikiContext> {
-  // 计划阶段取 L3（项目画像）+ L2（场景知识）：主 Agent 要的是"这个项目
+  // 计划阶段取 L3（项目总览）+ L2（场景知识）：主 Agent 要的是"这个项目
   // 的整体经验和场景做法"，不是逐条原始记录（L0）。
   const result = await recallWiki(cwd, task, { source: "plan", layers: ["L0", "L1"] });
   return toLegacyShape(result);
@@ -428,7 +429,11 @@ async function checkRemoteResources(cwd: string, plan: Plan, ctx: ExtensionConte
       try {
         const result = execPython(probeScript, ["--probe"], cwd);
         probeResult = result.stdout || "";
-      } catch {}
+      } catch (e: any) {
+        // 探测失败只是少显示一条提示，不阻塞 plan 生成；但要留痕，否则远程资源
+        // 配置坏了会表现为「静默无提示」，排查时无从下手。
+        logWarn("[AutoGoo-Plugin] remote-resources 探测失败，跳过远程资源提示:", e?.message ?? String(e));
+      }
     }
 
     ctx.ui.notify(`检测到远程服务器: ${servers.map((s) => s.name).join(", ")}`, "info");
@@ -446,7 +451,10 @@ async function checkRemoteResources(cwd: string, plan: Plan, ctx: ExtensionConte
         }
       }
     }
-  } catch {}
+  } catch (e: any) {
+    // 远程资源检查是可选增强：配置读不出来/探测超时都不该拦住计划生成。
+    logWarn("[AutoGoo-Plugin] 远程资源检查失败，按无远程服务器继续:", e?.message ?? String(e));
+  }
 }
 
 // ── Plan summary formatter ──────────────────────────────────────────────────

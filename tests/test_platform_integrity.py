@@ -171,3 +171,93 @@ def test_wiki_recall_supports_layer_filter():
         "缺少 --exclude-unlabeled：存量约一半笔记没有 memory_layer，"
         "默认丢弃会让召回凭空变差，必须显式可选"
     )
+
+
+# ── plan 时间窗口：步骤级时间戳是单一事实源 ──────────────────────────────────
+
+def _load_paths_module():
+    """Import skills/auto-goo/scripts/_paths.py as a module."""
+    spec = importlib.util.spec_from_file_location("autogoo_paths", SCRIPTS / "_paths.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_plan_timestamps_derive_from_steps() -> None:
+    """回归：plan 时间窗口曾被 wall-clock now 写入，重同步后算出 -465min。
+
+    plan 级 started_at/completed_at 必须是步骤时间戳的派生值，不能是写入时刻的 now。
+    """
+    paths = _load_paths_module()
+
+    # 死亡场景：plan.started_at 晚于所有步骤（重同步后被 now 覆盖）
+    plan = {
+        "status": "completed",
+        "started_at": "2026-08-04T17:04:11Z",
+        "completed_at": "2026-08-04T09:19:12Z",
+        "steps": [
+            {"id": 1, "status": "completed",
+             "started_at": "2026-08-04T09:06:02Z", "completed_at": "2026-08-04T09:12:00Z"},
+            {"id": 2, "status": "completed",
+             "started_at": "2026-08-04T09:12:00Z", "completed_at": "2026-08-04T09:19:12Z"},
+        ],
+    }
+    changes = paths.derive_plan_timestamps(plan)
+    assert plan["started_at"] == "2026-08-04T09:06:02Z", changes
+    assert plan["completed_at"] == "2026-08-04T09:19:12Z", changes
+
+    start = paths.parse_iso(plan["started_at"])
+    end = paths.parse_iso(plan["completed_at"])
+    assert (end - start).total_seconds() > 0, "耗时不得为负"
+    # 派生值必须早于/等于任一已开始步骤
+    for step in plan["steps"]:
+        assert start <= paths.parse_iso(step["started_at"])
+
+    # 幂等：再跑一次不应产生变更
+    assert paths.derive_plan_timestamps(plan) == {}
+
+    # 不伪造：步骤没有时间戳时保留原值，不凭空造窗口
+    raw = {"status": "running", "started_at": "2026-01-01T00:00:00Z",
+           "steps": [{"id": 1, "status": "running"}]}
+    assert paths.derive_plan_timestamps(raw) == {}
+    assert raw["started_at"] == "2026-01-01T00:00:00Z"
+
+    # 只有步骤开始、plan 没有窗口 → 从步骤补齐
+    cold = {"status": "running", "steps": [
+        {"id": 1, "status": "completed",
+         "started_at": "2026-01-01T10:00:00Z", "completed_at": "2026-01-01T10:05:00Z"},
+        {"id": 2, "status": "running", "started_at": "2026-01-01T10:05:00Z"},
+    ]}
+    paths.derive_plan_timestamps(cold)
+    assert cold["started_at"] == "2026-01-01T10:00:00Z"
+    assert cold.get("completed_at") is None, "非全终态不应派生完成时间"
+
+
+def test_goo_metrics_reports_non_negative_durations() -> None:
+    """goo-metrics.py 必须能从步骤时间线重算耗时，且历史 plan 全部非负。"""
+    script = SCRIPTS / "goo-metrics.py"
+    assert script.exists(), "goo-metrics.py 缺失"
+
+    r = subprocess.run(
+        ["python3", str(script), "--json", "--root", str(ROOT)],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert r.returncode == 0, r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["summary"]["threads"] > 0
+
+    for record in payload["threads"]:
+        assert record["duration_min"] is None or record["duration_min"] >= 0, (
+            f"{record['thread_id']} 耗时为负: {record['duration_min']}"
+        )
+        # plan 窗口必须与步骤时间线一致：start <= 任一 step start
+        assert record["stored_duration_min"] is None or record["stored_duration_min"] >= 0, (
+            f"{record['thread_id']} 存储窗口为负: {record['stored_duration_min']}"
+        )
+        if record["duration_min"] is not None:
+            starts = [s["started_at"] for s in record["steps"] if s.get("started_at")]
+            assert record["plan_started_at"] <= min(starts), (
+                f"{record['thread_id']} plan.started_at 晚于步骤起始: "
+                f"{record['plan_started_at']} > {min(starts)}"
+            )

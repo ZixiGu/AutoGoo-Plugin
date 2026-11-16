@@ -278,7 +278,9 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
           cwd,
           { timeout: 15000 },
         );
-      } catch {}
+      } catch {
+        /* 静默降级：预建 log 骨架失败不能让派发失败，后续 subagent 写首个 heartbeat 时会重建 */
+      }
 
       // 2. Build Subagent prompt
       const rolePrompt = getRolePrompt(params.role);

@@ -1,5 +1,5 @@
 /**
- * AutoGoo-Plugin Pi Extension v0.27.0 — 主入口
+ * AutoGoo-Plugin Pi Extension v0.28.0 — 主入口
  *
  * DAG 驱动的多智能体编排框架，从 Claude Code 插件迁移。
  *
@@ -614,7 +614,10 @@ export default function (pi: ExtensionAPI) {
     try {
       const { clearStatusBar } = await import("./utils/status.js");
       clearStatusBar(ctx);
-    } catch {}
+    } catch (e: any) {
+      // 状态条属于本会话，session 已结束（ctx 可能已失效），清理失败不影响后续流程。
+      logWarn("[AutoGoo-Plugin] session_shutdown 清理状态条失败:", e?.message ?? String(e));
+    }
 
 
     // Worktrees are never removed automatically: they may contain unmerged work.
@@ -632,5 +635,5 @@ export default function (pi: ExtensionAPI) {
   // 破坏宽度/光标计算 —— 表现为乱码、残影、界面错位。原注释写的
   // "Use stderr to avoid interfering with Pi's TUI rendering" 恰好说反了。
   // 加载状态由 pi 自己在 [Extensions] 列表里显示；诊断信息写 .auto-goo/logs/plugin.log。
-  logInfo("extension loaded", { version: "0.27.0" });
+  logInfo("extension loaded", { version: "0.28.0" });
 }

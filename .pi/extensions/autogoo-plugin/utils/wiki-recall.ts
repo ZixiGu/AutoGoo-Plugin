@@ -83,7 +83,7 @@ export interface RecallOptions {
    *   L0 原始日志 —— 不主动召回（噪音大）
    *   L1 原子事实 —— Subagent 按 step 需要取
    *   L2 场景知识 —— 默认召回
-   *   L3 项目画像 —— 主 Agent 启动时最该读的层
+   *   L3 项目总览 —— 主 Agent 启动时最该读的层
    */
   layers?: string[];
   /**

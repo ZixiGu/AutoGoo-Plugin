@@ -16,9 +16,18 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -593,4 +602,148 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
       finish(1);
     });
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Detached 派发：解决 pi tool call 2 分钟硬超时
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 为什么需要 detached 派发
+ * ------------------------
+ * pi 对**每个 tool call** 有硬编码超时：
+ *
+ *     const TOOL_TIMEOUT_MS = 12e4;   // 2 分钟
+ *     timer = setTimeout(() => toolCtrl.abort(), TOOL_TIMEOUT_MS);
+ *
+ * 而 `runSubagent` 是**阻塞等待子进程退出**的。真实 DAG 步骤通常几分钟到几十分钟，
+ * 于是 2 分钟时 pi abort → 我们转发的 signal 触发 killProc(SIGTERM) →
+ * 所有 subagent 一起 exit=143，步骤停在 progress=15。
+ *
+ * 结论：**在当前 pi 版本下，"派发 + 阻塞等待"这条路走不通**。
+ * 正确做法是把派发和等待拆开：
+ *   1. tool call 内只做 spawn（detached），立即返回 pid（毫秒级）
+ *   2. 子进程 unref 后独立运行，pi 会话退出也不影响
+ *   3. 后续用 heartbeat_check / dag_status 轮询 plan.json 与 pid 存活
+ *
+ * 代价：父子管道断开 → stdout/stderr 必须重定向到文件，实时流式转发失效。
+ * 这是必要的取舍：能跑完 > 能实时看。
+ */
+
+export interface DetachedHandle {
+  /** 子进程 pid（用于存活检测） */
+  pid: number;
+  /** stdout/stderr 合并重定向到此文件（JSON 流，可事后解析） */
+  logPath: string;
+  /** 派发时间 */
+  startedAt: string;
+  /** provider/model（便于事后核对用的是哪个模型） */
+  provider?: string;
+  model?: string;
+}
+
+export interface DetachedOptions {
+  provider?: string;
+  model?: string;
+  task: string;
+  cwd: string;
+  systemPrompt?: string;
+  logPath: string;
+  tools?: string[];
+}
+
+/**
+ * Spawn 一个脱离父进程组的 pi 子进程执行 Subagent 任务，**立即返回**。
+ *
+ * 与 {@link runSubagent} 的区别：
+ *   - `detached: true` + `unref()` → 父进程（pi 会话）退出不连带杀死
+ *   - stdio 重定向到 logPath → 不占父进程管道，父子解耦
+ *   - 不等待退出 → tool call 毫秒级返回，不会撞 2 分钟超时
+ *
+ * 子进程自己负责更新 plan（它有 auto_goo_update_step 工具）。
+ */
+export function spawnSubagentDetached(opts: DetachedOptions): DetachedHandle {
+  if (!opts.provider && !opts.model) {
+    throw new Error(
+      "Subagent 模型未解析：config.execution.subagent_* 未设置，且无法取得主 agent 模型与 PI_* 环境变量。",
+    );
+  }
+
+  const args: string[] = ["--mode", "json", "-p", "--no-session"];
+  if (opts.provider) args.push("--provider", opts.provider);
+  if (opts.provider && opts.model) args.push("--model", opts.model);
+  if (opts.tools && opts.tools.length > 0) args.push("--tools", opts.tools.join(","));
+
+  let tmpDir: string | null = null;
+  if (opts.systemPrompt?.trim()) {
+    tmpDir = mkdtempSync(join(tmpdir(), "autogoo-subagent-"));
+    const spPath = join(tmpDir, "system-prompt.md");
+    writeFileSync(spPath, opts.systemPrompt, { mode: 0o600 });
+    args.push("--append-system-prompt", spPath);
+  }
+  args.push(`Task: ${opts.task}`);
+
+  const invocation = getPiInvocation(args);
+
+  // stdout + stderr 合并写入同一个文件：JSON 流一行一条，stderr 混入也可接受
+  mkdirSync(dirname(opts.logPath), { recursive: true });
+  const fd = openSync(opts.logPath, "a");
+
+  let proc: ReturnType<typeof spawn>;
+  try {
+    proc = spawn(invocation.command, invocation.args, {
+      cwd: opts.cwd,
+      shell: false,
+      detached: true,                    // 独立进程组：父进程被杀不连带
+      stdio: ["ignore", fd, fd],
+      env: { ...process.env, AUTOGOO_SUBAGENT: "1" },
+    });
+  } finally {
+    try {
+      closeSync(fd);                     // 子进程已继承 fd，父侧可关
+    } catch {
+      /* ignore */
+    }
+  }
+
+  proc.unref();                          // 父进程不等待它
+
+  if (!proc.pid) {
+    throw new Error("spawn 失败：未取得子进程 pid");
+  }
+
+  // system-prompt 临时目录：子进程已读入内存，可立即清理
+  if (tmpDir) {
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return {
+    pid: proc.pid,
+    logPath: opts.logPath,
+    startedAt: new Date().toISOString(),
+    provider: opts.provider,
+    model: opts.model,
+  };
+}
+
+/**
+ * 判断 detached 子进程是否还活着。
+ *
+ * `process.kill(pid, 0)` 不发信号，只做权限/存在性检查：
+ *   - 成功 → 进程存在（可能是僵尸，但已被 init 收养时算存活）
+ *   - ESRCH → 不存在
+ *   - EPERM → 存在但无权限（视为存活）
+ */
+export function isDetachedAlive(pid: number): boolean {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e: any) {
+    return e?.code === "EPERM";
+  }
 }

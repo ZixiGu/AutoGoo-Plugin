@@ -698,6 +698,37 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/thread-doctor.py --fix    # 安�
 
 **接入**：`session-start.py`（Claude Code hook）与 pi `session_start` 都会在有问题时提示；修复始终由用户显式执行。
 
+### `.goo` 数据生命周期（`goo-gc.py`）
+
+`.goo/` 只会单调增长：`site/`（goo-publish 生成物）、`backups/`（内存层翻转快照）、
+`logs/`（轮转归档）不断累积，拖慢发布与巡检；而里面同时放着**不可重建的执行状态**
+（`.goo/plan.json`、`threads/<id>/plan.json`、`threads/<id>/logs/*.log`），
+删错就是不可逆的数据丢失。所以清理这件事只能**默认不动手**。
+
+```bash
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-gc.py              # 只读扫描 + dry-run 清单（默认）
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-gc.py --json       # 机器可读报告
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-gc.py --only site  # 只评估某一类
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-gc.py --snapshot   # 顺手记快照，下次可算真实增长
+python3 <auto_goo_root>/skills/auto-goo/scripts/goo-gc.py --apply      # 显式确认后才真删
+```
+
+| 目录 | 可重建性 | 保留策略 |
+| --- | --- | --- |
+| `site/` | 可重建（`goo-publish.py`） | 全部可清，下次 publish 重建 |
+| `backups/` | 可重建（快照） | 保留最近 3 份（`--keep-backups N`），其余按内容时间淘汰 |
+| `logs/` | 部分可重建 | 只清轮转归档（`*.log.N` / `*.log.gz` …）：预算 5 MiB（`--log-budget-mb`）或超 90 天（`--log-max-age-days`）；当前日志与 step log 不动 |
+| `threads/` `plans/` `artifacts/` `reports/` … | 不可重建 | 本工具永不处理，交人工判断 |
+
+**硬闸门**：`.goo/plan.json`、`threads/*/plan.json`、`threads/**/logs/*.log`、
+`config.json`、`current_thread.json`、`brainstorm.json`、`secrets.json` 一律不进候选；
+`--apply` 前先全量校验，**任一候选命中受保护路径就整体 abort（exit 2），一个文件都不删** ——
+这是分类逻辑出 bug 的信号，宁可不动。每次 `--apply` 会把删了什么、释放多少写进
+`.goo/logs/gc-<时间戳>.md`，便于人工复核。
+
+**验证**：`tests/` 下的 `test_goo_gc` 用运行前后目录哈希断言「默认运行零改动」，
+并断言 `--apply` 后 `plan.json` 与 step log 仍在；`check-plugin.sh` §42 做同样的双跑校验。
+
 ### 插件更新提醒（`goo-update-check.py`）
 
 插件会把**本地 git HEAD** 与**远端分支 HEAD** 做比对，落后时在会话启动提醒并给出更新命令。**只提醒，不自动更新。**
@@ -741,12 +772,12 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py --cached-onl
 
 | 层 | 名称 | 内容 | 容量 | 访问频度 |
 | --- | --- | --- | --- | --- |
-| **L0** | 项目画像 | 项目入口、operations.md、跨项目元教训 | KB 级 | **最热**，启动必读 |
+| **L0** | 项目总览 | 项目入口、operations.md、跨项目元教训 | KB 级 | **最热**，启动必读 |
 | **L1** | 场景知识 | lessons、references、concepts、任务页 | MB 级 | **默认层** |
 | **L2** | 原子事实 | 提炼后的决策、指标、错误码 | GB 级 | 按需查证 |
 | **L3** | 原始记录 | step log、命令输出、execution/record.md | 大而冷 | 只做追溯 |
 
-> **历史**：0.27.0 之前方向是反的（L0=原始日志、L3=项目画像），
+> **历史**：0.27.0 之前方向是反的（L0=原始日志、L3=项目总览），
 > 与 CPU 缓存和命名来源 TencentDB 相反。已全量翻转 426 篇 wiki + 全部代码。
 > 迁移脚本 `--dry-run` 默认只预览，翻转两次即回滚。
 
@@ -765,14 +796,14 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py --cached-onl
 
 | 层 | 复用形态 | 读者要它做什么 | 判据信号 |
 | --- | --- | --- | --- |
-| **L0** 项目画像 | 提供**方向** | 「这个项目是什么、边界在哪、有哪些铁律」 | 新 Agent 进来必须先读，否则会判断错 |
+| **L0** 项目总览 | 提供**方向** | 「这个项目是什么、边界在哪、有哪些铁律」 | 新 Agent 进来必须先读，否则会判断错 |
 | **L1** 场景知识 | 复用**方法** | 「这类问题该怎么处理」 | 能回答「遇到类似情况该怎么做」 |
 | **L2** 原子事实 | 查证**事实** | 「这个错误码是啥意思 / 当时那个指标是多少」 | 能独立看懂，但只对当时那个任务有意义 |
 | **L3** 原始记录 | 无复用，只有**追溯** | 「当时到底跑了什么命令 / 原始输出长什么样」 | 删掉上下文就没意义 |
 
 ### 每层的具体载体
 
-**L0 —— 项目画像**
+**L0 —— 项目总览**
 
 - 项目入口 `wiki/projects/<slug>.md`（`type: project`）
 - `operations.md`（运维手册）
@@ -846,9 +877,9 @@ python3 skills/auto-goo/scripts/check-wiki-frontmatter.py --suggest <file.md>
 `expandLayerRange()`（`utils/dispatch.ts`）：
 
 ```
-step 声明 L0 → 召回 [L0]                只要项目画像
-step 声明 L1 → 召回 [L0, L1]            ← 默认：场景知识 + 项目画像
-step 声明 L2 → 召回 [L0, L1, L2]        查事实，需要场景与画像
+step 声明 L0 → 召回 [L0]                只要项目总览
+step 声明 L1 → 召回 [L0, L1]            ← 默认：场景知识 + 项目总览
+step 声明 L2 → 召回 [L0, L1, L2]        查事实，需要场景知识与项目总览
 step 声明 L3 → 召回 [L0, L1, L2, L3]    追溯原始，但需要全栈上下文
 ```
 
@@ -868,7 +899,7 @@ subagent 会拿到一堆没有上下文的原始日志 —— 理解原始记录
 
 - `grep -rn "memory_layer" skills/auto-goo/scripts/*.py` → **无输出**
 - 843 篇 wiki 中仅 423 篇填了（50%）
-- L0 项目画像仅 11 篇，且 `autogoo-plugin` 项目自己 **L0 = 0**
+- L0 项目总览仅 11 篇，且 `autogoo-plugin` 项目自己 **L0 = 0**
 - 召回不支持按层过滤 → 填了也没人用
 - 派发路径算出了 `packet.memory_layer` 却**从未传给 `--layer`**
 

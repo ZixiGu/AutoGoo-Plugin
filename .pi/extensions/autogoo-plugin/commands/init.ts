@@ -587,7 +587,9 @@ async function handleOrganizeExisting(cwd: string, projectDirs: string[], ctx: E
         existing.push(entry.name);
       }
     }
-  } catch {}
+  } catch {
+    /* 静默降级：扫描失败就当没有可整理目录，下面统一走「没有找到」提示 */
+  }
 
   if (existing.length === 0) {
     ctx.ui.notify("没有找到可整理的文件或目录。", "info");

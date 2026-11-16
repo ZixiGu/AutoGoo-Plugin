@@ -1,7 +1,7 @@
 ---
 name: goo-workflow
 description: "Use when the user says '/auto-goo:goo-init', '/auto-goo:goo-brainstorm', '/auto-goo:goo-plan', '/auto-goo:goo-start', '/auto-goo:goo-research', '/auto-goo:goo-daily-report', '/auto-goo:goo-usage', '/auto-goo:goo-usage-analyse', '/auto-goo:goo-observe', '/auto-goo:goo-publish', '找目标', '开始任务', 'run:', '日报', '周报', 'usage', 'token统计', 'token降本', '后台观察', '发布HTML', '自改进', or gives a goal-clear multi-step task that can be decomposed into sub-tasks. Runs Goo workflow: config init, wiki-based brainstorm, wiki recall, DAG planning, subagent execution, research material archiving, status/observe, HTML publishing, optimization, Goo-wiki archiving, usage monitor, usage cost analysis, daily reports, and plugin self-improvement. Compatible with Claude Code and Codex."
-version: 0.27.0
+version: 0.28.0
 tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent, wait_agent, request_user_input]
 ---
 
@@ -61,13 +61,13 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 
 | 层 | 名称 | 内容 | 容量 | 访问频度 |
 | --- | --- | --- | --- | --- |
-| **L0** | 项目画像 | 项目入口 `<slug>.md`、`operations.md`、跨项目元教训、CLAUDE.md 项目约定 | KB 级 | **最热**：主 Agent 启动必读 |
+| **L0** | 项目总览 | 项目入口 `<slug>.md`、`operations.md`、跨项目元教训、CLAUDE.md 项目约定 | KB 级 | **最热**：主 Agent 启动必读 |
 | **L1** | 场景知识 | 任务页、lessons、references、concepts，跨任务可复用的判断与方法 | MB 级 | **默认层**：Subagent 默认读取 |
 | **L2** | 原子事实 | 从 step 产物提炼的关键决策、指标、命令、错误码 | GB 级 | 按需查证 |
 | **L3** | 原始记录 | `.goo/logs/` step log、原始命令输出、未脱敏 transcript、`execution/record.md` | 大而冷 | 只做 trace/audit |
 
-> 历史说明：早期版本的编号方向是反的（L0=原始日志、L3=项目画像），
-> 与 CPU 缓存和命名来源 TencentDB 相反，已于 0.27.0 全量翻转。
+> 历史说明：早期版本的编号方向是反的（L0=原始日志、L3=项目总览），
+> 与 CPU 缓存和命名来源 TencentDB 相反，已于 0.28.0 全量翻转。
 > 若看到旧笔记里 "L0 原始日志" 的说法，那是旧语义。
 
 规则：
@@ -357,7 +357,7 @@ Markdown 任务输入的完整解析规则也在 `references/task-parsing.md`：
 
 **Subagent 上下文隔离**：每个 Subagent 默认只拿当前 step、必要项目约束、相关 wiki_context 摘要、上游产物路径、允许读写边界和回写要求。Subagent 之间通过当前 thread 的 `plan.json`、`logs/`、`artifacts/` 和产物路径交接，不共享完整会话历史或彼此的推理草稿。
 
-**Subagent 显式分工**：每个 step 必须包含 `subagent` 和 `task_agent` 字段。`subagent` 只允许稳定 Role Agent：`researcher`、`collector`、`implementer`、`optimizer`、`evaluator`、`reviewer`、`auditor`、`recorder`；`task_agent` 必须从对应 role 的 `agents/tasks/` 目录下选择，例如 `document-analyst`、`data-collector`、`usage-collector`、`feature-builder`、`test-runner`、`code-reviewer`、`evidence-auditor`、`wiki-curator`。调度时先按 `subagent` 选择 role prompt，再按 `task_agent` 叠加细分任务 prompt。**角色分工原则**：`collector` 负责确定性数据采集与机械整理（usage/会话/wiki graph/远程探测/日志频率 → packet）；`researcher` 收窄为认知性研究（学术论文/代码库架构/领域多来源调研）；两者都不做主 Agent 亲自读原文，解读交给主模型综合，归档正文交给 recorder。若缺失或不合法，先补 plan 或创建新角色/任务画像，不由主 Agent 代执行。
+**Subagent 显式分工**：每个 step 必须包含 `subagent` 和 `task_agent` 字段。`subagent` 只允许稳定 Role Agent：`researcher`、`collector`、`implementer`、`optimizer`、`evaluator`、`reviewer`、`auditor`、`recorder`；`task_agent` 必须从对应 role 的 `agents/tasks/` 目录下选择，例如 `document-analyst`、`data-collector`、`usage-collector`、`feature-builder`、`test-runner`、`code-reviewer`、`evidence-auditor`、`wiki-curator`。调度时先按 `subagent` 选择 role prompt，再按 `task_agent` 叠加细分任务 prompt。**角色分工原则**：`collector` 负责确定性数据采集与机械整理（usage/会话/wiki graph/远程探测/日志频率 → packet）；`researcher` 收窄为认知性研究（学术论文/代码库架构/领域多来源调研）；两者都不做主 Agent 亲自读原文，解读交给主模型综合，归档正文交给 recorder。若缺失或不合法，先补 plan 或创建新角色/任务细分，不由主 Agent 代执行。
 
 **权限分层**：AutoGoo-Plugin 不让后台 Subagent 做平凡权限交互。普通读写和低风险命令必须在 plan 的 `allowed_read_paths`、`allowed_write_paths`、`validation`、`requires_user_confirm=false` 与项目命令 allowlist 中提前声明，Subagent 在边界内直接执行。可预见的安装依赖、网络下载、远程执行、长跑任务、端口监听、批量数据改写、跨机器同步或高成本操作，规划阶段必须标记 `requires_user_confirm=true`，由主 Agent 在派发前一次性说明作用域、命令类别、产物位置和风险并取得确认。执行中遇到 `PermissionDenied`、sandbox blocked、approval required、路径越界或命令不在允许范围时，Subagent 不得自行弹窗、不得静默跳过、不得要求主 Agent 直接代做；必须写日志并回写当前 step 为 `blocked`/`needs_user_approval`，说明所需命令、原因、读写路径、风险和建议处理。主 Agent 聚合这些阻塞项后在前台向用户申请许可；用户批准后只在批准范围内重派 Subagent 或执行许可命令，用户拒绝后再标记 failed 或调整 plan。
 
@@ -605,6 +605,7 @@ Phase 4 归档完成后，在任务日志末尾追加 `## 流程问题` 反思�
 - **`skills/auto-goo/scripts/wiki-graph-assist.py`** — 生成紧凑 Goo-wiki 关联图谱上下文，并可维护项目 index/log 链接；调用前先解析 AutoGoo-Plugin 根目录
 - **`skills/auto-goo/scripts/check-plugin.sh`** — 插件结构完整性自检脚本（安装后运行确认所有组件就绪）；调用前先解析 AutoGoo-Plugin 根目录
 - **`skills/auto-goo/scripts/goo-observe.py`** — 观察当前 thread 的后台 step、heartbeat、step log 和 shell log 跟踪模板；`goo-publish` 的 `observe.html` 复用同一数据模型
+- **`skills/auto-goo/scripts/goo-gc.py`** — `.goo` 数据生命周期管理：只读扫描各目录体积/增长/可重建性，输出保留策略与清理清单。**默认 dry-run**，不带 `--apply` 不改任何文件；`--apply` 只清 `site/`、旧 `backups/`、轮转日志，`.goo/plan.json`、`threads/*/plan.json`、`threads/*/logs/*.log` 是硬闸门（命中即整体 abort）
 - **`skills/auto-goo/scripts/goo-ssh.sh`** — 连接已配置的远程服务器；有密码时从 `secrets.json` 读取并用 `sshpass`，无密码时走普通 `ssh`。调用前先解析 AutoGoo-Plugin 根目录
 
 ### Agents

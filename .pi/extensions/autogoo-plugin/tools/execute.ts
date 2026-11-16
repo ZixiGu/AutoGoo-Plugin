@@ -17,7 +17,7 @@ import { logWarn } from "../utils/log.js";
 import { DEFAULT_MEMORY_LAYER } from "../constants.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execPython, execShell } from "../utils/exec.js";
-import { runSubagent, resolveSubagentModel, resolveOrPromptSubagentModel } from "../utils/subagent.js";
+import { runSubagent, resolveSubagentModel, resolveOrPromptSubagentModel, spawnSubagentDetached, isDetachedAlive, type DetachedHandle } from "../utils/subagent.js";
 import { getRolePrompt, getTaskAgentPrompt } from "../utils/prompts.js";
 import { updateStatusBar, formatStatusLine, snapshotPlan } from "../utils/status.js";
 import { checkPlanLocks, acquirePlanLocks, releasePlanLocks, describeConflicts } from "../utils/locks.js";
@@ -47,7 +47,8 @@ import {
   loadProjectConfig,
   writeExecutionModelConfig,
 } from "../utils/paths.js";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 export function registerExecuteTool(pi: ExtensionAPI): void {
   pi.registerTool({
@@ -649,6 +650,51 @@ async function runHeartbeatCheck(
     (((plan as any).heartbeat_timeout_min ?? 0) > 0 ? (plan as any).heartbeat_timeout_min * 60 : undefined) ??
     STALE_SECONDS_DEFAULT;
 
+  // ── detached 子进程存活检测 ──────────────────────────────────────────────
+  //
+  // detached 模式下父进程收不到 close 事件，只能靠 pid 存活判断。
+  // 死掉但 step 还是 running 的，直接判 interrupted（不要等心跳超时 15 分钟）——
+  // 否则用户会看到"运行中"假象却永远不推进。
+  const detachedDead: Step[] = [];
+  const agentsDirOf = async (): Promise<string | null> => {
+    try {
+      const tid = (await getCurrentThreadId(cwd)) ?? null;
+      return tid ? join(cwd, ".goo", "threads", tid, "agents") : null;
+    } catch {
+      return null;
+    }
+  };
+  const agentsDir = await agentsDirOf();
+  if (agentsDir && existsSync(agentsDir)) {
+    for (const step of plan.steps) {
+      if (step.status !== "running") continue;
+      const metaPath = join(agentsDir, `step-${step.id}.json`);
+      if (!existsSync(metaPath)) continue;          // 非 detached 派发（阻塞路径/历史），跳过
+      let meta: any = null;
+      try {
+        meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+      } catch {
+        continue;
+      }
+      if (!meta?.pid) continue;
+      if (!isDetachedAlive(Number(meta.pid))) {
+        detachedDead.push(step);
+      }
+    }
+  }
+  for (const step of detachedDead) {
+    step.status = "interrupted";
+    step.error = `detached 子进程已退出但 step 未标记完成（log: .goo/threads/<tid>/agents/step-${step.id}.jsonl）`;
+    step.agent_id = null;
+    lines.push(`💀 #${step.id} detached 子进程已退出 → interrupted（检查 agents/step-${step.id}.jsonl）`);
+    execPython(
+      UPDATE_STEP_PY,
+      ["--plan", planPath, "--step-id", String(step.id), "--interrupt", "--error", step.error],
+      cwd,
+      { timeout: 10000 },
+    );
+  }
+
   for (const step of plan.steps) {
     if (step.status !== "running") continue;
     if (!step.heartbeat_at) { staleSteps.push(step); continue; }
@@ -713,6 +759,265 @@ async function runHeartbeatCheck(
   };
 }
 
+// ── Detached 派发（绕开 pi tool call 2 分钟硬超时）────────────────────────────
+
+/**
+ * 把就绪步骤以 **detached 子进程**派发出去，立刻返回。
+ *
+ * 为什么必须这样：pi 对每个 tool call 有硬编码 `TOOL_TIMEOUT_MS = 12e4`（2 分钟），
+ * 到点 abort 会连带 SIGTERM 掉我们 spawn 的子进程 —— 表现为所有步骤 `exit=143`、
+ * 停在 progress=15。真实 DAG 步骤通常几分钟到几十分钟，所以「阻塞等待」这条路
+ * 在当前 pi 版本下根本走不通。
+ *
+ * 拆成两段：
+ *   1. 本函数：spawn detached（毫秒级）+ 把 pid 落盘 → 立即返回
+ *   2. heartbeat_check：读 pid 落盘文件，检测存活；死了但 step 仍 running → interrupted
+ *
+ * 子进程自己负责把 step 标为 completed（它有 auto_goo_update_step 工具）。
+ */
+async function dispatchDetached(
+  cwd: string,
+  plan: Plan,
+  planPath: string,
+  toDispatch: any[],
+  agentIds: Map<string, string>,
+  packets: Map<string, any>,
+  subModel: { provider?: string; model?: string },
+  threadId: string,
+  lines: string[],
+): Promise<Array<{ stepId: any; pid: number; logPath: string; error?: string }>> {
+  const out: Array<{ stepId: any; pid: number; logPath: string; error?: string }> = [];
+  const agentsDir = join(cwd, ".goo", "threads", threadId, "agents");
+  mkdirSync(agentsDir, { recursive: true });
+
+  for (const step of toDispatch) {
+    const agentId = agentIds.get(String(step.id)) ?? `agent-${step.id}-${Date.now()}`;
+    const { packet, packetGenerated } = packets.get(String(step.id)) ?? {
+      packet: { wiki_paths: [] as string[], wiki_graph_packet_path: "", memory_layer: DEFAULT_MEMORY_LAYER },
+      packetGenerated: false,
+    };
+
+    // step 契约（与阻塞路径保持一致的关键信息）
+    const stepContract = [
+      `- step_id: ${step.id}`,
+      `- name: ${step.name ?? ""}`,
+      `- type: ${step.type ?? "exec"} · role: ${step.subagent ?? "implementer"}/${step.task_agent ?? ""}`,
+      `- memory_layer: ${packet.memory_layer}`,
+      `- 产物必须写到: ${step.output ?? `(未指定)`}`,
+      `- 完成时调用: auto_goo_update_step --step-id ${step.id} --complete --note "<结论>"`,
+      `- 失败时调用: auto_goo_update_step --step-id ${step.id} --fail --error "<原因>"`,
+    ];
+
+    const task = buildSubagentTaskPrompt({
+      role: step.subagent || "researcher",
+      task: step.description || `执行 step #${step.id}: ${step.name}`,
+      wiki_paths: packet.wiki_paths,
+      wiki_graph_packet_path: packet.wiki_graph_packet_path,
+      packetGenerated,
+      memory_layer: packet.memory_layer,
+      stepContract,
+      wikiPathSizes: await measureWikiPaths(cwd, packet.wiki_paths),
+    });
+
+    const logPath = join(agentsDir, `step-${step.id}.jsonl`);
+    try {
+      const handle = spawnSubagentDetached({
+        provider: subModel.provider,
+        model: subModel.model,
+        task,
+        cwd,
+        systemPrompt: [
+          getRolePrompt(step.subagent || "researcher"),
+          getTaskAgentPrompt(step.task_agent || ""),
+        ].filter(Boolean).join("\n"),
+        logPath,
+      });
+
+      // pid 落盘：heartbeat_check 据此判断存活
+      writeFileSync(
+        join(agentsDir, `step-${step.id}.json`),
+        JSON.stringify({ ...handle, stepId: step.id, agentId }, null, 2),
+        "utf-8",
+      );
+
+      execPython(
+        UPDATE_STEP_PY,
+        ["--plan", planPath, "--step-id", String(step.id), "--heartbeat", "--progress", "8",
+         "--note", `detached pid=${handle.pid} (${subModel.provider}/${subModel.model})`],
+        cwd, { timeout: 10000 },
+      );
+      out.push({ stepId: step.id, pid: handle.pid, logPath });
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      lines.push(`❌ #${step.id} 派发失败: ${msg}`);
+      execPython(
+        UPDATE_STEP_PY,
+        ["--plan", planPath, "--step-id", String(step.id), "--fail", "--error", `派发失败: ${msg}`],
+        cwd, { timeout: 10000 },
+      );
+      out.push({ stepId: step.id, pid: 0, logPath, error: msg });
+    }
+  }
+  return out;
+}
+
+// ── runScheduleDetached：非阻塞调度（full_cycle 使用）──────────────────────────
+
+/**
+ * 与 {@link runSchedule} 相同的"找就绪步骤"逻辑，但派发方式是 detached spawn
+ * 后立即返回，不等待子进程完成。
+ *
+ * 只保留调度必需的部分：校验 → 自动重试 → 算 ready → 槽位 → 派发。
+ * 需要用户确认的高风险步骤在这里同样会弹确认框（快操作，不受 2 分钟限制）。
+ */
+async function runScheduleDetached(
+  pi: ExtensionAPI,
+  cwd: string,
+  plan: Plan,
+  planPath: string,
+  ctx?: any,
+): Promise<{ content: any[]; details: any }> {
+  const lines: string[] = [];
+
+  const validation = validatePlan(plan);
+  if (!validation.valid) {
+    const cycleNodes = findCycleNodes(plan);
+    const cycleMsg = cycleNodes.length > 0
+      ? `\n循环依赖: #${cycleNodes.join(", #")}（请检查 depends_on 是否存在环）`
+      : "";
+    return {
+      content: [{ type: "text", text: `❌ plan 校验失败:\n${validation.issues.join("\n")}${cycleMsg}` }],
+      details: { error: "plan_invalid", issues: validation.issues, cycleNodes },
+    };
+  }
+
+  // 自动重试
+  let autoRetried = 0;
+  for (const step of plan.steps) {
+    if (step.status !== "failed") continue;
+    const retryCount = ((step as any).retry_count ?? 0) as number;
+    if (retryCount < MAX_RETRIES) {
+      (step as any).retry_count = retryCount + 1;
+      step.status = "pending";
+      step.progress = 0;
+      step.agent_id = null;
+      step.error = undefined;
+      autoRetried++;
+      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--status", "pending", "--note", `Auto-retry #${retryCount + 1}`], cwd, { timeout: 10000 });
+    }
+  }
+
+  const completedIds = new Set(plan.steps.filter((s) => s.status === "completed").map((s) => String(s.id)));
+  const running = plan.steps.filter((s) => s.status === "running");
+  const failed = plan.steps.filter((s) => s.status === "failed");
+  const ready = plan.steps.filter(
+    (s) => s.status === "pending" && s.depends_on.every((d) => completedIds.has(String(d))),
+  );
+
+  const maxConcurrent = plan.execution?.max_concurrent ?? MAX_CONCURRENT_DEFAULT;
+  const availableSlots = Math.max(0, maxConcurrent - running.length);
+  const toDispatch = ready
+    .filter((s) => s.execution_target !== "remote")
+    .slice(0, availableSlots);
+
+  if (autoRetried > 0) lines.push(`🔄 自动重试 ${autoRetried} 个 failed 步骤`);
+  if (failed.length > 0) lines.push(`💀 ${failed.length} 步失败: #${failed.map((s) => s.id).join(", #")}`);
+
+  if (toDispatch.length === 0) {
+    if (completedIds.size === plan.steps.length) {
+      plan.status = "completed";
+      plan.completed_at = new Date().toISOString();
+      await savePlan(cwd, plan, planPath);
+      lines.push(`✅ DAG 全部完成！${completedIds.size}/${plan.steps.length} 步`);
+    } else if (running.length > 0) {
+      lines.push(`⏳ ${running.length} 步运行中（detached），用 heartbeat_check 或 dag_status 查看进度`);
+    } else if (ready.length > 0) {
+      lines.push(`ℹ️ ${ready.length} 步就绪但无空槽（${running.length}/${maxConcurrent}）`);
+    } else {
+      lines.push(`⏳ 无可派发步骤（completed ${completedIds.size}/${plan.steps.length}，failed ${failed.length}）`);
+    }
+    if (ctx) updateStatusBar(ctx);
+    return { content: [{ type: "text", text: lines.join("\n") }], details: { dispatched: [] } };
+  }
+
+  // agentId + start 标记
+  const agentIds = new Map<string, string>();
+  for (const step of toDispatch) {
+    const agentId = `agent-${step.id}-${Date.now()}`;
+    agentIds.set(String(step.id), agentId);
+    execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--start", "--progress", "5", "--agent-id", agentId], cwd, { timeout: 15000 });
+    execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--precreate-log", "--note", `Detached dispatch to ${step.subagent} (${agentId})`], cwd, { timeout: 15000 });
+  }
+
+  // wiki packet
+  const threadId = (await getCurrentThreadId(cwd)) ?? "current";
+  const packets = new Map<string, WikiPacketResult>();
+  await Promise.all(
+    toDispatch.map(async (step: any) => {
+      const res = await generateWikiPacket(
+        cwd,
+        { id: step.id, type: step.type, wiki_paths: step.wiki_paths, memory_layer: step.memory_layer },
+        step.description || `step ${step.id} dispatch`,
+        threadId,
+      );
+      packets.set(String(step.id), res);
+    }),
+  );
+
+  // 模型解析
+  const execCfg = (await loadProjectConfig(cwd).catch(() => null))?.execution || {};
+  const subModel = await resolveOrPromptSubagentModel(
+    { provider: execCfg.subagent_provider, model: execCfg.subagent_model },
+    ctx?.model ? { provider: ctx.model.provider, id: ctx.model.id } : null,
+    ctx ?? null,
+    (provider, model) => writeExecutionModelConfig(cwd, provider, model),
+  );
+  if (!subModel.provider || !subModel.model) {
+    return {
+      content: [{ type: "text", text: "blocked: Subagent 模型未配置或用户取消" }],
+      details: { blocked: true, reason: "Subagent 模型未配置" },
+    };
+  }
+
+  // 资源锁
+  const lockCheck = checkPlanLocks(cwd, planPath);
+  if (!lockCheck.ok) {
+    const detail = describeConflicts(lockCheck.conflicts) || lockCheck.error || "未知冲突";
+    for (const step of toDispatch) {
+      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--block", "--error", `资源冲突：${detail}`], cwd, { timeout: 10000 });
+    }
+    return {
+      content: [{ type: "text", text: `blocked: 资源冲突，${toDispatch.length} 步未派发。\n${detail}` }],
+      details: { blocked: true, conflicts: lockCheck.conflicts ?? [] },
+    };
+  }
+  acquirePlanLocks(cwd, planPath);
+
+  for (const step of toDispatch) {
+    activityBus.begin(step.id, `${step.name ?? ""}${step.subagent ? ` · ${step.subagent}` : ""}`.trim());
+  }
+
+  // ★ detached 派发：毫秒级返回
+  const handles = await dispatchDetached(cwd, plan, planPath, toDispatch, agentIds, packets, subModel, threadId, lines);
+
+  for (const h of handles) {
+    if (h.error) continue;
+    lines.push(`▶️ #${h.stepId} 已派发 detached pid=${h.pid} → ${h.logPath.replace(`${cwd}/`, "")}`);
+  }
+  lines.push(`ℹ️ detached 模式：本工具已返回，子进程独立运行。用 auto_goo_execute action=heartbeat_check 或 auto_goo_dag_status 查看进度。`);
+
+  if (ctx) updateStatusBar(ctx);
+
+  return {
+    content: [{ type: "text", text: lines.join("\n") }],
+    details: {
+      dispatched: handles.filter((h) => !h.error).map((h) => ({ stepId: h.stepId, pid: h.pid, logPath: h.logPath })),
+      failedDispatch: handles.filter((h) => h.error).map((h) => ({ stepId: h.stepId, error: h.error })),
+      detached: true,
+    },
+  };
+}
+
 // ── Full cycle: schedule + heartbeat check ──────────────────────────────────
 
 async function runFullCycle(
@@ -736,8 +1041,13 @@ async function runFullCycle(
     };
   }
 
-  // 2. Schedule new steps
-  const schedResult = await runSchedule(pi, cwd, updatedPlan, planPath, ctx, signal, onUpdate);
+  // 2. Schedule new steps —— **非阻塞派发**
+  //
+  // ⚠ 这里不能用 runSchedule 的阻塞路径：pi 对每个 tool call 有硬编码
+  // TOOL_TIMEOUT_MS = 2 分钟，到点 abort 会 SIGTERM 掉所有 subagent，
+  // 表现为 exit=143、步骤停在 progress=15。真实 DAG 步骤远超 2 分钟。
+  // 所以 full_cycle 走 detached：spawn 后立即返回，进度靠 heartbeat_check 轮询。
+  const schedResult = await runScheduleDetached(pi, cwd, updatedPlan, planPath, ctx);
 
   // Update status bar
   if (ctx) updateStatusBar(ctx);

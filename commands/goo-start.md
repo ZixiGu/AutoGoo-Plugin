@@ -61,7 +61,7 @@ description: 启动 AutoGoo-Plugin 完整工作流 — 召回 wiki 经验、生�
 - 执行阶段不能依赖聊天记录里的隐含方案；默认先同步 plan 后对话增量，发现信息缺失时先补 plan 或写 Goo-wiki 项目路径 `context/*.md`
 - 如果 `.goo/brainstorm.json` 或 `.goo/plan.json` 的 `review.status` 仍是 `pending_user_review`，执行开始前必须先停下来让用户审阅和确认；不得把未确认草案自动归档或直接执行
 - 如果 `.goo/brainstorm.json` 存在且已经被用户确认，执行开始前必须确认 brainstorm 已归档；未归档时先归档最终确认版 brainstorm，再启动业务 step
-- 执行阶段必须使用 plan step 中声明的 `subagent` 和 `task_agent`；若任一字段缺失或不合法，先补 plan 或创建角色/任务画像，不由主 Agent 直接代执行
+- 执行阶段必须使用 plan step 中声明的 `subagent` 和 `task_agent`；若任一字段缺失或不合法，先补 plan 或创建角色/任务细分，不由主 Agent 直接代执行
 - 执行阶段把 plan step 中的 `available_skills` 作为 Subagent prompt 的 skill allowlist；没有额外 skill 时传空数组，不把全部 skill 默认塞给 Subagent
 - 执行阶段必须记录当前 `thread.id`；thread plan 使用 `.goo/threads/<thread_id>/plan.json`，日志写 `.goo/threads/<thread_id>/logs/`，并在执行完成、失败或阻塞后更新 thread 状态
 - 执行阶段必须尊重 `.goo/locks/` 中的资源锁；派发前 acquire，结束/失败/停止时 release，冲突时不要并行写同一资源

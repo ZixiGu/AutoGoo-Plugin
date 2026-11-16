@@ -1,6 +1,6 @@
 ---
 name: obsidian-recorder
-description: "AutoGoo-Plugin Obsidian 归档 Task Agent。作为 recorder 旗下任务画像，将执行记录格式化为 Goo-wiki/Obsidian 规范笔记。"
+description: "AutoGoo-Plugin Obsidian 归档 Task Agent。作为 recorder 旗下任务细分，将执行记录格式化为 Goo-wiki/Obsidian 规范笔记。"
 tools: Read, Grep, Glob, Bash, Write, AskUserQuestion
 model: haiku
 permissionMode: default

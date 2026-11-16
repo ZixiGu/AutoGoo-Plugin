@@ -98,7 +98,15 @@ def upsert_index(index: dict[str, Any], meta: dict[str, Any]) -> None:
     index["threads"] = sorted(threads, key=lambda item: str(item.get("updated_at", "")), reverse=True)
 
 
-def create_thread(goo_dir: Path, title: str, runtime: str = "claude-code", thread_id: str | None = None) -> dict[str, Any]:
+def create_thread(goo_dir: Path, title: str, runtime: str = "claude-code", thread_id: str | None = None,
+                  *, sync_compat: bool = True) -> dict[str, Any]:
+    """Create a thread directory + thread.json.
+
+    *sync_compat* 默认 True（CLI `create` 路径：新线程确实应该接管兼容入口）。
+    sync_from_plan() 必须传 False：它手上可能是一个刚写好的 compat plan，
+    create_thread 里去拿 thread 目录的旧/空 plan 覆盖 compat，会把刚写入的
+    状态（含派生后的 plan 时间窗口）回滚。
+    """
     thread_id = thread_id or unique_thread_id(goo_dir, title)
     tdir = thread_dir(goo_dir, thread_id)
     tdir.mkdir(parents=True, exist_ok=True)
@@ -124,7 +132,7 @@ def create_thread(goo_dir: Path, title: str, runtime: str = "claude-code", threa
     index = ensure_index(goo_dir)
     upsert_index(index, meta)
     write_index(goo_dir, index)
-    set_current(goo_dir, thread_id)
+    set_current(goo_dir, thread_id, sync_compat=sync_compat)
     return meta
 
 
@@ -228,7 +236,7 @@ def sync_from_plan(
     tdir = thread_dir(goo_dir, resolved)
     meta = load_json(tdir / "thread.json", {})
     if not meta:
-        meta = create_thread(goo_dir, plan.get("task", resolved), thread_id=resolved)
+        meta = create_thread(goo_dir, plan.get("task", resolved), thread_id=resolved, sync_compat=False)
     status = compute_plan_status(plan)
     updated = now()
     meta.update(

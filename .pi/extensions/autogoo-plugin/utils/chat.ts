@@ -283,7 +283,9 @@ export async function sendMessage(
   const existing = new Set<string>();
   try {
     for (const f of await readdir(dir)) existing.add(f);
-  } catch {}
+  } catch {
+    /* 静默降级：目录还不存在时视为无已存文件，重名保护逻辑仍然生效 */
+  }
   while (existing.has(file)) {
     file = `${sanitizeTs(msg.ts)}_${fromId}_${i}.json`;
     i++;
@@ -376,7 +378,9 @@ export async function putBackMessages(
   const existing = new Set<string>();
   try {
     for (const f of await readdir(dir)) existing.add(f);
-  } catch {}
+  } catch {
+    /* 静默降级：批量写入前目录尚未建立时视为空目录，逐个写入会自行 mkdir */
+  }
   for (const msg of messages) {
     let file = `${sanitizeTs(msg.ts)}_${msg.from}.json`;
     let i = 1;

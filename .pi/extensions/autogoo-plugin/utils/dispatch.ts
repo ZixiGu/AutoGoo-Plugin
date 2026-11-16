@@ -226,6 +226,74 @@ export interface SubagentPromptOptions {
   stepContract?: string[];
   /** wiki_paths 展开后的体积（由 measureWikiPaths 计算） */
   wikiPathSizes?: WikiPathSizes;
+  /** 已登记的副作用台账（step.checkpoints），resume/重试时禁止重做 intact 项 */
+  checkpoints?: CheckpointEntry[];
+  /** update-step.py --resume / --status pending 写入的 resume 决策 */
+  resumeState?: ResumeState;
+}
+
+/** plan.json step.checkpoints[i]（由 update-step.py --checkpoint-file/--checkpoint-command 写入） */
+export interface CheckpointEntry {
+  id?: string;
+  kind?: string;
+  target?: string;
+  sha256?: string;
+  fingerprint?: string;
+  note?: string;
+  at?: string;
+}
+
+/** plan.json step.resume_state（checkpoint 比对结果） */
+export interface ResumeState {
+  checked_at?: string;
+  mode?: string;
+  counts?: Record<string, number>;
+  skip?: Array<{ id?: string; kind?: string; target?: string }>;
+  redo?: Array<{ id?: string; kind?: string; target?: string }>;
+  unverifiable?: Array<{ id?: string; kind?: string; target?: string }>;
+  guidance?: string;
+}
+
+/**
+ * 渲染「已完成副作用」段。
+ *
+ * 存在意义：`--resume` 和 MAX_RETRIES 自动重试都会再次派发同一个 step，
+ * 如果 Subagent 不知道哪些写操作已经落地，就会重复施加副作用（二次写文件、
+ * 重复执行迁移/请求）。台账在 plan 里，但 prompt 不带上等于没有消费点。
+ * 没有 checkpoint 时返回空数组，避免无意义地膨胀 prompt。
+ */
+function formatCheckpointSection(o: SubagentPromptOptions): string[] {
+  const entries = o.checkpoints ?? [];
+  const state = o.resumeState;
+  if (entries.length === 0 && !state) return [];
+
+  const lines: string[] = [
+    `## 已完成副作用（checkpoint 台账，勿重复）`,
+    `- 本 step 是 resume/重试派发：已产生的副作用记录在 plan，重跑前必须先比对`,
+  ];
+  if (state?.mode) lines.push(`- resume mode: ${state.mode}${state.checked_at ? ` @ ${state.checked_at}` : ""}`);
+  if (state?.guidance) lines.push(`- 判定: ${state.guidance}`);
+  if (entries.length > 0) {
+    lines.push(`- 已登记 ${entries.length} 条副作用:`);
+    for (const entry of entries.slice(0, 12)) {
+      const digest = entry.sha256 ?? entry.fingerprint ?? "";
+      lines.push(`    ${entry.id ?? "?"} ${entry.kind ?? "?"} ${entry.target ?? ""}${digest ? ` (${digest.slice(0, 12)})` : ""}`);
+    }
+    if (entries.length > 12) lines.push(`    …另有 ${entries.length - 12} 条`);
+  }
+  if (state?.skip && state.skip.length > 0) {
+    lines.push(`- ✅ 已完成，**不要重做**: ${state.skip.map((i) => i.target ?? i.id).join(", ").slice(0, 400)}`);
+  }
+  if (state?.redo && state.redo.length > 0) {
+    lines.push(`- ⚠️ 已漂移/丢失，必须重做: ${state.redo.map((i) => i.target ?? i.id).join(", ").slice(0, 400)}`);
+  }
+  if (state?.unverifiable && state.unverifiable.length > 0) {
+    lines.push(`- ❓ 命令类不可回读，不要盲目重复执行: ${state.unverifiable.map((i) => i.target ?? i.id).join(", ").slice(0, 400)}`);
+  }
+  lines.push(
+    `- 每完成一个新的写文件/执行命令，立刻登记: auto_goo_update_step --step-id <id> --checkpoint-file <path> / --checkpoint-command "<cmd>"`,
+  );
+  return lines;
 }
 
 /**
@@ -266,6 +334,7 @@ export function buildSubagentTaskPrompt(o: SubagentPromptOptions): string {
   if (o.stepContract && o.stepContract.length > 0) {
     sections.push(`## Step 契约`, ...o.stepContract);
   }
+  sections.push(...formatCheckpointSection(o));
   sections.push(
     `## 按需读取 wiki(对齐 SKILL.md "按需调用原则")`,
     `- 本 step 的 wiki_paths glob(只读这些,不要"读全部 wiki"):`,

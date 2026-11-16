@@ -17,6 +17,7 @@
 
 import { bar, clip, color, fit, fmtAge, ListState, statusMark, statusToken } from "./tui-kit.js";
 import { renderRecallTab } from "./recall-tab.js";
+import { renderExecTab } from "./exec-tab.js";
 import type { Theme } from "@earendil-works/pi-tui";
 import type { ObserveCounts, ObserveSnapshot, ObserveStep } from "./observe-types.js";
 
@@ -228,7 +229,7 @@ export function renderShellTab(
  * 而不是藏在需要 pi-tui 的类里。
  */
 export interface ObserveRenderOptions {
-  tab: "steps" | "overview" | "recall" | "env" | "shell";
+  tab: "steps" | "overview" | "exec" | "recall" | "env" | "shell";
   width: number;
   theme?: Theme;
   /** steps tab 当前选中项下标 */
@@ -253,6 +254,9 @@ export function renderObserveBody(d: ObserveSnapshot, opts: ObserveRenderOptions
     case "recall":
       // recall 单独成文件（0.26.0 首次可测的范例），这里只做分发
       return renderRecallTab(d.recall, w, opts.theme);
+    case "exec":
+      // 执行指标：耗时分布 / 超时排行 / 失败聚类 / 重试。同样是纯函数。
+      return renderExecTab(d.exec, w, opts.theme);
     default:
       return [fit(color(opts.theme, "error", `  未知 tab: ${String(opts.tab)}`), w)];
   }

@@ -12,6 +12,7 @@
  */
 
 import type { RecallStats } from "./recall-observe.js";
+import type { ExecStats } from "./exec-observe.js";
 
 export interface ObserveStep {
   id: number | string;
@@ -48,15 +49,21 @@ export interface ObserveSnapshot {
   commands?: Record<string, string>;
   /** 召回观测统计（来自 .goo/logs/recall.jsonl） */
   recall?: RecallStats;
+  /** 执行观测统计（来自 .goo/logs/exec.jsonl） */
+  exec?: ExecStats;
 }
 
-export type ObserveTab = "steps" | "overview" | "recall" | "env" | "shell";
+export type ObserveTab = "steps" | "overview" | "exec" | "recall" | "env" | "shell";
 
 /**
  * tab 顺序即 `1`-`5` 快捷键顺序，也是 `ObservePanel.tabIndex` 的唯一含义来源。
  * 放这里是为了让 `observe-tabs.ts` 的纯渲染函数（含 tab 栏）与面板共用同一份顺序。
  */
-export const TAB_ORDER: ObserveTab[] = ["steps", "overview", "recall", "env", "shell"];
+/**
+ * `exec` 紧跟 overview：它回答的是同一类问题（"现在卡住了吗"），
+ * 只是带了耗时/超时/重试的量化证据。
+ */
+export const TAB_ORDER: ObserveTab[] = ["steps", "overview", "exec", "recall", "env", "shell"];
 
 /** 状态计数：`{completed: 2, running: 1, ...}`。 */
 export type ObserveCounts = Record<string, number>;

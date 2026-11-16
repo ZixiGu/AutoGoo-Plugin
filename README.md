@@ -2,7 +2,7 @@
 
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-Plugin-blue)
 ![Codex](https://img.shields.io/badge/Codex-Compatible-purple)
-![Version](https://img.shields.io/badge/version-0.30.0-green)
+![Version](https://img.shields.io/badge/version-0.32.0-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 AutoGoo-Plugin 是一个同时兼容 Claude Code 和 Codex 的智能体编排插件，用来把开放式任务拆成可执行计划、并行调用 subagent、记录运行状态，并把结果同步到 Goo-wiki / Obsidian。
@@ -102,7 +102,7 @@ pi install /path/to/AutoGoo-Plugin        # 仓库根即 pi 包
 }
 ```
 
-> Pi 扩展版本：**v0.30.0**。使用 Pi 原生 API（`ctx.ui`、自定义工具、事件系统）。卸载：`pi remove git:github.com/ZixiGu/AutoGoo-Plugin`。
+> Pi 扩展版本：**v0.32.0**。使用 Pi 原生 API（`ctx.ui`、自定义工具、事件系统）。卸载：`pi remove git:github.com/ZixiGu/AutoGoo-Plugin`。
 
 ## 在 Claude Code 中使用
 
@@ -248,6 +248,7 @@ Pi 扩展使用原生 API 注册 16 个自定义工具（`auto_goo_execute`、`a
 - **中断 plan 主动确认**：`goo-plan-health.py` 按 **thread 维度**检查可能已中断/搬置的 DAG：心跳停滞的 `running` 步骤、`failed`/`interrupted`/`blocked` 步骤、多日未更新，以及 **plan 与 thread 状态不一致**（如 plan 已完成但 `thread.json` 仍为 `running`）。会话启动时分别提问：当前 thread → 继续/结束/稍后；历史 thread → 暂不处理/全部结束。`--close` 会归档副本并把 plan 与 thread 一并标为 `abandoned`，**不篡改步骤状态、不删文件**。
 - **subagent 活动面板**：`/goo-subagent`（或 `alt+a`）打开实时时间线 —— 运行中 step、工具调用（**带真实参数**）、结果摘要；`↑↓` 切 step、`c` 清空、`q` 退出。活动只在内存，审计仍看 step log。
 - **派发可见且中断不误判**：Subagent 派发时会立即回一行并在运行中每 8s 输出 `elapsed + 事件数 + 最近活动`，同步写入状态栏；用户 Esc / 超时 / 信号杀（exit 143/137）一律标记 `interrupted` 而**不是** `failed`，并提示先检查产物再决定 `--complete` / `--resume` / 重派。
+- **执行指标 + 主动告警**：每次步骤状态跃迁落一条事件到 `.goo/logs/exec.jsonl`（start/complete/fail/timeout/interrupt/retry/resume/block，含耗时、退出码、stderr 摘录、thread 维度；4MB 轮转，与 `recall.jsonl` 同约定）。observe 面板新增 `exec` tab（耗时分布 / 最容易超时的 step / 失败原因聚类 / 重试次数），`/auto-goo:goo-health` 一条命令输出「本次 DAG 健康报告」（`--json` 给机器读）。阈值告警从 pull 改 **push**：调度每轮结束与会话期看门狗（默认 60s）主动 `ctx.ui.notify`，按 `cooldown_seconds` 去重；`observability.webhook_url` 为空即不发外部请求。**指标/告警写入失败绝不阻塞执行**。
 - **分析文档**：论文分析和代码分析必须生成独立 Markdown 并归档到 Goo-wiki；fallback 只作临时防丢失，不能视为归档完成。
 - **安全边界**：敏感信息放在 `.goo/secrets.json` 或 `~/.auto-goo/secrets.json`，不要写入计划、日志或 HTML 发布页。
 - **Web 修改请求**：`goo-publish --serve` 可在网页提交修改请求，落盘到 `.goo/change-requests/`，由 AutoGoo-Plugin 后续读取并让模型修改、审计。
@@ -348,7 +349,7 @@ bash skills/auto-goo/scripts/check-plugin.sh
 
 ## 版本
 
-当前版本：**v0.30.0**。
+当前版本：**v0.32.0**。
 
 ### 发版约定：每次提交都 bump
 

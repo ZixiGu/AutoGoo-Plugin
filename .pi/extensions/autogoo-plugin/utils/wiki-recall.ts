@@ -239,17 +239,32 @@ async function recallWikiImpl(
   const kept: WikiHit[] = [];
   let used = 0;
   let dropped = 0;
+  // 预算分配：留 1 条的位置也要保证**总量不超预算**。
+  //
+  // 曾经的 bug：`if (used + cost > charBudget && kept.length > 0)` —— 第一条
+  // 无论多大都无条件保留（第一条 250 字符、预算 120 时输出 250），预算形同虚设。
+  // 正确做法是"至少保留一条，但把它截断到预算内"：既不让预算失控，
+  // 也不因预算过小导致完全无结果。
+  const parts: string[] = [];
   for (const hit of scored) {
-    const cost = renderHit(hit).length;
-    if (used + cost > charBudget && kept.length > 0) {
-      dropped += 1;
+    const full = renderHit(hit);
+    const remaining = charBudget - used;
+    if (full.length + (parts.length > 0 ? 1 : 0) <= remaining) {
+      parts.push(full);
+      kept.push(hit);
+      used += full.length + (parts.length > 1 ? 1 : 0);
       continue;
     }
-    kept.push(hit);
-    used += cost;
+    if (kept.length === 0 && remaining > 1) {
+      // 首条即超预算：截断保留（保证"召回不会一无所获"，但不超过预算）
+      const cut = `${full.slice(0, remaining - 1)}…`;
+      parts.push(cut);
+      kept.push(hit);
+      used += cut.length;
+    }
+    dropped += 1;
   }
-
-  const rendered = kept.map(renderHit).join("\n");
+  const rendered = parts.join("\n");
   return {
     found: kept.length > 0,
     hits: kept,

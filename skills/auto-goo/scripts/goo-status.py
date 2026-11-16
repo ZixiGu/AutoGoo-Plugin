@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import plan_schema
+
 WIDTH = 88
 STALE_SECONDS = 120
 LOG_REQUIRED_STATUSES = {"running", "blocked", "failed"}
@@ -177,6 +179,20 @@ def main() -> int:
     data = load_json(plan_path)
     if not isinstance(data, dict):
         raise SystemExit(f"invalid plan: {plan_path}")
+    # schema 感知读取：旧 plan 只在内存里按迁移语义渲染（不写盘、不静默错义）；
+    # --update-status 会写盘，必须走 write 模式（先备份再迁移）。
+    schema_note = ""
+    try:
+        loaded = plan_schema.load_plan(plan_path, mode="write" if args.update_status else "read")
+    except plan_schema.PlanSchemaError as exc:
+        raise SystemExit(f"plan schema 不可用: {exc}")
+    data = loaded.data
+    if not loaded.detection.explicit or loaded.migrated:
+        schema_note = (
+            f"plan 未带 schema_version（判定 v{loaded.detection.version} / "
+            f"memory_layer 语义 {loaded.detection.semantics}），"
+            "旧 plan 的层号可能与新语义相反；用 plan_schema.py migrate 显式迁移（会先备份）"
+        )
     steps = data.get("steps", [])
     steps_by_id = {id_key(step.get("id")): step for step in steps if step.get("id") is not None}
     logs_dir = logs_dir_from_plan(plan_path)
@@ -227,6 +243,8 @@ def main() -> int:
 
     warnings = []
     notices = []
+    if schema_note:
+        warnings.append(schema_note)
     if stored_plan_status and stored_plan_status != plan_status:
         notices.append(f"plan 顶层 status={stored_plan_status} 与步骤状态推导={plan_status} 不一致；可用 --update-status 修正")
     for field, change in (repaired or {}).items():

@@ -78,6 +78,13 @@ if command -v pytest &>/dev/null; then
   else
     fail "三平台 pytest 完整性测试失败"
   fi
+  # plan schema / checkpoint 幂等的语义测试：只断言字段存在会被误解骗过，
+  # 必须让 test_plan_schema.py 进 CI（旧 plan 迁移、语义翻转、resume 跳过）。
+  if (cd "$ROOT" && pytest -q tests/test_plan_schema.py >/dev/null); then
+    pass "plan schema / checkpoint 语义测试通过"
+  else
+    fail "plan schema / checkpoint 语义测试失败（跑 pytest -q tests/test_plan_schema.py 看详情）"
+  fi
 else
   warn "pytest 不可用，跳过三平台 pytest 完整性测试"
 fi
@@ -3922,6 +3929,572 @@ if grep -q "const schedResult = await runSchedule(pi, cwd, updatedPlan" "$EXEC";
 else
   fail "full_cycle 未走已验证路径 —— 可能切到了未验证的 detached"
 fi
+
+# ── 47. plan schema 版本化 + checkpoint 幂等 ──
+# 三轮实测全缺：
+#   1) plan.json 无 schema_version —— 0.27.0 翻转 memory_layer 后旧 plan 静默错义
+#   2) --resume 只把 status 改回 running，subagent 从头重跑 → 副作用重复
+#   3) MAX_RETRIES=1 自动重试无幂等保护
+# 断言绑**语义**：不能只 grep 字段存在，要用旧 plan 反向验证迁移与跳过。
+echo ""
+echo "── 47. plan schema 版本化 + checkpoint 幂等 ──"
+
+PS="$ROOT/skills/auto-goo/scripts/plan_schema.py"
+CK="$ROOT/skills/auto-goo/scripts/checkpoint.py"
+PSREF="$ROOT/skills/auto-goo/references/plan-schema.md"
+INITPLAN="$ROOT/skills/auto-goo/scripts/init-plan.sh"
+
+if [[ -f "$PS" ]]; then
+  pass "plan_schema.py 存在（版本判定/迁移/回滚/演练入口）"
+else
+  fail "缺少 plan_schema.py —— plan 又变成无版本裸 JSON"
+fi
+
+if grep -qE "^CURRENT_SCHEMA_VERSION = [0-9]+" "$PS" 2>/dev/null; then
+  pass "CURRENT_SCHEMA_VERSION 有单一事实源"
+else
+  fail "plan_schema.py 未定义 CURRENT_SCHEMA_VERSION"
+fi
+
+# 不断言字面量 3：版本号会漂移，断言 CURRENT_SCHEMA_VERSION 与 init-plan.sh 一致
+INIT_SCHEMA="$(python3 -c '
+import re, sys
+from pathlib import Path
+init_text = Path(sys.argv[1]).read_text(encoding="utf-8")
+schema_text = Path(sys.argv[2]).read_text(encoding="utf-8")
+match = re.search(r"^CURRENT_SCHEMA_VERSION\s*=\s*(\d+)", schema_text, re.M)
+print(match.group(1) if match and f"\"schema_version\": {match.group(1)}" in init_text else "")
+' "$INITPLAN" "$PS" 2>/dev/null || true)"
+if [[ -n "$INIT_SCHEMA" ]]; then
+  pass "init-plan.sh 新建 plan 即带 schema_version（v$INIT_SCHEMA，与单一事实源一致）"
+else
+  fail "init-plan.sh 不写 schema_version —— 新 plan 出生就没有版本，继续累积无版本历史"
+fi
+
+if grep -q "plan_schema.load_plan" "$US" 2>/dev/null; then
+  pass "update-step.py 通过 schema 感知加载（不静默按新语义解释）"
+else
+  fail "update-step.py 未走 plan_schema.load_plan —— 旧 plan 仍会被静默错义"
+fi
+
+if [[ -f "$CK" ]] && grep -q "def resume_state" "$CK"; then
+  pass "checkpoint.py 提供 resume 决策（skip/redo/unverifiable）"
+else
+  fail "缺少 checkpoint.py 的 resume_state —— resume 仍是无脑重跑"
+fi
+
+if [[ -f "$PSREF" ]] && grep -q "0.27.0" "$PSREF" && grep -q "L0" "$PSREF"; then
+  pass "references/plan-schema.md 记录版本演进与 0.27.0 语义翻转"
+else
+  fail "references/plan-schema.md 缺失或未记录 0.27.0 语义翻转"
+fi
+
+DISPATCH="$ROOT/.pi/extensions/autogoo-plugin/utils/dispatch.ts"
+WORKTREE_EXEC="$ROOT/.pi/extensions/autogoo-plugin/tools/execute.ts"
+if grep -q "formatCheckpointSection" "$DISPATCH" 2>/dev/null \
+  && grep -q "resumeState: (step as any).resume_state" "$WORKTREE_EXEC" 2>/dev/null; then
+  pass "checkpoint 台账在派发路径上有消费点（写进 Subagent prompt）"
+else
+  fail "checkpoint 只写不读 —— Subagent 仍不知道哪些副作用不能重做"
+fi
+
+# 运行期反向验证：旧 plan 迁移 / 语义翻转 / resume 不重复副作用 / 版本过新拒绝
+SCHEMA_TMP="$(mktemp -d)"
+if python3 - "$SCHEMA_TMP" "$ROOT" <<'PYSCHEMA' >"$SCHEMA_TMP/report.txt" 2>&1
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+tmp = Path(sys.argv[1])
+root = Path(sys.argv[2])
+scripts = root / "skills/auto-goo/scripts"
+sys.path.insert(0, str(scripts))
+import plan_schema  # noqa: E402
+
+update = scripts / "update-step.py"
+goo = tmp / ".goo"
+goo.mkdir(parents=True, exist_ok=True)
+
+
+def run(*args):
+    return subprocess.run(
+        [sys.executable, str(update), "--plan", str(goo / "plan.json"), *args],
+        cwd=str(tmp),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+# —— 场景 A：0.27.0 之前的旧 plan（L0=原始日志），无 schema_version ——
+legacy = {
+    "task": "legacy repro",
+    "created_at": "2026-08-04T09:00:00Z",
+    "thread": {"id": "t-schema"},
+    "wiki_context": {"found": True, "memory_layer": "L0"},
+    "steps": [{"id": 1, "name": "audit", "status": "completed", "memory_layer": "L0"}],
+}
+(goo / "plan.json").write_text(json.dumps(legacy), encoding="utf-8")
+(goo / "current_thread.json").write_text('{"thread_id":"t-schema"}', encoding="utf-8")
+
+r = run("--step-id", "1", "--heartbeat", "--note", "schema check")
+assert r.returncode == 0, r.stderr
+plan = json.loads((goo / "plan.json").read_text(encoding="utf-8"))
+assert plan["schema_version"] == plan_schema.CURRENT_SCHEMA_VERSION, plan.get("schema_version")
+# 语义翻转：旧 L0（原始日志）→ 新 L3
+assert plan["wiki_context"]["memory_layer"] == "L3", plan["wiki_context"]
+assert plan["steps"][0]["memory_layer"] == "L3", plan["steps"][0]
+records = plan.get("schema_migrations") or []
+assert records and records[0]["assumed_semantics"] == "legacy", records
+backups = list((goo / "plans" / "history").glob("*.json"))
+assert backups, "迁移前没有备份原 plan"
+
+# —— 场景 B：resume 不重复已完成副作用 ——
+artifact = tmp / "artifact.txt"
+artifact.write_text("once\n", encoding="utf-8")
+r = run("--step-id", "1", "--checkpoint-file", "artifact.txt")
+assert r.returncode == 0, r.stderr
+r = run("--step-id", "1", "--interrupt", "--error", "exit 143")
+assert r.returncode == 0, r.stderr
+r = run("--step-id", "1", "--resume")
+assert r.returncode == 0, r.stderr
+step = json.loads((goo / "plan.json").read_text(encoding="utf-8"))["steps"][0]
+state = step.get("resume_state") or {}
+assert [i["target"] for i in state.get("skip", [])] == ["artifact.txt"], state
+assert state.get("redo") == [], state
+assert artifact.read_text(encoding="utf-8") == "once\n"
+
+# —— 场景 C：自动重试（failed → pending）带幂等台账 ——
+run("--step-id", "1", "--fail", "--error", "boom")
+r = run("--step-id", "1", "--status", "pending", "--note", "Auto-retry #1")
+assert r.returncode == 0, r.stderr
+step = json.loads((goo / "plan.json").read_text(encoding="utf-8"))["steps"][0]
+assert (step.get("idempotency") or {}).get("intact") == 1, step.get("idempotency")
+
+# —— 场景 D：版本过新必须拒绝并给指引 ——
+too_new = dict(plan)
+too_new["schema_version"] = plan_schema.CURRENT_SCHEMA_VERSION + 1
+(goo / "plan.json").write_text(json.dumps(too_new), encoding="utf-8")
+r = run("--step-id", "1", "--heartbeat", "--note", "should fail")
+assert r.returncode != 0, "版本过新的 plan 被静默解释了"
+assert "升级插件" in (r.stderr + r.stdout), r.stderr
+print("schema/checkpoint 反向验证全部通过")
+PYSCHEMA
+then
+  pass "plan schema 运行期反向验证通过（旧 plan 迁移 + 语义翻转 + resume 跳过 + 重试幂等 + 版本过新拒绝）"
+else
+  fail "plan schema 运行期反向验证失败: $(tail -4 "$SCHEMA_TMP/report.txt" 2>/dev/null | tr '\n' ' ')"
+fi
+rm -rf "$SCHEMA_TMP"
+
+# ── 48. 写冲突隔离（worktree_isolation）──
+# 回归背景：0.30.0 的 detectWriteConflicts 只告警不隔离，而 auto_goo_worktree_create/
+# _merge/_cleanup 三个工具早已实现却**从未接入派发路径**（能力闲置一整轮）。
+# 本轮把它们接上，判据不能是「有这三个工具」或「有这个函数」——
+# 必须是「派发路径真的调用了它」+「开关关闭时行为不变」+「冲突时会报出来」。
+#
+# 断言绑语义：
+#   ① 两条派发路径之外，隔离逻辑集中在 utils/worktree-isolation.ts 且被 execute.ts 调用；
+#   ② 开关默认关闭且有消费点（resolveWorktreeIsolation 在 execute.ts 调用）；
+#   ③ 合并冲突必须列出文件并保留现场（merge --abort + conflictFiles + CONFLICTS.md）；
+#   ④ 创建失败降级串行（degradedStepIds → 串行执行分支）。
+# 再叠一层运行期反向验证：真开一个临时 git 仓库，验证「隔离→合并→冲突上报」。
+echo ""
+echo "── 48. 写冲突隔离 ──"
+
+WT_ISO="$ROOT/.pi/extensions/autogoo-plugin/utils/worktree-isolation.ts"
+if [[ -f "$WT_ISO" ]] && grep -q "export function setupWorktreeIsolation" "$WT_ISO"; then
+  pass "worktree 隔离模块存在（utils/worktree-isolation.ts）"
+else
+  fail "worktree 隔离模块缺失 —— 写冲突又回到「只告警不隔离」"
+fi
+
+# 「有函数」不等于「派发路径会调用」—— 这正是上一轮的失效模式
+if grep -q "setupWorktreeIsolation(cwd, toDispatch, writeConflicts" "$EXEC" \
+  && grep -q "mergeAllStepWorktrees(cwd, isolatedIds, plan.steps)" "$EXEC"; then
+  pass "派发路径已接入隔离创建与按依赖顺序合并（execute.ts）"
+else
+  fail "worktree 隔离未接入派发路径 —— 能力闲置（工具存在但没人调用）"
+fi
+
+if grep -q "const stepCwd = wtState?.worktreeDir ?? cwd;" "$EXEC" \
+  && grep -q "cwd: stepCwd," "$EXEC"; then
+  pass "隔离步骤的 Subagent 真的在 worktree 目录执行（不是只建不用）"
+else
+  fail "Subagent 未在 worktree 中执行 —— 隔离形同虚设"
+fi
+
+if grep -q "worktree_isolation?: boolean | string" "$ROOT/.pi/extensions/autogoo-plugin/utils/paths.ts" \
+  && grep -q "resolveWorktreeIsolation(execCfg)" "$EXEC"; then
+  pass "config.execution.worktree_isolation 已声明且有消费点"
+else
+  fail "worktree_isolation 配置未声明或无人读取（改了不生效）"
+fi
+
+# 降级与冲突上报：任何一处缺失都会退化成「整体失败」或「静默覆盖」
+if grep -q "degradedStepIds" "$WT_ISO" \
+  && grep -q "串行执行（worktree 隔离不可用" "$EXEC"; then
+  pass "隔离创建失败降级为串行（不中断整批派发）"
+else
+  fail "隔离失败未降级 —— 可能让整批任务失败"
+fi
+
+if grep -q 'merge", "--abort' "$WT_ISO" \
+  && grep -q "diff-filter=U" "$WT_ISO" \
+  && grep -q "CONFLICTS.md" "$WT_ISO"; then
+  pass "合并冲突会取冲突文件列表、回滚主分支状态、生成人工裁决指引"
+else
+  fail "合并冲突处理不完整 —— 可能静默覆盖或卡住后续合并"
+fi
+
+# 运行期反向验证：临时仓库里真跑一遍隔离 + 冲突合并
+if [[ -x "$TSX_BIN" ]]; then
+  WT_TMP="$(mktemp -d)"
+  cat > "$WT_TMP/probe.ts" <<'PROBE'
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  resolveWorktreeIsolation, setupWorktreeIsolation, mergeAllStepWorktrees,
+} from "WORKTREE_MODULE";
+import { detectWriteConflicts } from "EXECUTE_MODULE";
+
+const fails: string[] = [];
+const ok = (cond: boolean, msg: string) => { if (!cond) fails.push(msg); };
+
+ok(resolveWorktreeIsolation({}).enabled === false, "默认应为关闭");
+ok(resolveWorktreeIsolation({ worktree_isolation: true }).enabled === true, "true 应开启");
+
+const git = (cwd: string, ...a: string[]) =>
+  execFileSync("git", ["-c", "user.name=P", "-c", "user.email=p@l", ...a], { cwd, encoding: "utf-8" });
+
+const repo = mkdtempSync(join(process.env.WT_TMP!, "repo-"));
+git(repo, "init", "-q");
+writeFileSync(join(repo, "code.txt"), "base\n");
+writeFileSync(join(repo, ".gitignore"), ".goo/\n");
+git(repo, "add", "-A");
+git(repo, "commit", "-q", "-m", "init");
+mkdirSync(join(repo, ".goo"), { recursive: true });
+writeFileSync(join(repo, ".goo", "plan.json"), "{}");
+
+const steps = [
+  { id: 1, depends_on: [], allowed_write_paths: ["code.txt"] },
+  { id: 2, depends_on: [], allowed_write_paths: ["code.txt"] },
+];
+const conflicts = detectWriteConflicts(steps);
+ok(conflicts.length === 1, "同文件应判为写冲突");
+
+// 开关关闭：不建 worktree、不改变行为
+const off = setupWorktreeIsolation(repo, steps, conflicts, {});
+ok(off.enabled === false && off.worktreeByStep.size === 0, "开关关闭时不得创建 worktree");
+
+const on = setupWorktreeIsolation(repo, steps, conflicts, { worktree_isolation: true });
+ok(on.worktreeByStep.size === 2, `重叠步骤应各得一个 worktree（实际 ${on.worktreeByStep.size}）`);
+const wt1 = on.worktreeByStep.get("1")!.worktreeDir;
+const wt2 = on.worktreeByStep.get("2")!.worktreeDir;
+ok(wt1 !== wt2, "两个步骤的 worktree 目录必须不同");
+ok(existsSync(join(wt1, ".goo", "plan.json")), ".goo 必须共享进 worktree（否则 update_step 找不到 plan）");
+writeFileSync(join(wt1, "code.txt"), "AAA\n");
+writeFileSync(join(wt2, "code.txt"), "BBB\n");
+
+const outcomes = mergeAllStepWorktrees(repo, ["1", "2"], steps);
+const conflictOutcome = outcomes.find((o) => o.status === "conflict");
+ok(!!conflictOutcome, "同一行不同改动必须判为冲突（否则就是静默覆盖）");
+ok((conflictOutcome?.conflictFiles ?? []).includes("code.txt"), "冲突必须报告具体文件");
+ok(existsSync(wt2), "冲突时 worktree 必须保留（两侧改动都在）");
+ok(!/<<<<<<<|>>>>>>>/.test(readFileSync(join(repo, "code.txt"), "utf-8")), "主分支不得残留冲突标记");
+ok(existsSync(join(repo, ".goo", "worktrees", "CONFLICTS.md")), "应生成人工裁决指引");
+
+// 非 git 项目必须降级而不是整体失败
+const plain = mkdtempSync(join(process.env.WT_TMP!, "plain-"));
+const deg = setupWorktreeIsolation(plain, steps, conflicts, { worktree_isolation: true });
+ok(deg.enabled === false && deg.degradedStepIds.length === 2, "非 git 项目应降级为串行");
+
+if (fails.length > 0) {
+  console.error(fails.join(" | "));
+  process.exit(1);
+}
+console.log("ok");
+PROBE
+  sed -i "s|WORKTREE_MODULE|$ROOT/.pi/extensions/autogoo-plugin/utils/worktree-isolation.ts|; s|EXECUTE_MODULE|$ROOT/.pi/extensions/autogoo-plugin/tools/execute.ts|" "$WT_TMP/probe.ts"
+  if WT_TMP="$WT_TMP" "$TSX_BIN" "$WT_TMP/probe.ts" >/dev/null 2>"$WT_TMP/err.txt"; then
+    pass "写冲突隔离运行期验证通过（隔离生效 / 冲突可见 / 开关关闭零成本 / 降级不失败）"
+  else
+    fail "写冲突隔离运行期验证失败: $(head -2 "$WT_TMP/err.txt" | tr '\n' ' ')"
+  fi
+  chmod -R u+w "$WT_TMP" 2>/dev/null || true
+  rm -rf "$WT_TMP"
+else
+  warn "tsx 不可用，跳过写冲突隔离运行期验证"
+fi
+
+# ── 49. 执行告警与 DAG 指标（exec.jsonl）──
+# 回归背景：可观测性此前只覆盖召回（recall.jsonl + recall tab），DAG 执行本身
+# 零指标。失败/卡住/超时只在 TUI 与 step log 里出现 —— 无人值守时没人知道 DAG
+# 停了。上一轮 7 步 DAG 跑 2h11m，中途有步骤 exit 143、有步骤 interrupted，
+# 全靠人反复手动查状态才发现。
+#
+# 断言绑**语义**（"有字段"是最容易假装的部分）：
+#   ① 事件流有唯一写入口，且状态跃迁真的经过它；
+#   ② 告警是 push（看门狗定时 + 调度后主动 notify），不是又加一个 pull；
+#   ③ 指标写入失败不影响执行；
+#   ④ JSONL 约定与 recall.jsonl 一致（同目录、单行、4MB 轮转）。
+# 再叠一层运行期反向验证：真写 event、真判定、真去重、真在写失败时继续工作。
+echo ""
+echo "── 49. 执行告警与 DAG 指标 ──"
+
+EO="$ROOT/skills/auto-goo/scripts/exec_observe.py"
+EOTS="$ROOT/.pi/extensions/autogoo-plugin/utils/exec-observe.ts"
+EOTAB="$ROOT/.pi/extensions/autogoo-plugin/utils/exec-tab.ts"
+EOTYPES="$ROOT/.pi/extensions/autogoo-plugin/utils/observe-types.ts"
+EOHEALTH="$ROOT/.pi/extensions/autogoo-plugin/commands/health.ts"
+IDX="$ROOT/.pi/extensions/autogoo-plugin/index.ts"
+
+if [[ -f "$EO" ]] && grep -q "def append_event" "$EO" && grep -q "MAX_BYTES = 4 \* 1024 \* 1024" "$EO"; then
+  pass "exec_observe.py 存在且按 4MB 轮转（与 recall.jsonl 同约定）"
+else
+  fail "缺少 exec_observe.py（或轮转阈值与 recall.jsonl 不一致）"
+fi
+
+if grep -q "exec_observe.record_transition" "$US" 2>/dev/null; then
+  pass "update-step.py 是事件流的唯一写入口（状态跃迁即落事件）"
+else
+  fail "update-step.py 未登记 exec 事件 —— 指标又变成零"
+fi
+
+if grep -q "readExecStats" "$EOTS" 2>/dev/null \
+  && grep -q "evaluatePlanAlerts" "$EOTS" 2>/dev/null \
+  && grep -q "startExecWatchdog" "$EOTS" 2>/dev/null; then
+  pass "exec-observe.ts 提供聚合 / 阈值判定 / 看门狗（单一口径，不重复实现）"
+else
+  fail "exec-observe.ts 缺少聚合或阈值判定 —— 指标采了也没人用"
+fi
+
+# push 而非 pull：调度后主动推 + 会话期定时看门狗 + shutdown 清理
+if grep -q "pushExecAlerts" "$EXEC" 2>/dev/null && grep -q "startExecWatchdog" "$IDX" 2>/dev/null; then
+  pass "告警是 push（调度后主动 notify + 会话期看门狗）"
+else
+  fail "告警仍是 pull —— 无人值守时没人调用工具就没人知道 DAG 停了"
+fi
+
+if grep -q "stopExecWatchdog" "$IDX" 2>/dev/null; then
+  pass "session_shutdown 清理看门狗定时器（不留孤儿 timer）"
+else
+  fail "看门狗未在 session_shutdown 停止 —— 定时器泄漏"
+fi
+
+if grep -q -- '"--exit-code"' "$EXEC" 2>/dev/null && grep -q -- '"--duration-ms"' "$EXEC" 2>/dev/null; then
+  pass "调度器把退出码/实测耗时透传给事件流（不是让脚本猜）"
+else
+  fail "退出码/耗时未透传 —— 耗时统计会失真"
+fi
+
+if grep -q '"exec"' "$EOTYPES" 2>/dev/null && grep -q "renderExecTab" "$ROOT/.pi/extensions/autogoo-plugin/utils/observe-tabs.ts" 2>/dev/null; then
+  pass "observe 面板新增「执行」tab 并有渲染入口"
+else
+  fail "observe 面板没有执行 tab —— 指标只在文件里，看不见"
+fi
+
+if [[ -f "$EOHEALTH" ]] && grep -q '"goo-health"' "$IDX" 2>/dev/null; then
+  pass "/goo-health 命令已注册（一条命令输出 DAG 健康报告）"
+else
+  fail "/goo-health 未注册或缺少 handler（报告只能靠人拼）"
+fi
+
+# 运行期反向验证 ①：真写事件 + 真判定 + 真去重
+EO_TMP="$(mktemp -d)"
+if python3 - "$EO_TMP" "$ROOT" <<'PYEXEC' >"$EO_TMP/report.txt" 2>&1
+import json
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+tmp = Path(sys.argv[1])
+root = Path(sys.argv[2])
+update = root / "skills/auto-goo/scripts/update-step.py"
+observed = root / "skills/auto-goo/scripts/exec_observe.py"
+
+sys.path.insert(0, str(root / "skills/auto-goo/scripts"))
+import plan_schema  # 版本号用单一事实源，不硬编码
+
+goo = tmp / ".goo"
+(goo / "logs").mkdir(parents=True)
+
+def iso(minutes: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+plan = {
+    "schema_version": plan_schema.CURRENT_SCHEMA_VERSION,
+    "task": "check-plugin exec metrics",
+    "status": "running",
+    "created_at": iso(120),
+    "started_at": iso(120),
+    "thread": {"id": "tg-check"},
+    "steps": [
+        {"id": 1, "name": "stuck", "status": "running", "started_at": iso(90), "heartbeat_at": iso(40), "depends_on": [], "progress": 30},
+        {"id": 2, "name": "next", "status": "pending", "depends_on": [1], "progress": 0},
+    ],
+}
+plan_path = goo / "plan.json"
+plan_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+
+def run(*args: str):
+    return subprocess.run([sys.executable, str(update), "--plan", str(plan_path), *args], cwd=str(tmp), capture_output=True, text=True, timeout=90)
+
+run("--step-id", "2", "--start", "--agent-id", "agent-2")
+run("--step-id", "2", "--complete", "--exit-code", "0", "--duration-ms", "4200")
+run("--step-id", "2", "--heartbeat", "--note", "still alive")
+
+log = goo / "logs" / "exec.jsonl"
+rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
+events = [r["event"] for r in rows]
+problems = []
+if "step_start" not in events:
+    problems.append("缺少 step_start 事件")
+if "step_complete" not in events:
+    problems.append("缺少 step_complete 事件")
+complete = next((r for r in rows if r["event"] == "step_complete"), {})
+if complete.get("duration_ms") != 4200:
+    problems.append(f"上报耗时未落盘: {complete.get('duration_ms')}")
+if complete.get("exit_code") != 0:
+    problems.append("退出码未落盘")
+if complete.get("thread") != "tg-check":
+    problems.append("thread 维度缺失（跨 thread 比较指标会失效）")
+if len(events) != 2:
+    problems.append(f"心跳/其它动作污染了事件流: {events}")
+if problems:
+    print(" | ".join(problems))
+    sys.exit(1)
+print("ok")
+PYEXEC
+then
+  pass "运行期验证：状态跃迁真落 exec.jsonl（含耗时/退出码/thread，心跳不刷屏）"
+else
+  fail "执行事件流运行期验证失败: $(head -2 "$EO_TMP/report.txt" | tr '\n' ' ')"
+fi
+
+# 运行期反向验证 ②：指标位置不可写时状态更新仍然成功（绝不阻塞执行）
+if python3 - "$EO_TMP" "$ROOT" <<'PYBLOCK' >"$EO_TMP/block.txt" 2>&1
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+tmp = Path(sys.argv[1])
+root = Path(sys.argv[2])
+update = root / "skills/auto-goo/scripts/update-step.py"
+goo = tmp / ".goo"
+log = goo / "logs" / "exec.jsonl"
+if log.exists():
+    log.unlink()
+log.mkdir()  # 让 open(append) 必然失败
+
+result = subprocess.run(
+    [sys.executable, str(update), "--plan", str(goo / "plan.json"), "--step-id", "1", "--interrupt", "--timed-out", "--error", "heartbeat timeout"],
+    cwd=str(tmp), capture_output=True, text=True, timeout=90,
+)
+plan = json.loads((goo / "plan.json").read_text(encoding="utf-8"))
+step = next(s for s in plan["steps"] if str(s["id"]) == "1")
+if result.returncode != 0:
+    print(f"指标写不进去导致 update-step 失败: {result.stderr[:200]}")
+    sys.exit(1)
+if step["status"] != "interrupted":
+    print(f"状态未落盘: {step['status']}")
+    sys.exit(1)
+print("ok")
+PYBLOCK
+then
+  pass "运行期验证：指标写入失败不阻塞执行（状态照样落盘）"
+else
+  fail "指标写入失败会阻塞执行: $(head -2 "$EO_TMP/block.txt" | tr '\n' ' ')"
+fi
+
+# 运行期反向验证 ③：阈值告警真的会主动提示 + 冷却去重 + 报告回答问题
+if [[ -x "$TSX_BIN" ]]; then
+  cat > "$EO_TMP/probe.ts" <<'PROBE'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  checkAndDeliverAlerts, createAlertState, evaluatePlanAlerts, formatHealthReport, readExecStats,
+} from "EXEC_OBSERVE_MODULE";
+
+const fails: string[] = [];
+const ok = (cond: boolean, msg: string) => { if (!cond) fails.push(msg); };
+
+// 自建 fixture：不依赖前面 python 步骤留下的状态（那些步骤会改 plan 状态）
+const root = mkdtempSync(join(process.env.EO_TMP!, "probe-"));
+const goo = join(root, ".goo");
+mkdirSync(join(goo, "logs"), { recursive: true });
+const iso = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+const planPath = join(goo, "plan.json");
+writeFileSync(planPath, JSON.stringify({
+  schema_version: 3,
+  task: "probe",
+  status: "running",
+  created_at: iso(120),
+  started_at: iso(120),
+  thread: { id: "tg-probe" },
+  steps: [
+    { id: 1, name: "stuck", status: "running", started_at: iso(90), heartbeat_at: iso(40), progress: 30, depends_on: [] },
+    { id: 2, name: "next", status: "pending", depends_on: [1], progress: 0 },
+  ],
+}));
+
+const notified: string[] = [];
+const ctx = { ui: { notify: (m: string, l?: string) => notified.push(`${l}:${m}`) } };
+const state = createAlertState();
+const res = checkAndDeliverAlerts(ctx, planPath, { state });
+
+const codes = res.delivered.map((a) => a.code);
+ok(codes.includes("step_timeout"), "心跳 40min 过期必须报 step_timeout");
+ok(codes.includes("plan_stall"), "长时间无进展必须报 plan_stall");
+ok(notified.length === res.delivered.length && notified.length > 0, "告警必须真的走 ctx.ui.notify");
+ok(
+  notified.every((n) => /^(error|warning|info):/.test(n)),
+  "notify 级别必须可路由（error/warning/info）",
+);
+
+const second = checkAndDeliverAlerts(ctx, planPath, { state, now: Date.now() + 60_000 });
+ok(second.delivered.length === 0, "冷却窗口内不得重复打扰（否则告警变噪音）");
+
+// 事件流里留下投递痕迹（事后可回答「当时通知过谁」）
+const log = join(goo, "logs", "exec.jsonl");
+let raw = "";
+try {
+  raw = readFileSync(log, "utf-8");
+} catch {
+  raw = "";
+}
+ok(/event":\s*"alert"/.test(raw), "投递记录必须落 exec.jsonl");
+
+const plan = JSON.parse(readFileSync(planPath, "utf-8"));
+const stats = readExecStats(goo);
+ok(Array.isArray(evaluatePlanAlerts({ plan, stats })), "阈值判定必须返回列表而不是抛异常");
+const report = formatHealthReport({ plan, stats });
+ok(/DAG 健康报告/.test(report), "报告必须有标题");
+ok(/超时|最容易超时/.test(report), "报告必须回答「哪些 step 最容易超时」");
+ok(/重试事件/.test(report), "报告必须回答「重试几次」");
+
+if (fails.length > 0) {
+  console.error(fails.join(" | "));
+  process.exit(1);
+}
+console.log("ok");
+PROBE
+  sed -i "s|EXEC_OBSERVE_MODULE|$EOTS|" "$EO_TMP/probe.ts"
+  if EO_TMP="$EO_TMP" "$TSX_BIN" "$EO_TMP/probe.ts" >/dev/null 2>"$EO_TMP/err2.txt"; then
+    pass "运行期验证：告警主动推送 + 冷却去重 + 健康报告可回答指标问题"
+  else
+    fail "告警/报告运行期验证失败: $(head -2 "$EO_TMP/err2.txt" | tr '\n' ' ')"
+  fi
+else
+  warn "tsx 不可用，跳过执行告警运行期验证"
+fi
+chmod -R u+w "$EO_TMP" 2>/dev/null || true
+rm -rf "$EO_TMP"
 
 # ── 结果汇总 ──
 echo ""

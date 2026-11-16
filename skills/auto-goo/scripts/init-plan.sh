@@ -320,6 +320,9 @@ def main() -> int:
     )
 
     plan = {
+        # schema 版本单一事实源见 skills/auto-goo/scripts/plan_schema.py
+        # （CURRENT_SCHEMA_VERSION）。新 plan 出生即带版本号，不留「无版本历史":
+        "schema_version": 3,
         "task": task,
         "goals": [
             {

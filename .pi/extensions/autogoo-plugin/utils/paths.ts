@@ -57,6 +57,9 @@ export const RESOLVE_ROOT_SH = scriptPath("resolve-root.sh");
 /** Goo-observe.py path（环境/路径/shell 快照）。 */
 export const GOO_OBSERVE_PY = scriptPath("goo-observe.py");
 
+/** Exec-observe.py path（DAG 执行事件流 exec.jsonl 的唯一写入者）。 */
+export const EXEC_OBSERVE_PY = scriptPath("exec_observe.py");
+
 /** Thread-locks.py path. */
 export const THREAD_LOCKS_PY = scriptPath("thread-locks.py");
 
@@ -199,10 +202,37 @@ export interface AutogooPluginConfig {
     subagent_timeout_seconds?: number;
     /** Subagent 空闲超时秒数（默认 300 = 5min）。连续这么久无任何事件即判定卡住并终止 */
     subagent_idle_timeout_seconds?: number;
+    /**
+     * 写冲突隔离（默认关闭）：并行步骤的 `allowed_write_paths` 重叠时，
+     * 每个冲突步骤在独立 git worktree 中执行，完成后按依赖顺序合并。
+     * 关闭时行为与 0.30.0 完全一致（仅告警）；开启后创建失败只降级为串行。
+     */
+    worktree_isolation?: boolean | string;
   };
   planning?: {
     recall_wiki?: boolean;
     require_wiki_context?: boolean;
+  };
+  /**
+   * 执行观测 / 告警（exec.jsonl + 阈值 push）。
+   * 默认全开本地 notify；webhook 只有显式配置 webhook_url 才发送。
+   */
+  observability?: {
+    enabled?: boolean;
+    /** 看门狗轮询间隔（秒），默认 60 */
+    alert_interval_seconds?: number;
+    /** 同一告警冷却（秒），默认 900 */
+    cooldown_seconds?: number;
+    /** 可选 webhook（POST JSON）；不配置则不发送 */
+    webhook_url?: string;
+    /** 单步疑似超时阈值（分钟），默认 30 */
+    step_timeout_minutes?: number;
+    /** plan 停滞阈值（分钟），默认 15 */
+    plan_stall_minutes?: number;
+    /** 心跳过期阈值（秒），默认 900（与 execute.ts / status.ts 对齐） */
+    stale_heartbeat_seconds?: number;
+    /** 内置自动重试上限，默认 1（与 execute.ts MAX_RETRIES 对齐） */
+    max_retries?: number;
   };
   /** 交互对话框超时策略；timeout_seconds <= 0 表示禁用超时。 */
   interaction?: {

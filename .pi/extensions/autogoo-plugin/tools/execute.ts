@@ -21,6 +21,13 @@ import { runSubagent, resolveSubagentModel, resolveOrPromptSubagentModel, spawnS
 import { getRolePrompt, getTaskAgentPrompt } from "../utils/prompts.js";
 import { updateStatusBar, formatStatusLine, snapshotPlan } from "../utils/status.js";
 import { checkPlanLocks, acquirePlanLocks, releasePlanLocks, describeConflicts } from "../utils/locks.js";
+import {
+  setupWorktreeIsolation,
+  mergeAllStepWorktrees,
+  describeMergeOutcomes,
+  describeConflictSummary,
+  resolveWorktreeIsolation,
+} from "../utils/worktree-isolation.js";
 import { describeMessageContent, describeToolResult } from "../utils/tool-summary.js";
 import { activityBus } from "../utils/activity.js";
 import { uiConfirmDetailed } from "../utils/ui.js";
@@ -47,7 +54,8 @@ import {
   loadProjectConfig,
   writeExecutionModelConfig,
 } from "../utils/paths.js";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { checkAndDeliverAlerts, observabilityOf, type ExecAlert } from "../utils/exec-observe.js";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export function registerExecuteTool(pi: ExtensionAPI): void {
@@ -120,6 +128,74 @@ const MAX_CONCURRENT_DEFAULT = 6;
 const STALE_SECONDS_DEFAULT = 900;
 const MAX_RETRIES = 1;
 
+/**
+ * 自动重试的 step log note。
+ *
+ * 重试 = 同一个 step 再跑一遍，已产生的副作用不会自己回滚。把 checkpoint 条数
+ * 写进 note，step log 里就能看出这次重试有幂等台账可依；update-step.py
+ * --status pending 会基于 checkpoint 写 resume_state（intact 项不要重做）。
+ */
+function retryNote(step: any, attempt: number): string {
+  const count = Array.isArray(step?.checkpoints) ? step.checkpoints.length : 0;
+  return count > 0
+    ? `Auto-retry #${attempt}（幂等：比对 ${count} 条 checkpoint，intact 项不要重做）`
+    : `Auto-retry #${attempt}`;
+}
+
+/**
+ * `update-step.py` 的执行指标参数（写入 .goo/logs/exec.jsonl）。
+ *
+ * 为什么从这里传：退出码、实测耗时、stderr 摘录**只有调用方知道**。
+ * 让 update-step 去猜是猜不准的（它只能看 plan 时间戳），而猜不准的指标
+ * 比没有指标更危险 —— 会让人以为「10 分钟的 step 其实跑了 40 分钟」。
+ */
+function execMetaArgs(meta: {
+  exitCode?: number | null;
+  durationMs?: number | null;
+  timedOut?: boolean;
+  stderrExcerpt?: string | null;
+}): string[] {
+  const out: string[] = [];
+  if (typeof meta.exitCode === "number" && Number.isFinite(meta.exitCode)) {
+    out.push("--exit-code", String(Math.trunc(meta.exitCode)));
+  }
+  if (typeof meta.durationMs === "number" && Number.isFinite(meta.durationMs) && meta.durationMs >= 0) {
+    out.push("--duration-ms", String(Math.trunc(meta.durationMs)));
+  }
+  if (meta.timedOut) out.push("--timed-out");
+  if (meta.stderrExcerpt) out.push("--stderr-excerpt", meta.stderrExcerpt.slice(0, 300));
+  return out;
+}
+
+/**
+ * 阈值告警（push）：判定 → ctx.ui.notify → 可选 webhook。
+ *
+ * 以前检测是 pull 的：只有 schedule/heartbeat_check 被调用才执行，结果只当
+ * 文本返回。无人值守时没人调用 = 没人知道 DAG 停了。这里每轮调度后主动推一次，
+ * 加上 index.ts 的看门狗定时轮询，才是「卡住能主动提示」。
+ *
+ * 失败绝不影响执行（内部 try/catch，返回空列表）。
+ */
+async function pushExecAlerts(ctx: any, cwd: string, planPath: string): Promise<ExecAlert[]> {
+  try {
+    const config = observabilityOf(await loadProjectConfig(cwd).catch(() => null));
+    const result = checkAndDeliverAlerts(ctx, planPath, { config: config ?? null });
+    return result.delivered;
+  } catch (e: any) {
+    logWarn("[AutoGoo-Plugin] 执行告警判定失败（不影响调度）:", e?.message ?? String(e));
+    return [];
+  }
+}
+
+/** 把已投递的告警拼进工具输出（TUI 之外也要能看到）。 */
+function describeDelivered(alerts: ExecAlert[]): string[] {
+  if (alerts.length === 0) return [];
+  return [
+    `🚨 已主动告警 ${alerts.length} 条:`,
+    ...alerts.map((a) => `  · [${a.code}] ${a.message.split("\n")[0]}`),
+  ];
+}
+
 // ── Core scheduling logic ───────────────────────────────────────────────────
 
 async function runSchedule(
@@ -160,7 +236,7 @@ async function runSchedule(
       step.agent_id = null;
       step.error = undefined;
       autoRetried++;
-      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--status", "pending", "--note", `Auto-retry #${retryCount + 1}`], cwd, { timeout: 10000 });
+      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--status", "pending", "--retry", "--note", retryNote(step, retryCount + 1)], cwd, { timeout: 10000 });
     }
   }
 
@@ -289,10 +365,15 @@ async function runSchedule(
     .slice(0, availableSlots);
   const dispatched: number[] = [];
 
-  // 并行写冲突：只告警不阻止（自动串行会拖慢本就该并行的任务）
+  // 并行写冲突检测。0.30.0 只告警（「自动串行会拖慢本就该并行的任务」）；
+  // 0.31.0 起：开关 `config.execution.worktree_isolation` 打开时，重叠步骤会被
+  // 分到**独立 git worktree**（真隔离），关闭时行为与之前完全一致。
+  // 提前读一次 execution 配置：这里要决定告警文案，且后面主流程也复用。
+  const execCfg = (await loadProjectConfig(cwd).catch(() => null))?.execution || {};
+  const isolationDecision = resolveWorktreeIsolation(execCfg);
   const writeConflicts = detectWriteConflicts(toDispatch);
   if (writeConflicts.length > 0) {
-    lines.push(...describeWriteConflicts(writeConflicts));
+    lines.push(...describeWriteConflicts(writeConflicts, { isolationEnabled: isolationDecision.enabled }));
     for (const c of writeConflicts) {
       execPython(
         UPDATE_STEP_PY,
@@ -380,7 +461,7 @@ async function runSchedule(
   // config.execution.subagent_model / subagent_provider：显式指定 Subagent 模型；
   // 未设置时用结构化 UI 询问用户是否配置（resolveOrPromptSubagentModel），
   // 配置写入 .goo/config.json；用户取消或仍解析不到则 blocked，绝不静默用 pi 全局默认。
-  const execCfg = (await loadProjectConfig(cwd).catch(() => null))?.execution || {};
+  // （execCfg 已在写冲突检测处加载，见上）
   // 超时可配：默认 total 30min / idle 5min。idle 才是"卡住不等满半小时"的关键。
   const subagentTimeoutMs = (Number(execCfg.subagent_timeout_seconds) || 1800) * 1000;
   const subagentIdleTimeoutMs = (Number(execCfg.subagent_idle_timeout_seconds) || 300) * 1000;
@@ -438,161 +519,236 @@ async function runSchedule(
     lines.push(`⚠ 获取资源锁失败：${acquired.error || describeConflicts(acquired.conflicts)}`);
   }
 
-  const subagentResults = await Promise.all(
-    toDispatch.map(async (step: any) => {
-      const agentId = agentIds.get(String(step.id)) ?? `agent-${step.id}-${Date.now()}`;
-      const { packet, packetGenerated } = packets.get(String(step.id)) ?? {
-        packet: { wiki_paths: [] as string[], wiki_graph_packet_path: "", memory_layer: DEFAULT_MEMORY_LAYER },
-        packetGenerated: false,
-      };
-      const stepContract = [
-        `- step_id: ${step.id}`,
-        `- name: ${step.name}`,
-        `- type: ${step.type || "exec"}`,
-        `- task_agent: ${step.task_agent || "document-analyst"}`,
-        `- 输入产物: ${(step.inputs || []).join(", ") || "无"}`,
-        `- 必须产出: ${(step.outputs || []).join(", ") || "声明产物"}`,
-        `- 读取边界: ${(step.allowed_read_paths || []).join(", ") || "项目根"}`,
-        `- 写入边界: ${(step.allowed_write_paths || []).join(", ") || "无"}`,
-        `- 验收标准: ${step.validation || "报告结构化结果"}`,
-      ];
-      // 保活进度显示（2026-10-08）：子进程可能长时间思考不产生事件，
-      // 只在有消息时 onUpdate 会让工具输出长时间静止，用户以为卡死。
-      const startedAt = Date.now();
-      const fmtElapsed = () => {
-        const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-        return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
-      };
-      let lastActivity = "已派发，等待首个事件…";
-      let eventCount = 0;
-      const emit = (text: string) => {
-        try {
-          onUpdate?.({ content: [{ type: "text", text }] });
-        } catch {
-          /* 进度上报失败不阻塞 */
-        }
-      };
-      const setProgressStatus = (text: string | undefined) => {
-        try {
-          ctx?.ui?.setStatus?.("autogoo-dispatch", text);
-        } catch {
-          /* 状态栏不可用不阻塞 */
-        }
-      };
-      const roleLabel = `${step.subagent || "researcher"}${step.task_agent ? "/" + step.task_agent : ""}`;
-      emit(`▶ step #${step.id} 派发中 · ${roleLabel} · ${subModel.provider}/${subModel.model} · [00:00]`);
-      setProgressStatus(`▶ #${step.id} ${roleLabel} 00:00`);
-      const progressTimer = setInterval(() => {
-        emit(`⏳ step #${step.id} 运行中 [${fmtElapsed()}] · 事件 ${eventCount} · ${lastActivity}`);
-        setProgressStatus(`⏳ #${step.id} ${fmtElapsed()} · ${lastActivity.slice(0, 40)}`);
-      }, 8000);
+  // ── 写冲突隔离（config.execution.worktree_isolation，默认关闭）───────────
+  // 边界（与 plan 契约一致）：
+  //   - 开关关闭 → **不跑任何 git 命令**，行为与 0.30.0 完全一致（零回归）；
+  //   - 开关打开但本批无写冲突 → 不建 worktree（零额外成本）；
+  //   - 有冲突 → 只给冲突簇内步骤建独立 worktree；创建失败/非 git/脏树 → 该步降级串行。
+  const isolation = setupWorktreeIsolation(cwd, toDispatch, writeConflicts, execCfg);
+  if (isolation.lines.length > 0) lines.push(...isolation.lines);
+  let isolationOutcomes: ReturnType<typeof mergeAllStepWorktrees> = [];
 
-      let result;
+  const dispatchStep = async (step: any) => {
+    const agentId = agentIds.get(String(step.id)) ?? `agent-${step.id}-${Date.now()}`;
+    const { packet, packetGenerated } = packets.get(String(step.id)) ?? {
+      packet: { wiki_paths: [] as string[], wiki_graph_packet_path: "", memory_layer: DEFAULT_MEMORY_LAYER },
+      packetGenerated: false,
+    };
+    const stepContract = [
+      `- step_id: ${step.id}`,
+      `- name: ${step.name}`,
+      `- type: ${step.type || "exec"}`,
+      `- task_agent: ${step.task_agent || "document-analyst"}`,
+      `- 输入产物: ${(step.inputs || []).join(", ") || "无"}`,
+      `- 必须产出: ${(step.outputs || []).join(", ") || "声明产物"}`,
+      `- 读取边界: ${(step.allowed_read_paths || []).join(", ") || "项目根"}`,
+      `- 写入边界: ${(step.allowed_write_paths || []).join(", ") || "无"}`,
+      `- 验收标准: ${step.validation || "报告结构化结果"}`,
+    ];
+    // 隔离步骤：Subagent 只在 worktree 内改代码，plan / 日志 / artifacts 经
+    // `.goo/` 符号链接共享主工程（见 utils/worktree-isolation.ts linkSharedGooDir）。
+    const wtState = isolation.worktreeByStep.get(String(step.id));
+    const stepCwd = wtState?.worktreeDir ?? cwd;
+    if (wtState) {
+      stepContract.push(
+        `- 工作目录（隔离 worktree）: ${wtState.worktreeDir}`,
+        `- 隔离约束: 所有代码改动只能写在该 worktree 内（相对路径按 worktree 根解析）；不要 cd 到主工程 ${cwd}，否则隔离失效。`.replace(/；。/g, "。"),
+        `- 合并说明: 完成后框架会按依赖顺序把你的 worktree 分支合并回主分支；若产生真冲突会保留双方并交人裁决，不会静默覆盖。`,
+      );
+    }
+    // 保活进度显示（2026-10-08）：子进程可能长时间思考不产生事件，
+    // 只在有消息时 onUpdate 会让工具输出长时间静止，用户以为卡死。
+    const startedAt = Date.now();
+    const fmtElapsed = () => {
+      const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+      return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+    };
+    let lastActivity = "已派发，等待首个事件…";
+    let eventCount = 0;
+    const emit = (text: string) => {
       try {
-        result = await runSubagent({
-        systemPrompt: [getRolePrompt(step.subagent || "researcher"), getTaskAgentPrompt(step.task_agent || "")].filter(Boolean).join("\n"),
-        task: buildSubagentTaskPrompt({
-          role: step.subagent || "researcher",
-          task: step.description || `执行 step #${step.id}: ${step.name}`,
-          wiki_paths: packet.wiki_paths,
-          wiki_graph_packet_path: packet.wiki_graph_packet_path,
-          packetGenerated,
-          memory_layer: packet.memory_layer,
-          stepContract,
-          wikiPathSizes: await measureWikiPaths(cwd, packet.wiki_paths),
-        }),
-        cwd,
-        signal, // P12：透传用户中断信号，防止子进程成孤儿
-        provider: subModel.provider,
-        model: subModel.model,
-        onTick: () => void heartbeatTick(cwd, planPath, step.id, agentId),
-        // pi 流式观察（2026-08-14）：把 Subagent 子进程的 JSON 流消息
-        // （assistant 文本 / tool call / tool result）桥接到工具 onUpdate，
-        // TUI 实时显示执行过程。之前未接线 → pi 版看不到 Subagent 内部。
-        onMessage: (message: any) => {
-          try {
-            const role = message?.role;
-            let text = "";
-            if (role === "assistant" && Array.isArray(message.content)) {
-              // toolCall 带出真实参数（命令/路径/pattern），不再只是 ⟦bash(...⟧
-              text = describeMessageContent(message.content);
-            } else if (message?.type === "tool_result_end" || message?.role === "tool") {
-              const summary = describeToolResult(message);
-              text = summary ? `⟦result⟧ ${summary}` : "";
-            }
-            if (text) {
-              eventCount += 1;
-              lastActivity = text.replace(/\s+/g, " ").slice(0, 120);
-              const kind = text.startsWith("⟦result⟧") ? "result" : text.startsWith("⟦") ? "tool" : "text";
-              activityBus.push(step.id, kind as any, text.slice(0, 200));
-              emit(`  #${step.id} [${fmtElapsed()}] ▶ ${text.slice(0, 400)}`);
-            }
-          } catch {
-            /* 流式转发失败不阻塞 */
-          }
-        },
-        timeoutMs: subagentTimeoutMs,
-        idleTimeoutMs: subagentIdleTimeoutMs,
-  heartbeatIntervalMs: heartbeatIntervalMs,
-        // step 已完成/失败但进程没退出时提前结束，避免白等
-        shouldStop: () => {
-          try {
-            const snapshot = loadPlanSync(cwd, planPath);
-            const target = snapshot?.steps?.find((s: any) => String(s.id) === String(step.id));
-            return !!target && (target.status === "completed" || target.status === "failed");
-          } catch {
-            return false;
-          }
-        },
-        });
-      } finally {
-        clearInterval(progressTimer);
-        setProgressStatus(undefined);
-        activityBus.end(
-          step.id,
-          result?.aborted ? "interrupted" : result && result.exitCode === 0 ? "done" : "failed",
-        );
+        onUpdate?.({ content: [{ type: "text", text }] });
+      } catch {
+        /* 进度上报失败不阻塞 */
       }
-      // 兕底：子进程退出后 step 若仍 running，按退出码标记
-      // stderr 摘录：provider 认证/限流/模型不存在等错误只出现在 stderr。
-      // 不带上它时，所有非 0 退出看起来都像「wrapper 被信号杀」——实测因此
-      // 把一个 yj provider 并发失败误诊成「pi tool 调用 2 分钟超时」。
-      const stderrExcerpt = excerptStderr(result.stderr);
-      const planNow = await loadPlan(cwd, planPath);
-      const stepNow = planNow?.steps.find((s: any) => String(s.id) === String(step.id));
-      if (stepNow?.status === "running") {
-        const ok = result.exitCode === 0 && !result.errorMessage && !result.timedOut;
-        if (ok) {
-          execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--complete", "--note", `Subagent exit 0（兕底标记完成）`], cwd, { timeout: 10000 });
-        } else {
-          // 信号杀（143=SIGTERM / 137=SIGKILL）或超时：wrapper 中断 ≠ 任务失败。
-          // 远程管线（execution_target=remote）或本地任务本体可能仍在运行，
-          // 标 interrupted 让主 Agent 检查后 resume / 重启 / 确认失败，而不是直接 failed。
-          const killedBySignal = result.exitCode === 143 || result.exitCode === 137 || result.signal === "SIGTERM" || result.signal === "SIGKILL";
-          if (result.timedOut || killedBySignal) {
-            execPython(
-              UPDATE_STEP_PY,
-              [
-                "--plan", planPath,
-                "--step-id", String(step.id),
-                "--interrupt",
-                "--error",
-                result.errorMessage ||
-                  `subagent wrapper 中断（exit ${result.exitCode}${result.timedOut ? "，超时" : "，被信号杀"}），任务本体可能继续运行，需检查后恢复` +
-                    (stderrExcerpt ? ` | stderr: ${stderrExcerpt}` : ""),
-              ],
-              cwd,
-              { timeout: 10000 },
-            );
-          } else {
-            execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--fail", "--error",
-              (result.errorMessage || `subagent exit ${result.exitCode}`) + (stderrExcerpt ? ` | stderr: ${stderrExcerpt}` : "")], cwd, { timeout: 10000 });
+    };
+    const setProgressStatus = (text: string | undefined) => {
+      try {
+        ctx?.ui?.setStatus?.("autogoo-dispatch", text);
+      } catch {
+        /* 状态栏不可用不阻塞 */
+      }
+    };
+    const roleLabel = `${step.subagent || "researcher"}${step.task_agent ? "/" + step.task_agent : ""}`;
+    emit(`▶ step #${step.id} 派发中 · ${roleLabel} · ${subModel.provider}/${subModel.model} · [00:00]`);
+    setProgressStatus(`▶ #${step.id} ${roleLabel} 00:00`);
+    const progressTimer = setInterval(() => {
+      emit(`⏳ step #${step.id} 运行中 [${fmtElapsed()}] · 事件 ${eventCount} · ${lastActivity}`);
+      setProgressStatus(`⏳ #${step.id} ${fmtElapsed()} · ${lastActivity.slice(0, 40)}`);
+    }, 8000);
+
+    let result;
+    try {
+      result = await runSubagent({
+      systemPrompt: [getRolePrompt(step.subagent || "researcher"), getTaskAgentPrompt(step.task_agent || "")].filter(Boolean).join("\n"),
+      task: buildSubagentTaskPrompt({
+        role: step.subagent || "researcher",
+        task: step.description || `执行 step #${step.id}: ${step.name}`,
+        wiki_paths: packet.wiki_paths,
+        wiki_graph_packet_path: packet.wiki_graph_packet_path,
+        packetGenerated,
+        memory_layer: packet.memory_layer,
+        stepContract,
+        wikiPathSizes: await measureWikiPaths(cwd, packet.wiki_paths),
+        checkpoints: (step as any).checkpoints,
+        resumeState: (step as any).resume_state,
+      }),
+      cwd: stepCwd,
+      signal, // P12：透传用户中断信号，防止子进程成孤儿
+      provider: subModel.provider,
+      model: subModel.model,
+      onTick: () => void heartbeatTick(cwd, planPath, step.id, agentId),
+      // pi 流式观察（2026-08-14）：把 Subagent 子进程的 JSON 流消息
+      // （assistant 文本 / tool call / tool result）桥接到工具 onUpdate，
+      // TUI 实时显示执行过程。之前未接线 → pi 版看不到 Subagent 内部。
+      onMessage: (message: any) => {
+        try {
+          const role = message?.role;
+          let text = "";
+          if (role === "assistant" && Array.isArray(message.content)) {
+            // toolCall 带出真实参数（命令/路径/pattern），不再只是 ⟦bash(...⟧
+            text = describeMessageContent(message.content);
+          } else if (message?.type === "tool_result_end" || message?.role === "tool") {
+            const summary = describeToolResult(message);
+            text = summary ? `⟦result⟧ ${summary}` : "";
           }
+          if (text) {
+            eventCount += 1;
+            lastActivity = text.replace(/\s+/g, " ").slice(0, 120);
+            const kind = text.startsWith("⟦result⟧") ? "result" : text.startsWith("⟦") ? "tool" : "text";
+            activityBus.push(step.id, kind as any, text.slice(0, 200));
+            emit(`  #${step.id} [${fmtElapsed()}] ▶ ${text.slice(0, 400)}`);
+          }
+        } catch {
+          /* 流式转发失败不阻塞 */
+        }
+      },
+      timeoutMs: subagentTimeoutMs,
+      idleTimeoutMs: subagentIdleTimeoutMs,
+  heartbeatIntervalMs: heartbeatIntervalMs,
+      // step 已完成/失败但进程没退出时提前结束，避免白等
+      shouldStop: () => {
+        try {
+          const snapshot = loadPlanSync(cwd, planPath);
+          const target = snapshot?.steps?.find((s: any) => String(s.id) === String(step.id));
+          return !!target && (target.status === "completed" || target.status === "failed");
+        } catch {
+          return false;
+        }
+      },
+      });
+    } finally {
+      clearInterval(progressTimer);
+      setProgressStatus(undefined);
+      activityBus.end(
+        step.id,
+        result?.aborted ? "interrupted" : result && result.exitCode === 0 ? "done" : "failed",
+      );
+    }
+    // 兕底：子进程退出后 step 若仍 running，按退出码标记
+    // stderr 摘录：provider 认证/限流/模型不存在等错误只出现在 stderr。
+    // 不带上它时，所有非 0 退出看起来都像「wrapper 被信号杀」——实测因此
+    // 把一个 yj provider 并发失败误诊成「pi tool 调用 2 分钟超时」。
+    const stderrExcerpt = excerptStderr(result.stderr);
+    const planNow = await loadPlan(cwd, planPath);
+    const stepNow = planNow?.steps.find((s: any) => String(s.id) === String(step.id));
+    if (stepNow?.status === "running") {
+      const ok = result.exitCode === 0 && !result.errorMessage && !result.timedOut;
+      // 实测耗时：从本批派发到子进程结束。报告值优先于 plan 时间戳派生值，
+      // 因为重试会让 started_at 保留第一次的时间（分母变错）。
+      const execMeta = execMetaArgs({
+        exitCode: result.exitCode,
+        durationMs: Date.now() - startedAt,
+        stderrExcerpt,
+      });
+      if (ok) {
+        execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--complete", "--note", `Subagent exit 0（兕底标记完成）`, ...execMeta], cwd, { timeout: 10000 });
+      } else {
+        // 信号杀（143=SIGTERM / 137=SIGKILL）或超时：wrapper 中断 ≠ 任务失败。
+        // 远程管线（execution_target=remote）或本地任务本体可能仍在运行，
+        // 标 interrupted 让主 Agent 检查后 resume / 重启 / 确认失败，而不是直接 failed。
+        const killedBySignal = result.exitCode === 143 || result.exitCode === 137 || result.signal === "SIGTERM" || result.signal === "SIGKILL";
+        if (result.timedOut || killedBySignal) {
+          execPython(
+            UPDATE_STEP_PY,
+            [
+              "--plan", planPath,
+              "--step-id", String(step.id),
+              "--interrupt",
+              "--timed-out",
+              "--error",
+              result.errorMessage ||
+                `subagent wrapper 中断（exit ${result.exitCode}${result.timedOut ? "，超时" : "，被信号杀"}），任务本体可能继续运行，需检查后恢复` +
+                  (stderrExcerpt ? ` | stderr: ${stderrExcerpt}` : ""),
+              ...execMeta,
+            ],
+            cwd,
+            { timeout: 10000 },
+          );
+        } else {
+          execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--fail", "--error",
+            (result.errorMessage || `subagent exit ${result.exitCode}`) + (stderrExcerpt ? ` | stderr: ${stderrExcerpt}` : ""),
+            ...execMeta], cwd, { timeout: 10000 });
         }
       }
-      return { stepId: step.id, status: stepNow?.status, result };
-    }),
-  );
+    }
+    return { stepId: step.id, status: stepNow?.status, result };
+  };
+
+  // 隔离成功的步骤与其他无冲突步骤并行；隔离失败的步骤**串行**执行
+  // （降级要求：宁可慢，不可两个 subagent 同时写同一文件互相覆盖）。
+  const degraded = new Set(isolation.degradedStepIds);
+  const parallelSteps = toDispatch.filter((s: any) => !degraded.has(String(s.id)));
+  const serialSteps = toDispatch.filter((s: any) => degraded.has(String(s.id)));
+  const subagentResults = await Promise.all(parallelSteps.map((s: any) => dispatchStep(s)));
+  for (const step of serialSteps) {
+    lines.push(`⏳ #${step.id} 串行执行（worktree 隔离不可用，避免与同批写范围重叠步骤互相覆盖）`);
+    subagentResults.push(await dispatchStep(step));
+  }
+
+  // ── 合并 worktree（按依赖顺序；真冲突报告而非静默覆盖）────────────────────
+  if (isolation.worktreeByStep.size > 0) {
+    const isolatedIds = [...isolation.worktreeByStep.keys()];
+    isolationOutcomes = mergeAllStepWorktrees(cwd, isolatedIds, plan.steps);
+    lines.push(...describeMergeOutcomes(isolationOutcomes, cwd));
+    // 冲突结论写进 step log：主 Agent 的输出会被截断/遗忘，日志才是事后可追溯的。
+    for (const o of isolationOutcomes) {
+      if (o.status !== "conflict" && o.status !== "failed") continue;
+      const target = plan.steps.find((s: any) => String(s.id) === o.stepId);
+      if (!target?.log_path) continue;
+      const logPath = target.log_path.startsWith("/") ? target.log_path : join(cwd, target.log_path);
+      if (!existsSync(logPath)) continue;
+      try {
+        appendFileSync(
+          logPath,
+          [
+            "",
+            `## Worktree 合并${o.status === "conflict" ? "冲突" : "失败"}（需人工裁决）`,
+            `- 时间: ${new Date().toISOString()}`,
+            `- 分支: ${o.branch}（已保留，未删除）`,
+            `- worktree: ${o.worktreeDir}`,
+            `- 冲突文件: ${o.conflictFiles.join(", ") || "无"}`,
+            `- 说明: ${o.error ?? ""}`,
+            `- 裁决指引: .goo/worktrees/CONFLICTS.md`,
+            "",
+          ].join("\n"),
+          "utf-8",
+        );
+      } catch {
+        /* 日志追加失败不阻塞合并结果上报（结果仍写进工具 details） */
+      }
+    }
+  }
 
   // 释放本 thread 的资源锁（与上面的 acquirePlanLocks 配对；无锁时安全 no-op）
   const released = releasePlanLocks(cwd, planPath);
@@ -630,6 +786,11 @@ async function runSchedule(
   // Update status bar
   if (ctx) updateStatusBar(ctx);
 
+  // 阈值告警（push）：DAG 卡住/超时/连续重试必须在无人值守时也能主动提示。
+  // 放在本批完成之后：先用最新状态判定，避免拿「刚派发还没心跳」误报。
+  const deliveredAlerts = await pushExecAlerts(ctx, cwd, planPath);
+  lines.push(...describeDelivered(deliveredAlerts));
+
   return {
     content: [{ type: "text", text: lines.join("\n") }],
     details: {
@@ -641,6 +802,15 @@ async function runSchedule(
       blocked: blockedAfterConfirm.length,
       failed: failed.length,
       autoRetried,
+      alerts: deliveredAlerts.map((a) => ({ code: a.code, level: a.level, stepId: a.stepId ?? null })),
+      isolation: {
+        enabled: isolation.enabled,
+        reason: isolation.reason,
+        worktrees: [...isolation.worktreeByStep.values()].map((s) => ({ stepId: s.stepId, branch: s.branch, worktreeDir: s.worktreeDir })),
+        degraded: isolation.degradedStepIds,
+        merges: isolationOutcomes.map((o) => ({ stepId: o.stepId, status: o.status, conflictFiles: o.conflictFiles, branch: o.branch })),
+        conflictSummary: describeConflictSummary(isolationOutcomes),
+      },
       subagents: subagentResults.map(({ stepId, status, result }) => ({
         stepId,
         status,
@@ -715,7 +885,7 @@ async function runHeartbeatCheck(
     lines.push(`💀 #${step.id} detached 子进程已退出 → interrupted（检查 agents/step-${step.id}.jsonl）`);
     execPython(
       UPDATE_STEP_PY,
-      ["--plan", planPath, "--step-id", String(step.id), "--interrupt", "--error", step.error],
+      ["--plan", planPath, "--step-id", String(step.id), "--interrupt", "--timed-out", "--error", step.error],
       cwd,
       { timeout: 10000 },
     );
@@ -740,7 +910,7 @@ async function runHeartbeatCheck(
       step.error = `Heartbeat timeout > ${staleSeconds}s：wrapper 中断，远程管线可能继续运行，需检查后 resume / 重启 / 确认失败`;
       step.agent_id = null;
       lines.push(`⚠️ #${step.id} 心跳超时（远程步骤）→ interrupted，待检查`);
-      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--interrupt", "--error", step.error], cwd, { timeout: 10000 });
+      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--interrupt", "--timed-out", "--error", step.error], cwd, { timeout: 10000 });
       continue;
     }
     if (((step as any).retry_count ?? 0) < MAX_RETRIES) {
@@ -749,13 +919,13 @@ async function runHeartbeatCheck(
       step.progress = 0;
       step.agent_id = null;
       lines.push(`🔄 #${step.id} 重试 (#${(step as any).retry_count})`);
-      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--status", "pending", "--progress", "0", "--note", `Auto-retry #${(step as any).retry_count}`], cwd, { timeout: 10000 });
+      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--status", "pending", "--progress", "0", "--retry", "--note", retryNote(step, (step as any).retry_count)], cwd, { timeout: 10000 });
     } else {
       step.status = "interrupted";
       step.error = `Heartbeat timeout > ${staleSeconds}s`;
       step.agent_id = null;
       lines.push(`💀 #${step.id} 心跳超时（重试耗尽）→ interrupted，待检查`);
-      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--interrupt", "--error", step.error], cwd, { timeout: 10000 });
+      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--interrupt", "--timed-out", "--error", step.error], cwd, { timeout: 10000 });
     }
   }
 
@@ -773,10 +943,16 @@ async function runHeartbeatCheck(
   if (lines.length === 0) lines.push(`💓 心跳检查: ${staleSteps.length} 过期, ${runningCount} 正常`);
   if (statusLine) lines.push(statusLine);
 
+  // 阈值告警：心跳检查本身就是「卡住检测」，检测到就必须推出去，
+  // 而不是只把它塞进返回值等调用方读（无人值守时没人读）。
+  const hbAlerts = await pushExecAlerts(ctx, cwd, planPath);
+  lines.push(...describeDelivered(hbAlerts));
+
   return {
     content: [{ type: "text", text: lines.join("\n") }],
     details: {
       stale: staleSteps.length,
+      alerts: hbAlerts.map((a) => ({ code: a.code, level: a.level, stepId: a.stepId ?? null })),
       // C7 修复：retried 只计真正转回 pending 重试的（本批内 retry_count 增加且未失败）；
       // 原逻辑 `retry_count <= MAX_RETRIES` 会把已达上限转 failed 的步骤也计入 retried。
       retried: staleSteps.filter((s) => s.status === "pending" && ((s as any).retry_count ?? 0) > 0).length,
@@ -848,10 +1024,16 @@ export function detectWriteConflicts(steps: any[]): WriteConflict[] {
 }
 
 /** 把冲突渲染成主 Agent 与 step log 都能读懂的几行。 */
-export function describeWriteConflicts(conflicts: WriteConflict[]): string[] {
+export function describeWriteConflicts(
+  conflicts: WriteConflict[],
+  opts: { isolationEnabled?: boolean } = {},
+): string[] {
   if (conflicts.length === 0) return [];
+  const verdict = opts.isolationEnabled
+    ? "已启用 worktree 隔离（config.execution.worktree_isolation）"
+    : "可能互相覆盖（不阻止执行）";
   const lines = [
-    `⚠️ ${conflicts.length} 组并行步骤的写入范围重叠 —— 可能互相覆盖（不阻止执行）`,
+    `⚠️ ${conflicts.length} 组并行步骤的写入范围重叠 —— ${verdict}`,
   ];
   for (const c of conflicts.slice(0, 6)) {
     lines.push(
@@ -860,7 +1042,11 @@ export function describeWriteConflicts(conflicts: WriteConflict[]): string[] {
     );
   }
   if (conflicts.length > 6) lines.push(`   …另有 ${conflicts.length - 6} 组`);
-  lines.push(`   建议：确认这些步骤不会改同一批文件；若会，改为串行或拆分写范围。`);
+  lines.push(
+    opts.isolationEnabled
+      ? "   处置：重叠步骤将各自在独立 git worktree 中工作，完成后按依赖顺序合并；真冲突会报告冲突文件并保留双方改动。"
+      : "   建议：确认这些步骤不会改同一批文件；若会，改为串行或拆分写范围（或在 config.execution.worktree_isolation 打开隔离）。",
+  );
   return lines;
 }
 
@@ -922,6 +1108,8 @@ async function dispatchDetached(
       memory_layer: packet.memory_layer,
       stepContract,
       wikiPathSizes: await measureWikiPaths(cwd, packet.wiki_paths),
+      checkpoints: step.checkpoints,
+      resumeState: step.resume_state,
     });
 
     const logPath = join(agentsDir, `step-${step.id}.jsonl`);
@@ -1050,7 +1238,7 @@ async function runScheduleDetached(
       step.agent_id = null;
       step.error = undefined;
       autoRetried++;
-      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--status", "pending", "--note", `Auto-retry #${retryCount + 1}`], cwd, { timeout: 10000 });
+      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--status", "pending", "--retry", "--note", retryNote(step, retryCount + 1)], cwd, { timeout: 10000 });
     }
   }
 

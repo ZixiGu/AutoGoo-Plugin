@@ -49,18 +49,36 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
       "使用 auto_goo_update_step 更新步骤状态：--start 开始步骤，--heartbeat 更新进度，--complete 完成，--fail 标记失败，--interrupt 标记 wrapper 中断，--resume 从 interrupted/failed 恢复为 running，--pending 解除阻塞，--confirm 记录用户确认",
       "heartbeat 必须带 --note 描述进展，空 heartbeat 无效",
       "subagent wrapper 被信号杀/超时（exit 143/137）不等于任务失败：远程管线可能继续运行，用 --interrupt 标记后检查远程，确认真在运行再用 --resume 恢复",
+      "每完成一个有外部副作用的动作（写文件、跑命令）就用 action=checkpoint 登记（checkpointFiles / checkpointCommands）：resume 和自动重试会按 hash 比对，跳过已完成的副作用，不登记就等于允许重复施加",
+      "resume 默认按 checkpoint 复用已完成工作；确实要整个重跑才加 restart=true，并在 note 里说明为什么可以重复",
     ],
     parameters: Type.Object({
       // C4 修复：历史 plan 用字符串 id（"s1"），新 plan 用数字，统一 Union 支持两者
       stepId: Type.Union([Type.Integer({ description: "步骤 ID" }), Type.String({ description: "步骤 ID" })]),
       action: Type.String({
         description: "操作类型",
-        enum: ["start", "heartbeat", "complete", "fail", "interrupt", "resume", "block", "pending", "confirm"],
+        enum: ["start", "heartbeat", "complete", "fail", "interrupt", "resume", "block", "pending", "confirm", "checkpoint", "list_checkpoints"],
       }),
       progress: Type.Optional(Type.Integer({ description: "进度 0-100" })),
       note: Type.Optional(Type.String({ description: "进展描述（heartbeat 必填）" })),
       error: Type.Optional(Type.String({ description: "失败原因" })),
       agentId: Type.Optional(Type.String({ description: "Agent ID" })),
+      // durable execution：副作用台账。resume/重试时 update-step.py 会比对 hash，
+      // intact 项不需要重做 —— 不登记就无法证明副作用已完成。
+      checkpointFiles: Type.Optional(
+        Type.Array(Type.String({ description: "已写入的文件路径（相对项目根）" }), {
+          description: "登记已完成的写文件副作用（记录 sha256）",
+        }),
+      ),
+      checkpointCommands: Type.Optional(
+        Type.Array(Type.String({ description: "已执行的命令" }), {
+          description: "登记已执行命令的副作用（只留指纹，不可回读验证）",
+        }),
+      ),
+      checkpointNote: Type.Optional(Type.String({ description: "副作用说明" })),
+      restart: Type.Optional(
+        Type.Boolean({ description: "配合 resume：显式从头重跑（会提示副作用可能重复）" }),
+      ),
     }),
     async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, ctx: any) {
       const cwd = ctx.cwd;
@@ -96,7 +114,18 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
         case "resume":
           // 检查确认任务本体仍在运行后，从 interrupted/failed 恢复为 running
           args.push("--resume");
+          // 默认按 checkpoint 比对副作用，已完成的不重做；restart 才显式重跑
+          if (params.restart) { args.push("--restart"); }
           if (params.note) { args.push("--note", params.note); }
+          break;
+        case "checkpoint":
+          // 登记外部副作用（写过的文件 hash / 执行过的命令指纹）
+          for (const file of params.checkpointFiles ?? []) { args.push("--checkpoint-file", file); }
+          for (const cmd of params.checkpointCommands ?? []) { args.push("--checkpoint-command", cmd); }
+          if (params.checkpointNote) { args.push("--checkpoint-note", params.checkpointNote); }
+          break;
+        case "list_checkpoints":
+          args.push("--list-checkpoints");
           break;
         case "block":
           args.push("--block");

@@ -200,6 +200,7 @@ DAG 结构总结：
 
 ```json
 {
+  "schema_version": 3,
   "task": "<任务描述>",
   "goals": [
     {
@@ -431,6 +432,7 @@ DAG 结构总结：
 
 | 字段 | 说明 |
 |------|------|
+| `schema_version` | plan schema 版本（整数）。当前为 `3`。缺失即旧 plan，加载时必须走迁移/拒绝路径，**不得**静默按新语义解释；版本演进、迁移与回滚见 `references/plan-schema.md` |
 | `task` | 用户任务原文或等价摘要 |
 | `status` | Plan 整体状态：`pending`（未开始）→ `running`（执行中）→ `blocked`（等待用户许可或外部条件）→ `completed`（全部完成）/ `failed`（关键失败）/ `paused`（用户暂停） |
 | `created_at` | plan 创建时间 |
@@ -476,6 +478,10 @@ DAG 结构总结：
 | `started_at` | 步骤开始时间戳 |
 | `completed_at` | 步骤完成时间戳 |
 | `estimated_time` | 可选，如 "5min" |
+| `checkpoints` | 已完成外部副作用的台账（`kind=file_write` 带 `sha256`，`kind=command` 带 `fingerprint`）。`--resume` 与自动重试按它比对，intact 项跳过不重做；用 `update-step.py --checkpoint-file/--checkpoint-command` 登记，见 `references/plan-schema.md` |
+| `checkpoint_seq` | checkpoint id 分配序号，单调递增，删除后不复用 |
+| `resume_state` | 最近一次 resume / 自动重试的比对结果（`skip` / `redo` / `unverifiable` / `guidance`），派发时写进 Subagent prompt |
+| `idempotency` | `--status pending` 自动重试时写入的幂等摘要（`intact` / `redo` / `trigger`），证明重试有台账可依 |
 
 ### 时间戳格式
 

@@ -7,6 +7,7 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readRecallStats } from "../utils/recall-observe.js";
+import { readExecStats } from "../utils/exec-observe.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { execPython } from "../utils/exec.js";
@@ -32,7 +33,7 @@ export async function handleGooStatus(args: string, ctx: ExtensionContext): Prom
  */
 export async function openObservePanel(
   ctx: ExtensionContext,
-  initialTab: "steps" | "overview" | "env" | "shell",
+  initialTab: "steps" | "overview" | "exec" | "recall" | "env" | "shell",
 ): Promise<void> {
   const cwd = ctx.cwd;
 
@@ -87,6 +88,11 @@ export async function openObservePanel(
       // 召回坏了是**静默降级**（任务照样跑完，只是用不上 wiki 经验），
       // 所以必须有一个地方能直接看到失败次数。
       recall: readRecallStats(join(cwd, ".goo")),
+      // 执行观测：读 .goo/logs/exec.jsonl 汇总（耗时/超时/失败聚类/重试）。
+      // 以前失败只在 TUI 与 step log 里出现，无人值守时没人知道 DAG 停了
+      // —— 这个 tab 就是把「有没有卡住」变成可以随时看一眼的数字。
+      // 面板每 2 秒刷新一次，只聚合最近 500 条（完整统计看 /goo-health）
+      exec: readExecStats(join(cwd, ".goo"), { limit: 500 }),
     };
   };
 

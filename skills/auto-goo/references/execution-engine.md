@@ -71,6 +71,8 @@ AutoGoo-Plugin 的权限交互由主 Agent 统一处理，后台 Subagent 不做
 
 **interrupted（wrapper 中断）状态**：subagent 子进程被信号杀（exit 143/137）或超时，或心跳超时，不等于任务失败——尤其是远程步骤（`execution_target=remote` / 有 `remote_server`），远程管线独立于本地 wrapper 继续运行。调度器此时标记 `interrupted`（保留 progress、清 agent_id、不写 completed_at），而不是 `failed`。恢复流程：主 Agent 用 `auto_goo_ssh_exec` / `auto_goo_ssh_monitor` 检查远程状态后，调用 `auto_goo_update_step --resume`（确认任务本体仍在运行，恢复为 running 并继续监控，完成后 --complete）、`--interrupt` 后重派（本体已死可重启）、或 `--fail`（确认失败）。远程步骤心跳超时**不自动重试**（避免重新派发重复启动远程管线）。
 
+**resume 不等于从头重跑（durable execution）**：`--resume` 默认按 `step.checkpoints` 比对已完成的外部副作用（写过的文件按 sha256、执行过的命令按指纹），结果是 `step.resume_state`：`intact` 项**跳过不要重做**，`drift`/`missing` 项必须重做，命令类 `unverifiable` 项不要盲目重跑。Subagent 每完成一个有副作用的动作应立即用 `update-step.py --checkpoint-file <path>` / `--checkpoint-command "<cmd>"` 登记；否则 resume 和 `MAX_RETRIES` 自动重试（`failed → pending`）会把同一批副作用再施加一次。确实要整个重跑时才加 `--restart`，并在 note 里说明为什么可以重复。完整规则见 `references/plan-schema.md`。
+
 每个 plan step 必须显式声明 `subagent` 和 `task_agent` 字段。`type` 描述步骤性质，`subagent` 描述稳定 Role Agent，`task_agent` 描述该 role 下的细分 Task Agent。例如：
 
 ```json
@@ -434,6 +436,130 @@ fi
 ```
 
 默认 6。调低（2-3）避免限流；调高（8-10）最大化并行度。不做硬限制。
+
+## 写冲突隔离（`config.execution.worktree_isolation`）
+
+**默认关闭**。0.30.0 起派发前会检测同批步骤的 `allowed_write_paths` 重叠并**告警**；0.31.0 起可用开关把它升级为**真隔离**。
+
+```json
+{
+  "execution": {
+    "worktree_isolation": true
+  }
+}
+```
+
+### 行为
+
+| 开关 / 场景 | 行为 | 成本 |
+| --- | --- | --- |
+| 关闭（默认） | 与 0.30.0 完全一致：只告警，不跑任何 git 命令 | 0 |
+| 开启 + 本批无写冲突 | 不创建 worktree，只多一次 `git status` 判断 | ~0 |
+| 开启 + 有写冲突 | 冲突簇内**每个步骤一个独立 worktree**，并行执行 | 每步一次 `git worktree add` |
+| worktree 创建失败 / 非 git 项目 / 脏工作树 | **该步降级为串行**（不是整批失败） | 慢，但不会互相覆盖 |
+| 合并遇真冲突 | 报告冲突文件 + 保留两侧现场，交人裁决 | 需人工处理 |
+
+### 生命周期
+
+```
+派发前  clusterWriteConflicts() → 冲突簇 → 每步 git worktree add（分支 autogoo-plugin/step-<id>-<ts>）
+        + 把主工程 .goo/ 符号链接进 worktree（否则 Subagent 的 update_step 找不到 plan）
+执行中  runSubagent(cwd=<worktree>)，代码改动全部落在隔离目录
+完成后  按依赖拓扑序合并（orderStepsForMerge）：git add/commit → git merge --no-ff → 清理 worktree+分支
+冲突时  git diff --diff-filter=U 列出冲突文件 → git merge --abort（主分支回到合并前）
+        → worktree 目录与分支保留 → 状态写 .goo/worktrees/step-<id>.json + CONFLICTS.md
+```
+
+### 铁律
+
+1. **冲突必须报告，不得静默覆盖**。合并失败时冲突文件列表写进工具输出、step log 和 `details.isolation`，并提供 `.goo/worktrees/CONFLICTS.md` 裁决命令。
+2. **`merge --abort` 只回滚「主分支的合并状态」，不回滚改动**。worktree 与分支必须保留，否则人工裁决的素材就没了。
+3. **脏工作树必须拒绝隔离**。`git worktree add` 只检出 HEAD，未提交改动不会带过去；带着脏树隔离 = 让 Subagent 在旧代码上工作并合并回来，静默丢改动。
+4. **`.goo/` 必须共享**（符号链接）。plan / 日志 / artifacts 是项目级状态，不能因为隔离而分叉；提交 worktree 改动时显式 `:(exclude).goo`，避免把链接当代码提交。
+5. **降级不阻断**。任何一步隔离不可用都只把该步排到最后串行执行，不要中断整批派发。
+6. **合并顺序按 `depends_on` 拓扑序**，同层按 id，保证可复现；不按数组顺序合并。
+
+### 可恢复
+
+合并冲突后不做任何破坏性操作，恢复路径：
+
+```bash
+# 查看现场
+cat .goo/worktrees/CONFLICTS.md
+cat .goo/worktrees/step-<id>.json        # mergeState=conflict + conflictFiles
+git worktree list                        # 隔离目录仍在
+# 人工裁决
+git merge --no-ff autogoo-plugin/step-<id>-<ts>
+```
+
+与 step checkpoint 的关系：checkpoint 记的是**已施加的副作用**（文件 sha256 / 命令指纹），worktree 状态记的是**未合并的改动**。两者互补 —— `--resume` 看 checkpoint 决定「哪些不用重做」，`.goo/worktrees/step-<id>.json` 决定「哪些改动还没进主分支」。
+
+## 执行指标与告警（`exec.jsonl`）
+
+执行曾经是**零指标**：失败/卡住/超时只在 TUI 和 step log 里出现，无人值守时没人知道 DAG 停了（实测一轮 7 步 DAG 跑 2h11m，中途有步骤 `exit 143`、有步骤 `interrupted`，全靠人反复手动查状态才发现）。现在每次步骤状态跃迁都落一条事件。
+
+### 写入口只有一个
+
+```
+update-step.py（--start/--complete/--fail/--interrupt/--resume/--block/--status pending）
+  → exec_observe.record_transition()
+  → 追加 .goo/logs/exec.jsonl（4MB 轮转为 .1，与 recall.jsonl 同约定）
+```
+
+调度器、Subagent、主 Agent 手工调用、detached 路径**都经过 `update-step.py`**，所以「谁改了 step 状态」与「事件流里有什么」永远对得上。**不要在 TS 侧另写一份事件**，否则同一跃迁会有两行、耗时口径也会分叉。
+
+调度器额外透传只有调用方知道的信息（脚本猜不准，猜不准的指标比没有更危险）：
+
+| 参数 | 来源 | 用途 |
+| --- | --- | --- |
+| `--exit-code` | 子进程退出码 | 区分 `exit 143`（信号杀）与 `exit 1`（真失败） |
+| `--duration-ms` | 调用方实测 | 重试会保留首次 `started_at`，plan 口径会虚高 |
+| `--stderr-excerpt` | `excerptStderr()` | provider 认证/限流/模型不存在只出现在 stderr |
+| `--timed-out` | `result.timedOut` / 信号杀 | 事件记为 `step_timeout` 而非 `step_interrupt` |
+| `--retry` | 自动重试路径 | 区分「重试」与「解锁」（混在一起会让重试均值虚高） |
+
+心跳**不**入事件流（每 20s 一条会把真事件淹掉）；存活信号看 plan 的 `heartbeat_at`。
+
+### 事件字段
+
+```json
+{"ts":"2026-11-16T08:36:37Z","event":"step_timeout","step_id":"2","step_name":"…",
+ "subagent":"implementer","agent_id":"agent-2-…","thread":"tg-…","status":"interrupted",
+ "progress":55,"duration_ms":1800000,"duration_source":"reported","exit_code":143,
+ "timed_out":true,"retry_count":0,"checkpoints":1,"error_class":"timeout",
+ "error":"…","stderr_excerpt":"…","source":"update-step"}
+```
+
+- `duration_source`：`reported`（实测）/ `plan`（started_at→completed_at）/ `n/a`（起点）
+- `error_class`：`timeout` / `heartbeat_stale` / `signal_killed` / `auth` / `rate_limit` / `model` / `network` / `resource_conflict` / `plan_invalid` / `exit_code` / `unknown`。归桶而不是留原文，因为原文每次不同（带 pid/时间），直接聚类等于每条一个桶。
+- checkpoint 只留**条数**（`checkpoints`），台账本体仍在 plan 里 —— 不重复记录。
+
+### 阈值告警（push，不是 pull）
+
+`utils/exec-observe.ts` 负责判定与投递，`skills/auto-goo/scripts/exec_observe.py` 只负责写：
+
+| 告警 | 触发 |
+| --- | --- |
+| `step_timeout` | running step 心跳超过 `stale_after_seconds`（默认 900s）未更新；或已跑超过 `step_timeout_minutes` **且**心跳已超过阈值一半未更新 |
+| `consecutive_retry` | `retry_count >= max_retries`（默认 1）仍 failed/interrupted |
+| `plan_stall` | plan 仍活跃但最近一次进展（心跳/事件/时间戳）早于 `plan_stall_minutes`（默认 15min） |
+| `step_failed` / `step_interrupted` | 失败与「wrapper 中断、任务本体未知」必须可见 |
+| `metrics_missing` | plan 已派发步骤但 `exec.jsonl` 为空（指标链路自检） |
+
+铁律：
+
+1. **pull 改 push**。以前只有调用 `auto_goo_execute` 才检查 → 无人值守 = 没人调用。现在调度每轮结束后主动判定，会话启动时启动看门狗（默认 60s）定时判定，`session_shutdown` 停止。
+2. **默认只走 `ctx.ui.notify`**，不引入外部依赖。`observability.webhook_url` 为空即不发送；发送失败静默。
+3. **同一告警按 `cooldown_seconds`（默认 900s）去重**。每分钟重复的「卡住了」不是提醒，是新的噪音源。
+4. **告警/指标失败绝不阻塞执行**：事件写入、告警判定、webhook、notify 全部 try/catch；`exec.jsonl` 写不进去时状态更新照常成功，报告明确标「指标源 ✗ / 统计不可信」。
+5. **只有「跑得久」不算超时**。实测单步 >30min 是常态，拿耗时单独当信号会把告警变成噪音；必须叠加心跳变稀。
+
+### 观察入口
+
+- observe 面板 `exec` tab（`renderExecTab`）：事件分布、耗时 avg/p50/p95/max + 最慢 top3、最容易超时的 step、失败聚类、重试统计。
+- `/auto-goo:goo-health`：一条命令输出完整 DAG 健康报告；`--json` 给机器读。
+- `python3 exec_observe.py tail --plan .goo/plan.json -n 20`：事件流原文。
+
 
 ## Subagent Prompt 模板
 

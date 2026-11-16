@@ -160,7 +160,7 @@ export class ObservePanel implements Component {
     out.push(
       keyHelp(
         [
-          { keys: "←→/1-5", label: "切 tab" },
+          { keys: `←→/1-${TAB_ORDER.length}`, label: "切 tab" },
           { keys: "↑↓", label: "移动" },
           { keys: "r", label: "刷新" },
           { keys: "q", label: "退出" },

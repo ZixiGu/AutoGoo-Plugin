@@ -1,7 +1,7 @@
 ---
 name: goo-workflow
 description: "Use when the user says '/auto-goo:goo-init', '/auto-goo:goo-brainstorm', '/auto-goo:goo-plan', '/auto-goo:goo-start', '/auto-goo:goo-research', '/auto-goo:goo-daily-report', '/auto-goo:goo-usage', '/auto-goo:goo-usage-analyse', '/auto-goo:goo-observe', '/auto-goo:goo-publish', '找目标', '开始任务', 'run:', '日报', '周报', 'usage', 'token统计', 'token降本', '后台观察', '发布HTML', '自改进', or gives a goal-clear multi-step task that can be decomposed into sub-tasks. Runs Goo workflow: config init, wiki-based brainstorm, wiki recall, DAG planning, subagent execution, research material archiving, status/observe, HTML publishing, optimization, Goo-wiki archiving, usage monitor, usage cost analysis, daily reports, and plugin self-improvement. Compatible with Claude Code and Codex."
-version: 0.30.0
+version: 0.32.0
 tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent, wait_agent, request_user_input]
 ---
 
@@ -36,6 +36,8 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 
   **Codex 注意**：`spawn_agent` 无 `isolation` 参数，自动走 `mode="none"`，跳过 worktree 询问。用户选择不启用时写入 `mode="none"`，后续 Agent tool 省略 `isolation` 字段；如果省略 `isolation` 的实际派发仍报 `Failed to resolve base branch "HEAD"` / `git rev-parse failed`，说明当前 Claude Code Agent 包装层仍要求 Git HEAD，必须立刻写入 `compatibility.agent_requires_git_head=true`、把当前 step 标记 blocked/needs_user_approval，并重新询问是否启用 worktree，不得再重置 heartbeat 或用 probe agent 反复测试。用户选择启用时写入 `mode="worktree"`，并检查当前项目根本身是否是 Git repo 且 `HEAD` 可解析；不要向父目录、跨文件系统或备用路径寻找 Git root。若不是 Git repo，运行 `git init -b main`（不支持 `-b` 时初始化后立即 `git branch -M main`）；若已有 Git 但没有 `HEAD`，复用当前仓库。随后执行初始提交：先检查 `git status --short` 和明显敏感文件风险，发现密钥、令牌、密码、secrets 文件或异常大批生成物时先阻塞并前台确认；否则 `git add -A` 后提交 `chore: initialize repository for AutoGoo-Plugin worktree isolation`。只有确认 `HEAD` 可解析后才派发 `isolation: "worktree"`。启用后如果仍无法得到 `HEAD`，把 workflow 标记为 blocked，记录原因，不降级为普通派发，也不围绕 `Failed to resolve base branch "HEAD"` 循环 probe。
 
+**pi 扩展在 DAG 内部还多一层写冲突隔离**：`config.execution.worktree_isolation`（默认关闭）。打开后，`allowed_write_paths` 重叠的同批步骤各自在独立 git worktree 中执行，完成后按 `depends_on` 拓扑序合并；合并遇真冲突时报告冲突文件、保留两侧现场并写入 `.goo/worktrees/CONFLICTS.md` 交人裁决，绝不静默覆盖；worktree 创建失败或非 git / 脏工作树时该步降级为串行。开关关闭时行为与之前完全一致。详见 `skills/auto-goo/references/execution-engine.md`「写冲突隔离」。
+
 **完成验收闸门**：Agent 返回 `Done` 不是完成证据，`0 tool uses` 也不是失败证据。文本型 review/design step 可以不调用工具，但必须留下可验收结果：结构化最终答复、step log、heartbeat 里程碑或声明的 `output` 产物至少其一。若 step 声明了 `output` 或 `outputs` 必需产物，主 Agent 必须验证产物存在且满足 step 的 `validation`；缺失时不得标记 completed，也不得解锁下游。只有同时缺少结构化最终答复、step log、heartbeat 里程碑和声明产物时，主 Agent 才能判定为 dispatch 空跑或运行时前置失败，把 step 标记为 `blocked`/`failed` 并记录原因。记录原因时必须写明本次实际派发是否传了 `isolation`、plan 中的 `runtime.subagent_isolation.mode`、声明产物路径和缺失情况，不能只猜测是 worktree 问题。
 
 **Subagent 留痕铁律**（高频故障的硬性补丁）：派发任务留痕缺失是 AutoGoo-Plugin 最常见的 runtime 故障。每次派发 Subagent 必须执行两段强制动作：(1) 主 Agent **派发前**调用 `skills/auto-goo/scripts/update-step.py --precreate-log --note "<派发上下文>"` 预生成 dispatch 骨架；派发完成后 Subagent **第一动作**调用 `update-step.py --heartbeat --progress 15 --note "<已开工>"` 接管骨架。(2) `update-step.py` 对 `--heartbeat` 强制要求 `--note`，缺 `--note` 直接 exit=2；`--heartbeat --note ""` 等于没记录。Subagent prompt 模板执行型的"0 号动作"段是这套机制的人类阅读版，必须出现在每个 Subagent prompt 里。详细分发清单、post-check 命令清单、按 step type 分流的产物检查表 → `references/execution-engine.md`「主 Agent Post-Check 流程」与「并行分发检查清单」。**分析型 Subagent（research/eval/audit/review）没有代码改动是合法的**，判断完成度靠"日志结论段 + 报告文件存在"双证据，不能只看 `git diff`。
@@ -67,7 +69,7 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 | **L3** | 原始记录 | `.goo/logs/` step log、原始命令输出、未脱敏 transcript、`execution/record.md` | 大而冷 | 只做 trace/audit |
 
 > 历史说明：早期版本的编号方向是反的（L0=原始日志、L3=项目总览），
-> 与 CPU 缓存和命名来源 TencentDB 相反，已于 0.30.0 全量翻转。
+> 与 CPU 缓存和命名来源 TencentDB 相反，已于 0.32.0 全量翻转。
 > 若看到旧笔记里 "L0 原始日志" 的说法，那是旧语义。
 
 规则：
@@ -98,6 +100,7 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 - `/auto-goo:goo-usage-analyse [项目|范围]`：结合 usage 热点和 Goo-wiki 项目知识，归因 token 开销并生成可落地节省方案。
 - `/auto-goo:goo-thread [list|show|switch|new|close|doctor|health]`：thread 统一管理。`switch` 会**同时**同步 `.goo/current_thread.json` 与兼容入口 `.goo/plan.json`（只切前者是经典陷阱：`/goo-status`、`/goo-continue`、`/goo-observe` 读的是兼容入口）；`close` 先留归档副本再标 `abandoned`，不篡改步骤状态、不删文件；`doctor --fix` 只做幂等安全修复。
 - `/auto-goo:goo-observe`：观察 Agent View 入口、当前 thread running step、heartbeat、step log 尾部和 shell 长任务日志模板。
+- `/auto-goo:goo-health`：一条命令输出「本次 DAG 健康报告」——耗时分布 / 最容易超时的 step / 失败原因聚类 / 平均重试次数 / 阈值告警。只读 plan 与 `.goo/logs/exec.jsonl`，不改状态、不触发调度；`--json` 给机器读。
 - `/auto-goo:goo-publish`：无需 config，把 `.goo/` 工作流状态发布成静态多页 HTML，包含活动热力图、头脑风暴、计划、任务流程图、DAG、运行状态和产物索引。
 
 **内容输出归档铁律**：除纯状态查看、纯初始化配置或用户明确要求不归档外，任何产生可复用内容的命令最终都必须归档到 Goo-wiki。包括 `/auto-goo:goo-brainstorm` 的候选 goals、`/auto-goo:goo-research paper` 的论文资料包和深度笔记、`/auto-goo:goo-usage-analyse` 的降本报告、`/auto-goo:goo-daily-report` 的日报/周报、`/auto-goo:goo-improve` 的改进建议、benchmark/plan/start/continue 的计划与执行经验。一般内容在 Goo-wiki 不可用时写入 `.goo/obsidian/<project-slug>/` fallback；不得只写 `.goo/*.json` 或只在聊天中展示。**论文分析和代码分析是强制 Goo-wiki 类型**：论文解读/深读以及代码库结构、调用链、数据流、架构、实现模式分析必须生成独立 Markdown 正文并实际写入 Goo-wiki，同时更新项目入口和 Goo-wiki `log.md`；fallback 只能防丢失并标记 `pending_wiki_sync`/`failed`，不能算归档完成。`goo-brainstorm` 和 `goo-plan` 必须先让用户审阅，用户确认前只写本地 `.goo/brainstorm.json` / `.goo/plan.json` 草案，不急着归档最终知识页。每次任务最终归档完成后，主 Agent 必须用 `AskUserQuestion`（Claude Code）/ `request_user_input`（Codex）复用 `id=post_archive_html_report` 模板询问是否生成任务总结报告页；用户选择生成时，网址必须指向本次任务的最终总结报告（例如模型指标对比、验证结论、关键产物、归档链接和后续建议），不能指向 `/auto-goo:goo-publish` 生成的项目级 `.goo/site/` 工作流状态站点。
@@ -232,6 +235,7 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 
 ```json
 {
+  "schema_version": 3,
   "task": "<任务描述>",
   "goals": [
     {
@@ -327,6 +331,8 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 ```
 
 完整 schema、时间戳格式、依赖声明规则 → `references/task-parsing.md`
+
+**plan schema 版本化**：`schema_version` 是顶层整数（当前 `3`），缺失即旧 plan。旧 plan 不得静默按新语义解释（0.27.0 翻转了 memory_layer 编号方向），必须走 `plan_schema.py` 的备份→迁移→审计路径或拒绝并给命令；`--resume` / 自动重试按 step 级 `checkpoints` 比对已完成副作用，`intact` 项不得重做。完整规则、迁移链与演练方式 → `references/plan-schema.md`。
 
 Markdown 任务输入的完整解析规则也在 `references/task-parsing.md`：Markdown 可以是需求文档、TODO 清单、执行计划或 issue 模板，只有用户明确要求总结/润色/改写时才按文本处理。
 
@@ -587,6 +593,7 @@ Phase 4 归档完成后，在任务日志末尾追加 `## 流程问题` 反思�
 - **`references/setup.md`** — 环境设置、Goo-wiki 路径配置、推荐 SessionStart hooks
 - **`references/skill-design.md`** — AutoGoo-Plugin skill 结构、上下文预算、脚本优先和验证门槛
 - **`references/task-parsing.md`** — plan.json schema、解析流程、依赖与并行判断规则
+- **`references/plan-schema.md`** — plan schema 版本演进（0.27.0 memory_layer 翻转）、迁移/回滚规则、checkpoint 幂等契约
 - **`references/execution-engine.md`** — 执行流程、Subagent prompt 模板、错误处理、日志格式、上下文传递
 - **`references/optimization-loop.md`** — 完整循环、指标模板、评测规范、终止条件
 - **`references/obsidian-archive.md`** — Goo-wiki 归档规范、Recorder prompt、笔记类型与命名
@@ -605,6 +612,9 @@ Phase 4 归档完成后，在任务日志末尾追加 `## 流程问题` 反思�
 - **`skills/auto-goo/scripts/wiki-graph-assist.py`** — 生成紧凑 Goo-wiki 关联图谱上下文，并可维护项目 index/log 链接；调用前先解析 AutoGoo-Plugin 根目录
 - **`skills/auto-goo/scripts/check-plugin.sh`** — 插件结构完整性自检脚本（安装后运行确认所有组件就绪）；调用前先解析 AutoGoo-Plugin 根目录
 - **`skills/auto-goo/scripts/goo-observe.py`** — 观察当前 thread 的后台 step、heartbeat、step log 和 shell log 跟踪模板；`goo-publish` 的 `observe.html` 复用同一数据模型
+- **`skills/auto-goo/scripts/exec_observe.py`** — `.goo/logs/exec.jsonl` 的**唯一写入口**：每次步骤状态跃迁（start/complete/fail/timeout/interrupt/retry/resume/block）落一条事件，含耗时、退出码、stderr 摘录和 thread 维度；4MB 轮转，写入失败不阻塞执行。读取/聚合/阈值告警在 `.pi/extensions/autogoo-plugin/utils/exec-observe.ts`
+- **`skills/auto-goo/scripts/plan_schema.py`** — plan schema 版本判定 / 迁移 / 回滚 / 演练（`status` / `migrate` / `revert` / `drill`）
+- **`skills/auto-goo/scripts/checkpoint.py`** — step 级副作用台账（sha256 / 命令指纹 / resume 决策），供 `--resume` 与自动重试幂等
 - **`skills/auto-goo/scripts/goo-gc.py`** — `.goo` 数据生命周期管理：只读扫描各目录体积/增长/可重建性，输出保留策略与清理清单。**默认 dry-run**，不带 `--apply` 不改任何文件；`--apply` 只清 `site/`、旧 `backups/`、轮转日志，`.goo/plan.json`、`threads/*/plan.json`、`threads/*/logs/*.log` 是硬闸门（命中即整体 abort）
 - **`skills/auto-goo/scripts/goo-ssh.sh`** — 连接已配置的远程服务器；有密码时从 `secrets.json` 读取并用 `sshpass`，无密码时走普通 `ssh`。调用前先解析 AutoGoo-Plugin 根目录
 

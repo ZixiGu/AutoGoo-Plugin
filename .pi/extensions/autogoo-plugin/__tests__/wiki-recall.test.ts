@@ -91,3 +91,34 @@ describe("wiki-recall", { skip: hasWiki ? false : "本机无 Goo-wiki，跳过�
     assert.equal(legacy.sources.length, r.hits.length);
   });
 });
+
+describe("字符预算严格性", () => {
+  it("首条即超预算时截断保留，总量不得超预算", async () => {
+    // 回归：预算循环曾写成 `if (used + cost > charBudget && kept.length > 0) continue`，
+    // 第一条无论多大都无条件保留 —— 首条 250 字符、预算 120 时输出 250，预算形同虚设。
+    const tiny = 60;
+    const r = await recallWiki(REPO_ROOT, "memory 系统 优化", { charBudget: tiny });
+    assert.ok(
+      r.rendered.length <= tiny,
+      `渲染 ${r.rendered.length} 字符超过预算 ${tiny}（首条应被截断而非整条保留）`,
+    );
+    assert.ok(r.hits.length >= 1, "预算再小也要保留至少一条，否则召回归零");
+  });
+
+  it("预算充足时不做无谓截断", async () => {
+    const r = await recallWiki(REPO_ROOT, "memory", { charBudget: 8000 });
+    assert.ok(r.rendered.length <= 8000);
+    assert.ok(!r.rendered.includes("…"), "预算充足时不应出现截断标记");
+  });
+
+  it("被丢弃的条目计入 dropped", async () => {
+    // ⚠ query 不能用 "wiki" —— 它在 wiki-graph-assist.py 的 stop words 里
+    // ({"the","and","with","from","wiki","goo","auto","md","json","path"})，
+    // 分词后 query_terms 为空 → 任何页面 relevance 都是 0 → 召回本来就空，
+    // 此时 dropped 也必然是 0，测不出预算行为。
+    const r = await recallWiki(REPO_ROOT, "memory 系统 优化", { charBudget: 300 });
+    assert.ok(r.hits.length + r.dropped > 0, "应有命中参与预算分配");
+    assert.ok(r.dropped > 0, `预算 300 应丢弃部分命中，实际 hits=${r.hits.length} dropped=${r.dropped}`);
+    assert.ok(r.rendered.length <= 300, "渲染总量仍受预算约束");
+  });
+});

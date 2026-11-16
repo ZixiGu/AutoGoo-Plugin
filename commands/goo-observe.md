@@ -112,7 +112,9 @@ python3 "$auto_goo_root/skills/auto-goo/scripts/goo-observe.py" --root . --json
 | --- | --- |
 | `steps` | 步骤列表 + 详情 + log 尾部 |
 | `overview` | 状态计数、进度、ready / waiting、Next |
+| `exec` | 执行指标：耗时分布、最容易超时的 step、失败原因聚类、重试次数（`.goo/logs/exec.jsonl`） |
+| `recall` | 召回观测：命中率、耗时、失败次数（`.goo/logs/recall.jsonl`） |
 | `env` | 路径、claude 版本、Agent View、常用命令、shell tee 模板 |
 | `shell` | `logs/shell/*.log` 列表与尾部 |
 
-非 TUI 模式仍回退为 `goo-observe.py` 的文本快照。
+非 TUI 模式仍回退为 `goo-observe.py` 的文本快照。完整的 DAG 健康结论用 `/auto-goo:goo-health`。

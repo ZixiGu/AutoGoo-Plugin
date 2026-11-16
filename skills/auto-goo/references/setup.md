@@ -429,6 +429,7 @@ print(f"  {fmt_col(c('Total Tokens', MUTED), 22, '<')}")
 | --- | --- | --- |
 | `planning.recall_wiki` / `require_wiki_context` | 改了不生效，规划仍无条件召回 wiki | 接入 `commands/plan.ts` |
 | `execution.heartbeat_seconds` | 改了不生效，subagent 心跳硬编码 20s | 接入 `utils/subagent.ts` |
+| `execution.worktree_isolation` | 同名旧形态：三个 worktree 工具存在但**从未接入派发路径** | 接入 `utils/worktree-isolation.ts` ← `tools/execute.ts`（写冲突隔离） |
 
 **检查器本身的坑**：第一版 §32 用子串匹配判断「是否被消费」，
 `heartbeat_seconds` 被 `stale_heartbeat_seconds` 命中而**误判为有消费点**。
@@ -1025,7 +1026,8 @@ subagent 会拿到一堆没有上下文的原始日志 —— 理解原始记录
     "heartbeat_seconds": 30,
     "stale_after_seconds": 120,
     "subagent_model": "",
-    "subagent_provider": ""
+    "subagent_provider": "",
+    "worktree_isolation": false
   },
   "planning": {
     "recall_wiki": true,
@@ -1082,6 +1084,7 @@ subagent 会拿到一堆没有上下文的原始日志 —— 理解原始记录
 | --- | --- | --- |
 | `subagent_idle_timeout_seconds` | 300（5min） | **卡住判定阈值**。太短会误杀长时间 thinking 的模型，太长又失去意义 |
 | `subagent_timeout_seconds` | 1800（30min） | 总超时兜底 |
+| `worktree_isolation` | false | 写范围重叠的并行步骤是否各自在独立 git worktree 中执行；开启后跨 step 支持冲突合并上报，关闭时行为与之前完全一致（详见 `execution-engine.md`「写冲突隔离」） |
 
 #### idle 为什么必须多信号（否则会误杀）
 

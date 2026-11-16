@@ -23,6 +23,10 @@ from _paths import (
     workspace_paths,
 )
 
+import checkpoint
+import exec_observe
+import plan_schema
+
 
 def safe_name(value: Any, limit: int = 48) -> str:
     """Convert a value to a safe filename fragment."""
@@ -249,6 +253,69 @@ def main() -> int:
         ),
     )
     parser.add_argument("--note", help="append a short step-log note for this update")
+    parser.add_argument(
+        "--checkpoint-file",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "登记一个已完成的外部副作用（写入的文件）：记录 sha256，resume 时"
+            "比对 hash 决定跳过还是重做。可重复。"
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-command",
+        action="append",
+        default=[],
+        metavar="CMD",
+        help=("登记一条已执行的命令副作用（只留指纹，不可回读验证；resume 时提示先确认）。可重复。"),
+    )
+    parser.add_argument("--checkpoint-note", help="为本次登记的 checkpoint 附一句说明")
+    parser.add_argument(
+        "--exit-code",
+        type=int,
+        help="子进程退出码（供 exec.jsonl 记录：「exit 143」和「exit 1」是两种病）",
+    )
+    parser.add_argument(
+        "--duration-ms",
+        type=int,
+        help="调用方实测耗时（毫秒）。缺省时按 started_at→completed_at 派生并标 duration_source=plan",
+    )
+    parser.add_argument(
+        "--timed-out",
+        action="store_true",
+        help="配合 --interrupt：本次中断是超时导致的，事件记为 step_timeout 而不是 step_interrupt",
+    )
+    parser.add_argument(
+        "--stderr-excerpt",
+        help="stderr 摘录（≤300 字符，仅存摘录：provider 认证/限流错误只出现在这里）",
+    )
+    parser.add_argument(
+        "--retry",
+        action="store_true",
+        help="配合 --status pending：这是自动重试（同一步再跑一遍），事件记为 step_retry",
+    )
+    parser.add_argument(
+        "--list-checkpoints",
+        action="store_true",
+        help="打印该 step 的 checkpoint 比对结果（intact/drift/missing/unverifiable）后退出",
+    )
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        help=(
+            "配合 --resume 使用：显式要求从头重跑。仍会比对 checkpoint 并记录，"
+            "但 guidance 会写明「副作用可能重复」。"
+        ),
+    )
+    parser.add_argument(
+        "--assume-schema-semantics",
+        choices=["legacy", "modern"],
+        help=(
+            "plan 无 schema_version 且证据不足时，指定 memory_layer 的编号方向"
+            "（legacy=0.27.0 之前的 L0原始/L3总览）。会写进迁移记录供复核。"
+        ),
+    )
     args = parser.parse_args()
 
     # Mutually exclusive action flags
@@ -257,6 +324,12 @@ def main() -> int:
         raise SystemExit(
             "only one of --start, --complete, --fail, --interrupt, --resume, --block, --confirmed may be used at a time"
         )
+    if (args.checkpoint_file or args.checkpoint_command or args.list_checkpoints) and sum(
+        bool(f) for f in _action_flags
+    ) > 1:
+        raise SystemExit("checkpoint 登记/查看不能与多个状态动作同时使用")
+    if (args.restart) and not args.resume:
+        raise SystemExit("--restart 只能与 --resume 一起使用")
 
     plan_path = resolve_plan_path(args.plan)
 
@@ -275,6 +348,9 @@ def main() -> int:
 
     try:
         return _main_locked(plan_path, args)
+    except (plan_schema.PlanSchemaError, FileNotFoundError) as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 3
     finally:
         if lock_fh is not None:
             try:
@@ -287,7 +363,12 @@ def main() -> int:
 
 
 def _main_locked(plan_path: Path, args: argparse.Namespace) -> int:
-    data = load_json(plan_path)
+    # schema 感知加载：旧 plan 先备份再迁移（不静默按新语义解释），版本过新直接拒绝
+    loaded = plan_schema.load_plan(
+        plan_path, mode="write", assume_semantics=args.assume_schema_semantics
+    )
+    data = loaded.data
+    project_root = project_root_from_plan(plan_path)
 
     # --precreate-log short-circuits: it is the Main Agent's pre-dispatch hook.
     # Run before any state mutation, and do not require --note (the dispatch
@@ -314,6 +395,51 @@ def _main_locked(plan_path: Path, args: argparse.Namespace) -> int:
             break
     if target is None:
         raise SystemExit(f"step id not found: {args.step_id}")
+
+    # ── checkpoint 台账（副作用登记 / 查看）：独立动作，不做状态跃迁 ──
+    if args.list_checkpoints:
+        rows = checkpoint.verify(target, root=project_root)
+        if not rows:
+            print(f"step {args.step_id}: checkpoints=0（没有登记过副作用）")
+            return 0
+        for row in rows:
+            print(
+                f"{row.get('status'):<13} {row.get('id', '?'):<8} {row.get('kind', '')}"
+                f" {row.get('target', '')} — {row.get('detail', '')}"
+            )
+        print(checkpoint.summarize(target, root=project_root))
+        return 0
+
+    if args.checkpoint_file or args.checkpoint_command:
+        recorded: list[dict[str, Any]] = []
+        for value in args.checkpoint_file:
+            recorded.append(
+                checkpoint.record_file(
+                    target, value, root=project_root, note=args.checkpoint_note
+                )
+            )
+        for value in args.checkpoint_command:
+            recorded.append(
+                checkpoint.record_command(
+                    target, value, root=project_root, note=args.checkpoint_note
+                )
+            )
+        for entry in recorded:
+            print(
+                f"checkpoint {entry['id']} {entry['kind']} {entry['target']} "
+                f"sha256={(entry.get('sha256') or entry.get('fingerprint') or '')[:12]}"
+            )
+        log_event(
+            plan_path,
+            target,
+            stamp,
+            "checkpoint",
+            args.checkpoint_note or f"+{len(recorded)}",
+        )
+        update_plan_status(data, stamp)
+        dump_json(plan_path, data)
+        sync_thread(plan_path)
+        return 0
 
     if args.start:
         target["status"] = "running"
@@ -350,12 +476,35 @@ def _main_locked(plan_path: Path, args: argparse.Namespace) -> int:
             raise SystemExit(
                 f"--resume 仅适用于 interrupted/failed 步骤（当前: {target.get('status')}）"
             )
-        target["status"] = "running"
+        # ⚠ resume 后的状态取决于是"本地步骤"还是"远程步骤"：
+        #
+        #   远程步骤（execution_target=remote）：远程管线可能仍在运行，只是本地
+        #     wrapper 被信号杀。此时应保持 running（继续等待），不能重新派发 ——
+        #     否则会再启动一遍远程任务，产生重复副作用。
+        #
+        #   本地步骤：subagent 是本地 pi 子进程，进程一死就没有任何东西在运行。
+        #     若仍标 running，scheduler 会看到「有步骤在跑」而空等，永远不会
+        #     重新派发 —— 实测踩过：resume 后 full_cycle 报「等待运行中步骤完成
+        #     (1 运行中)」，但 ps 里根本没有 pi 子进程，plan 卡死在 65% 不动。
+        #     正确做法是回到 pending，让它重新进入就绪队列被派发。
+        _is_remote = bool(
+            target.get("execution_target") == "remote" or target.get("remote_server")
+        )
+        target["status"] = "running" if _is_remote else "pending"
         target["heartbeat_at"] = stamp
         target["started_at"] = target.get("started_at") or stamp
         target["agent_id"] = None
         target["error"] = None
         target["completed_at"] = None
+        if not _is_remote:
+            # 本地重启：进度归零，但保留 checkpoint 供派发时比对跳过多余副作用
+            target["progress"] = 0
+        # 幂等保护：resume 不等于从头重跑。先按 checkpoint 比对副作用，
+        # 已完成（hash 一致）的写操作不要重复施加。
+        resume_mode = "restart" if args.restart else "checkpoint"
+        target["resume_state"] = checkpoint.resume_state(
+            target, root=project_root, mode=resume_mode
+        )
 
     if args.block:
         target["status"] = "blocked"
@@ -385,6 +534,18 @@ def _main_locked(plan_path: Path, args: argparse.Namespace) -> int:
             target["agent_id"] = None
             target["error"] = None
             target["progress"] = 0
+            # 自动重试（MAX_RETRIES → failed → pending）无幂等保护的补丁：
+            # 重试前比对 checkpoint，把已完成的副作用标成 skip，避免重跑时二次写入。
+            if target.get("checkpoints"):
+                state = checkpoint.resume_state(target, root=project_root)
+                target["resume_state"] = state
+                target["idempotency"] = {
+                    "verified_at": stamp,
+                    "trigger": "status:pending",
+                    "intact": len(state["skip"]),
+                    "redo": len(state["redo"]),
+                    "guidance": state["guidance"],
+                }
     if args.progress is not None:
         target["progress"] = max(0, min(100, args.progress))
     if args.agent_id:
@@ -420,6 +581,54 @@ def _main_locked(plan_path: Path, args: argparse.Namespace) -> int:
     dump_json(plan_path, data)
     sync_thread(plan_path)
     print(f"updated step {args.step_id}: status={target.get('status')} progress={target.get('progress')} heartbeat={target.get('heartbeat_at')} log={target.get('log_path', '')}")
+    resume_state = target.get("resume_state")
+    if isinstance(resume_state, dict):
+        if resume_state.get("skip"):
+            print(f"  skip（已完成副作用，勿重做）: {len(resume_state['skip'])}")
+            for item in resume_state["skip"][:10]:
+                print(f"    {item.get('id')} {item.get('kind')} {item.get('target')}")
+        if resume_state.get("redo"):
+            print(f"  redo（漂移/丢失，必须重做）: {len(resume_state['redo'])}")
+            for item in resume_state["redo"][:10]:
+                print(f"    {item.get('id')} {item.get('kind')} {item.get('target')}")
+        if resume_state.get("guidance"):
+            print(f"  guidance: {resume_state['guidance']}")
+
+    # ── 执行指标（.goo/logs/exec.jsonl）──────────────────────────────
+    # 写失败绝不阻塞：状态已经落盘，指标只是旁路证据。
+    exec_action = None
+    if args.start:
+        exec_action = "start"
+    elif args.complete:
+        exec_action = "complete"
+    elif args.fail:
+        exec_action = "fail"
+    elif args.interrupt:
+        exec_action = "interrupt"
+    elif args.resume:
+        exec_action = "resume"
+    elif args.block:
+        exec_action = "block"
+    elif args.status:
+        exec_action = f"status:{args.status}"
+    if exec_action:
+        try:
+            exec_observe.record_transition(
+                plan_path,
+                target,
+                exec_action,
+                thread=(data.get("thread") or {}).get("id") if isinstance(data.get("thread"), dict) else None,
+                exit_code=args.exit_code,
+                duration_ms=args.duration_ms,
+                timed_out=args.timed_out,
+                stderr_excerpt=args.stderr_excerpt,
+                note=args.note,
+                error=args.error,
+                retry=args.retry,
+                stamp=stamp,
+            )
+        except Exception:  # noqa: BLE001 - 观测失败不影响状态更新
+            pass
     return 0
 
 

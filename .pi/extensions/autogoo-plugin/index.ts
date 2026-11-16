@@ -1,5 +1,5 @@
 /**
- * AutoGoo-Plugin Pi Extension v0.30.0 — 主入口
+ * AutoGoo-Plugin Pi Extension v0.32.0 — 主入口
  *
  * DAG 驱动的多智能体编排框架，从 Claude Code 插件迁移。
  *
@@ -42,6 +42,7 @@ import {
   handleGooContinue,
   setPi as setOtherPi,
 } from "./commands/other.js";
+import { handleGooHealth } from "./commands/health.js";
 import {
   handleGooChat,
   handleGooPair,
@@ -261,6 +262,10 @@ const COMMANDS: Record<string, CommandEntry> = {
   "goo-observe": {
     description: "后台观察运行中的步骤和心跳",
     handler: handleGooObserve,
+  },
+  "goo-health": {
+    description: "本次 DAG 健康报告（耗时/超时/失败聚类/重试/告警）",
+    handler: handleGooHealth,
   },
   "goo-publish": {
     description: "发布工作流为静态 HTML 站点",
@@ -579,6 +584,20 @@ export default function (pi: ExtensionAPI) {
         void checkThreadRecords(ctx);
         void promptPlanHealth(ctx);
 
+        // 执行告警看门狗（2026-11-16）：把「卡住检测」从 pull 变 push。
+        // 以前只有调用 auto_goo_execute 才会检查，无人值守 = 没人调用 = 没人知道。
+        // 只读 plan + exec.jsonl，不改状态；失败静默（观测不能反过来搞坏执行）。
+        try {
+          const { startExecWatchdog, observabilityOf } = await import("./utils/exec-observe.js");
+          const { loadProjectConfig, projectPlanPath } = await import("./utils/paths.js");
+          const config = observabilityOf(await loadProjectConfig(ctx.cwd).catch(() => null));
+          if (config?.enabled !== false) {
+            startExecWatchdog(ctx, projectPlanPath(ctx.cwd), { config: config ?? null });
+          }
+        } catch (e) {
+          logWarn("[AutoGoo-Plugin] exec watchdog start failed:", e as any);
+        }
+
         // goo.md 检测（2026-10-08）：环境里没有约定正文时给出可操作提示。
         // 优先级：项目 <cwd>/goo.md > 用户 ~/.auto-goo/goo.md。
         // 只提示不自动写入（恢复由用户显式跑 goo-md.py --ensure）。
@@ -610,6 +629,13 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    // 停掉执行告警看门狗（否则进程退出前还剩一个 timer 在跑）
+    try {
+      const { stopExecWatchdog } = await import("./utils/exec-observe.js");
+      stopExecWatchdog();
+    } catch {
+      /* 清理失败无害 */
+    }
     // Clear status bar — it belongs to this session
     try {
       const { clearStatusBar } = await import("./utils/status.js");
@@ -635,5 +661,5 @@ export default function (pi: ExtensionAPI) {
   // 破坏宽度/光标计算 —— 表现为乱码、残影、界面错位。原注释写的
   // "Use stderr to avoid interfering with Pi's TUI rendering" 恰好说反了。
   // 加载状态由 pi 自己在 [Extensions] 列表里显示；诊断信息写 .auto-goo/logs/plugin.log。
-  logInfo("extension loaded", { version: "0.30.0" });
+  logInfo("extension loaded", { version: "0.32.0" });
 }

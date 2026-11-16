@@ -145,9 +145,9 @@ describe("displayWidth（测试用独立实现）", () => {
 // ── 4 个 tab × 4 种宽度：零超宽 ────────────────────────────────────────────
 
 describe("observe-tabs 宽度不变式", () => {
-  const tabs = ["steps", "overview", "env", "shell", "recall"] as const;
+  const tabs = ["steps", "overview", "exec", "env", "shell", "recall"] as const;
 
-  it("富数据下 5 个 tab × 4 种宽度都不超宽", () => {
+  it("富数据下 6 个 tab × 4 种宽度都不超宽", () => {
     for (const tab of tabs) {
       for (const w of WIDTHS) {
         const lines = renderObserveBody(richSnapshot(), {
@@ -163,7 +163,7 @@ describe("observe-tabs 宽度不变式", () => {
     }
   });
 
-  it("空数据下 5 个 tab × 4 种宽度都不超宽", () => {
+  it("空数据下 6 个 tab × 4 种宽度都不超宽", () => {
     for (const tab of tabs) {
       for (const w of WIDTHS) {
         const lines = renderObserveBody(emptySnapshot(), { tab, width: w, theme });
@@ -410,5 +410,11 @@ describe("renderObserveBody", () => {
   it("recall tab 转交给 renderRecallTab（无统计时给提示）", () => {
     const lines = renderObserveBody(emptySnapshot(), { tab: "recall", width: 60, theme });
     assert.ok(lines.join("\n").includes("还没有召回记录"));
+  });
+
+  it("exec tab 转交给 renderExecTab（无指标时给提示而不是空白）", () => {
+    const lines = renderObserveBody(emptySnapshot(), { tab: "exec", width: 60, theme });
+    assert.ok(lines.length >= 1);
+    assert.ok(lines.join("\n").includes("执行事件"));
   });
 });

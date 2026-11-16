@@ -11,7 +11,7 @@ description: 显示当前 AutoGoo-Plugin 任务执行进度 — 优先读取当�
 
 ```
  AutoGoo Observe         <thread> · 2/4 · running
- [1] steps  [2] overview  [3] env  [4] shell
+ [1] steps  [2] overview  [3] exec  [4] reca  [5] env  [6] shell
 ──────────────────────────────────────────────────
  █████░░░░░░░░░░░░░░░ 25%
   ✓ 1   审计          completed  100%
@@ -26,11 +26,13 @@ description: 显示当前 AutoGoo-Plugin 任务执行进度 — 优先读取当�
 | --- | --- |
 | `steps` | 全部步骤 + 选中详情 + log 尾部（`/goo-status` 默认） |
 | `overview` | 状态计数、进度、ready / waiting、Next 提示 |
+| `exec` | 执行指标：耗时分布（avg/p50/p95/max + 最慢 top3）、最容易超时的 step、失败原因聚类、重试次数（来自 `.goo/logs/exec.jsonl`） |
+| `recall` | 召回观测：次数、命中率、耗时、预算截断、最近召回（来自 `.goo/logs/recall.jsonl`） |
 | `env` | root / thread / plan / logs / shell logs、claude 版本、常用命令、tee 模板（`/goo-observe` 默认） |
 | `shell` | `logs/shell/*.log` 列表与尾部 |
 
-`←→`/`1-4` 切 tab、`↑↓` 移动、`r` 立即刷新、`q` 退出。**每 2 秒自动刷新**，`dispose` 清理定时器。
-非 TUI 模式回退为 `goo-status.py` 的文本快照。
+`←→`/`1-6` 切 tab、`↑↓` 移动、`r` 立即刷新、`q` 退出。**每 2 秒自动刷新**，`dispose` 清理定时器。
+非 TUI 模式回退为 `goo-status.py` 的文本快照。完整健康结论用 `/auto-goo:goo-health`。
 
 ## 信息密度原则
 

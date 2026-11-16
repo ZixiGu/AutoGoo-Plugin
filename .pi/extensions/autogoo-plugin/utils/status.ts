@@ -55,6 +55,17 @@ const DEBOUNCE_MS = 200;
 // TUI 只保存最后一次写入的文本，内容过期只能靠再次调用 setStatus 覆盖，
 // 所以这里周期调用。interval 用 unref，不阻止进程退出。
 const refreshTimers = new Map<string, NodeJS.Timeout>();
+
+/**
+ * 每次 stop/clear 递增。in-flight 的 tick 在 `await snapshotPlan` 结束后
+ * 若发现代际变了，就丢弃这次写入。
+ *
+ * 为什么需要：`refreshStatusBarTick` 先 await 取快照再 setStatus。
+ * 若在这段 await 期间用户调了 `clearStatusBar`，定时器虽已停止，
+ * **在途的那次 tick 仍会把状态写回去** —— 表现为「状态栏清不掉」。
+ * 实测 `clearStatusBar stops timer` 测试 3 次里失败 2 次，就是这个竞态。
+ */
+const refreshGeneration = new Map<string, number>();
 // 默认 15s；可用 AUTOGOO_STATUS_REFRESH_MS 覆盖（调试/测试用短间隔）
 const STATUS_REFRESH_INTERVAL_MS =
   Number(process.env.AUTOGOO_STATUS_REFRESH_MS ?? 15000) || 15_000;
@@ -77,6 +88,8 @@ export function stopStatusBarAutoRefresh(cwd: string): void {
     clearInterval(timer);
     refreshTimers.delete(cwd);
   }
+  // 让所有在途 tick 失效，避免它们把已清空的状态写回去
+  refreshGeneration.set(cwd, (refreshGeneration.get(cwd) ?? 0) + 1);
 }
 
 /**
@@ -84,8 +97,11 @@ export function stopStatusBarAutoRefresh(cwd: string): void {
  * → 渲染最后状态并停止；否则持续刷新。失败时停止，避免静默死循环。
  */
 async function refreshStatusBarTick(ctx: ExtensionContext): Promise<void> {
+  const startedGen = refreshGeneration.get(ctx.cwd) ?? 0;
   try {
     const snap = await snapshotPlan(ctx.cwd);
+    // 取快照期间可能被 clear/stop：此次 tick 已过期，丢弃，不写状态栏
+    if ((refreshGeneration.get(ctx.cwd) ?? 0) !== startedGen) return;
     if (!snap) {
       ctx.ui.setStatus(STATUS_KEY, undefined);
       stopStatusBarAutoRefresh(ctx.cwd);

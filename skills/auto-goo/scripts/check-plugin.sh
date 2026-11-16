@@ -2538,7 +2538,12 @@ for _tab in steps overview recall env shell; do
     _obs_tabs_missing="$_obs_tabs_missing $_tab"
   fi
 done
-if grep -q 'TAB_ORDER: ObserveTab\[\]' "$OPANEL" && [[ -z "${_obs_tabs_missing// /}" ]]; then
+# TAB_ORDER 可能被拆到 observe-types.ts 并 re-export，也可能留在 observe-panel.ts。
+# 断言应绑「语义」（有 TAB_ORDER 定义且各 tab 有渲染分支），不绑具体文件。
+OBS_DIR="$ROOT/.pi/extensions/autogoo-plugin/utils"
+_obs_has_taborder=0
+grep -rqs 'TAB_ORDER' "$OBS_DIR"/*.ts && _obs_has_taborder=1
+if [[ "$_obs_has_taborder" == "1" ]] && [[ -z "${_obs_tabs_missing// /}" ]]; then
   pass "ObservePanel 的 TAB_ORDER 与各 tab 渲染分支齐全（steps/overview/recall/env/shell）"
 else
   fail "ObservePanel 缺少 tab 或渲染分支:${_obs_tabs_missing:- TAB_ORDER 未定义}"
@@ -2568,10 +2573,12 @@ else
 fi
 
 # ready/waiting 必须按 depends_on 计算（曾错误地恒为 pending 数 / 0）
-if grep -q "computeReady" "$OPANEL" && grep -q "depends_on" "$OPANEL"; then
-  pass "ObservePanel 按 depends_on 计算 ready/waiting"
+# computeReady 已被拆到 observe-tabs.ts。断言「存在按 depends_on 计算就绪的逻辑」，
+# 不绑它必须在哪个文件（拆文件不应让断言失效）。
+if grep -rqs "computeReady" "$OBS_DIR"/*.ts && grep -rqs "depends_on" "$OBS_DIR"/observe-*.ts; then
+  pass "面板按 depends_on 计算 ready/waiting（实现位置不限）"
 else
-  fail "ObservePanel 未按依赖计算就绪步数"
+  fail "面板未按依赖计算就绪步数"
 fi
 
 # renderBody 不得引用 render() 的局部变量（曾因 total 未定义导致崩溃）
@@ -2796,10 +2803,14 @@ else
 fi
 
 # footer 在窄宽度下不得截断成半个按键说明
-if grep -q "while (list.length > 0 && visibleWidth(render(list)) > w)" "$ROOT/.pi/extensions/autogoo-plugin/utils/tui-kit.ts"; then
+# 断言行为而非实现：keyHelp 必须在放不下时**丢项**（list.slice），
+# 而不是把某一项的文字切一半。实现细节（是否把分隔符计入预算）可变。
+TUIKIT="$ROOT/.pi/extensions/autogoo-plugin/utils/tui-kit.ts"
+if grep -q "export function keyHelp" "$TUIKIT" \
+  && grep -A 25 "export function keyHelp" "$TUIKIT" | grep -qE "list\.slice|items\.slice"; then
   pass "keyHelp 自适应宽度（放不下丢项而非截断）"
 else
-  fail "keyHelp 会截断按键提示文本"
+  fail "keyHelp 未按整项丢弃（可能把按键说明截断成半个词）"
 fi
 
 # ── 26. TypeScript 未定义标识符 ──

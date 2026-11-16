@@ -146,3 +146,26 @@ test("startStatusBarAutoRefresh is idempotent per cwd", async () => {
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("clearStatusBar 后，在途 tick 不得把状态写回（代际竞态）", async () => {
+  // 回归：refreshStatusBarTick 先 await snapshotPlan 再 setStatus。
+  // 若在 await 期间调用 clearStatusBar，定时器虽已停，在途 tick 仍会写回，
+  // 表现为「状态栏清不掉」。修复前该场景 3 次里失败 2 次。
+  const cwd = mkdtempSync(join(tmpdir(), "autogoo-status-race-"));
+  try {
+    writePlan(cwd, makePlan([{ id: 1, status: "pending" }]));
+    const { ctx, calls } = makeFakeCtx(cwd);
+    startStatusBarAutoRefresh(ctx);
+    // 不等 tick 完成就立刻 clear —— 制造 in-flight 窗口
+    clearStatusBar(ctx);
+    const before = calls.length;
+    await new Promise((r) => setTimeout(r, REFRESH_MS * 4));
+    assert.equal(
+      calls.length, before,
+      "clear 之后不得再有任何 setStatus（在途 tick 必须被代际检查丢弃）",
+    );
+    assert.equal(calls[calls.length - 1].text, undefined, "最后状态应为 undefined");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});

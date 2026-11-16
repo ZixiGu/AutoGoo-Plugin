@@ -16,9 +16,19 @@ import { join } from "node:path";
 
 const MAX_LOG_BYTES = 1024 * 1024; // 1MB，超出后截断重来
 
+/**
+ * 日志文件路径（**纯函数**，便于单测）。
+ *
+ * 独立成纯函数的原因：测试若直接改 `process.env.HOME` 会让并行测试互相污染 ——
+ * 实测过 `status.test.ts` 的 timer 断言因此 flaky。把路径计算与 IO 分开后，
+ * 路径逻辑可以直接断言而不碰环境变量。
+ */
+export function logPathFor(home: string | undefined): string {
+  return join(home || "~", ".auto-goo", "logs", "plugin.log");
+}
+
 function logPath(): string {
-  const home = process.env.HOME || "~";
-  return join(home, ".auto-goo", "logs", "plugin.log");
+  return logPathFor(process.env.HOME);
 }
 
 function write(level: string, parts: unknown[]): void {

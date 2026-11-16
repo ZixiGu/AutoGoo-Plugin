@@ -297,3 +297,45 @@ def test_snapshot_enables_real_growth_delta(project: Path) -> None:
     second = json.loads(_run(project, "--json").stdout)
     site = next(row for row in second["dirs"] if row["name"] == "site")
     assert site["delta_bytes"] == 8192
+
+
+def test_missing_logs_dir_does_not_crash(tmp_path: Path):
+    """`.goo/logs` 不存在时不得崩溃。
+
+    回归：`log_candidates` 的早退分支曾只返回 3 个字段（正常路径 6 个），
+    导致 `build_report` 访问 `log_meta['rotated_count']` 时 KeyError。
+    而「logs 目录不存在」恰恰是新项目 / 刚清理完的最常见状态。
+    """
+    goo = tmp_path / ".goo"
+    goo.mkdir()
+    (goo / "plan.json").write_text('{"steps": []}', encoding="utf-8")
+    # 刻意不创建 logs/ 子目录
+
+    r = subprocess.run(
+        [sys.executable, str(SCRIPT), "--root", str(tmp_path)],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert r.returncode == 0, f"logs 缺失时应正常退出，实际 {r.returncode}:\n{r.stderr}"
+    assert "KeyError" not in r.stderr
+    assert "Traceback" not in r.stderr
+
+
+def test_log_meta_fields_consistent_across_paths(tmp_path: Path):
+    """有 logs 与无 logs 两条路径返回的 meta 字段集必须一致。"""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("goo_gc", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    missing = tmp_path / "missing"
+    _, meta_missing = mod.log_candidates(missing, 1024, 7, tmp_path)
+
+    present = tmp_path / "present"
+    present.mkdir()
+    (present / "app.log.1").write_text("x" * 100, encoding="utf-8")
+    _, meta_present = mod.log_candidates(present, 10, 7, tmp_path / "threads")
+
+    assert set(meta_missing) == set(meta_present), (
+        f"字段集不一致：缺失路径 {sorted(meta_missing)} vs 存在路径 {sorted(meta_present)}"
+    )

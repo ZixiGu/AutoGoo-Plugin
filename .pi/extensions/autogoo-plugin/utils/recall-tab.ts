@@ -18,9 +18,9 @@ import type { RecallStats } from "./recall-observe.js";
  * wiki 经验。所以这个 tab 存在的意义是让「召回失败」立刻可见。
  */
 export function renderRecallTab(
-  r: ObserveSnapshot["recall"],
+  r: RecallStats | undefined,
   w: number,
-  theme: Theme,
+  theme: Theme | undefined,
 ): string[] {
   const L: string[] = [];
   const kv = (k: string, v: string) => L.push(fit(`  ${color(theme, "dim", k.padEnd(16))}${v}`, w));

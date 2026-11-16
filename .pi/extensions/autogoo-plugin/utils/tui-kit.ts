@@ -60,7 +60,22 @@ export function visibleWidth(text: string): number {
 
 /**
  * 截断到指定显示宽度，保留 ANSI 序列完整性（截断后补 `\x1b[0m` 防止串色）。
+ *
+ * 2026-11 修复：原实现用 `rest.match(ANSI_RE)` 定位转义序列，而 `String.match`
+ * 在带 `g` 标志时**返回全部匹配且没有 `index` 属性** —— 于是 `m.index === 0` 永远
+ * 不成立，ESC 被当成 1 列宽的普通字符逐个消耗，彩色文本被截断时输出的是
+ * `"\x1b[31"` 这种**半个转义序列**（终端会把后续字符当 CSI 参数吞掉，表现为串色/乱码）。
+ * 改用 sticky（`y`）正则后就按位置匹配，整段转义都能被完整保留。
  */
+const ANSI_AT = new RegExp(ANSI_RE.source, "y");
+
+/** 在 `i` 位置匹配 ANSI 序列；匹配不上返回 null。 */
+function ansiAt(text: string, i: number): string | null {
+  ANSI_AT.lastIndex = i;
+  const m = ANSI_AT.exec(text);
+  return m ? m[0] : null;
+}
+
 export function truncateToWidth(text: string, maxWidth: number): string {
   if (maxWidth <= 0) return "";
   let out = "";
@@ -69,13 +84,11 @@ export function truncateToWidth(text: string, maxWidth: number): string {
   let sawAnsi = false;
   while (i < text.length) {
     // ANSI 序列整段保留（宽度 0）
-    ANSI_RE.lastIndex = 0;
-    const rest = text.slice(i);
-    const m = rest.match(ANSI_RE);
-    if (m && m.index === 0) {
-      out += m[0];
+    const esc = ansiAt(text, i);
+    if (esc) {
+      out += esc;
       sawAnsi = true;
-      i += m[0].length;
+      i += esc.length;
       continue;
     }
     const cp = text.codePointAt(i) ?? 0;
@@ -129,8 +142,12 @@ export function headerLine(title: string, right: string, width: number, theme?: 
 }
 
 /**
- * 底部按键提示。放不下时**从尾部丢项**并补 `…`，绝不截断成半个按键说明
+ * 底部按键提示。放不下时**按整项丢弃**并补 `…`，绝不截断成半个按键说明
  * （截断会显示成 `c 清空 ·...` 这种看不懂的样子）。
+ *
+ * 2026-11 修复：原实现补完 `…` 后又逐字符回退直到不超宽，`w=30` 时会把
+ * `…` 自己砍掉、只剩一个悬空的 `·`（正是注释声称要避免的残句）。
+ * 现在改为「整项丢弃直到 `…` 也放得下」，宽度不够就只留 `…`。
  */
 export function keyHelp(items: KeyHelpItem[], width: number, theme?: Theme): string {
   const w = Math.max(1, width);
@@ -138,17 +155,14 @@ export function keyHelp(items: KeyHelpItem[], width: number, theme?: Theme): str
     const text = list.map((i) => `${i.keys} ${i.label}`).join("  ·  ");
     return ` ${text}`;
   };
+  const full = render(items);
+  if (visibleWidth(full) <= w) return fit(color(theme, "dim", full), w);
+
   let list = items.slice();
-  while (list.length > 0 && visibleWidth(render(list)) > w) {
+  while (list.length > 0 && visibleWidth(`${render(list)}  ·  …`) > w) {
     list = list.slice(0, -1);
   }
-  let text = list.length > 0 ? render(list) : " ";
-  if (list.length < items.length) {
-    text = `${text}  ·  …`;
-    while (visibleWidth(text) > w && text.length > 1) {
-      text = text.slice(0, -1);
-    }
-  }
+  const text = list.length > 0 ? `${render(list)}  ·  …` : " …";
   return fit(color(theme, "dim", text), w);
 }
 

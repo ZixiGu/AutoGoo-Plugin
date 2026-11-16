@@ -17,65 +17,42 @@
 
 import type { Component, KeybindingsManager, Theme } from "@earendil-works/pi-tui";
 import { matchesKey } from "@earendil-works/pi-tui";
+import { fit, headerLine, keyHelp, ListState, rule, tabsLine } from "./tui-kit.js";
+import { progressOf, renderObserveBody } from "./observe-tabs.js";
 import {
-  bar,
-  clip,
-  color,
-  fit,
-  fmtAge,
-  headerLine,
-  keyHelp,
-  ListState,
-  rule,
-  selected as hl,
-  statusMark,
-  statusToken,
-  tabsLine,
-} from "./tui-kit.js";
+  TAB_ORDER,
+  type ObserveSnapshot,
+  type ObserveStep,
+  type ObserveTab,
+} from "./observe-types.js";
 
-export interface ObserveStep {
-  id: number | string;
-  name: string;
-  status: string;
-  progress: number;
-  heartbeat_at?: string | null;
-  agent_id?: string | null;
-  error?: string | null;
-  log_path?: string | null;
-  subagent?: string | null;
-  task_agent?: string | null;
-}
-
-export interface ObserveShellLog {
-  path: string;
-  mtime?: number;
-  tail: string[];
-}
-
-export interface ObserveSnapshot {
-  root: string;
-  threadId?: string | null;
-  planPath: string;
-  logsDir: string;
-  shellLogDir: string;
-  claudeVersion?: string;
-  planStatus: string;
-  task: string;
-  steps: ObserveStep[];
-  shellLogs: ObserveShellLog[];
-  commands?: Record<string, string>;
-  /** 召回观测统计（来自 .goo/logs/recall.jsonl） */
-  recall?: import("./recall-observe.js").RecallStats;
-}
-
-export type ObserveTab = "steps" | "overview" | "recall" | "env" | "shell";
-
-const TAB_ORDER: ObserveTab[] = ["steps", "overview", "recall", "env", "shell"];
-
-export type ObserveAction = { action: "quit" } | { action: "refresh" };
-
+// ── re-export：数据契约在 observe-types.ts，渲染纯函数在 observe-tabs.ts ──────
+// 两个拆分目的相同：pi-tui 只在运行时注入，任何 import 到本文件的运行时符号
+// 都会把面板变成「测试环境加载不了」→ render 永不执行 → 界面 bug 漏到线上。
+// 所以类型和纯渲染都搬走，这里只留 TUI 交互（键盘/定时器/IO）。
+export type {
+  ObserveAction,
+  ObserveCounts,
+  ObserveShellLog,
+  ObserveSnapshot,
+  ObserveStep,
+  ObserveTab,
+} from "./observe-types.js";
+export { TAB_ORDER } from "./observe-types.js";
+export {
+  computeCounts,
+  computeReady,
+  progressOf,
+  renderEnvTab,
+  renderObserveBody,
+  renderOverviewTab,
+  renderShellTab,
+  renderStepsTab,
+} from "./observe-tabs.js";
 export { renderRecallTab } from "./recall-tab.js";
-import { renderRecallTab } from "./recall-tab.js";
+
+/** 面板 body 的行预算（超出丢弃，不足补空行，保证高度不跳）。 */
+const BODY_BUDGET = 16;
 
 export class ObservePanel implements Component {
   private tabIndex: number;
@@ -134,14 +111,6 @@ export class ObservePanel implements Component {
     this.requestRender();
   }
 
-  private counts(): Record<string, number> {
-    const acc: Record<string, number> = {};
-    for (const step of this.data.steps) {
-      acc[step.status] = (acc[step.status] || 0) + 1;
-    }
-    return acc;
-  }
-
   private stepLogLines(): string[] {
     const step = this.data.steps[this.stepList.selected];
     if (!step) return [];
@@ -161,10 +130,7 @@ export class ObservePanel implements Component {
     const w = Math.max(20, width);
     const out: string[] = [];
     const d = this.data;
-    const counts = this.counts();
-    const total = d.steps.length;
-    const doneCount = counts.completed ?? 0;
-    const pct = total > 0 ? (doneCount / total) * 100 : 0;
+    const { total, done: doneCount } = progressOf(d.steps);
 
     out.push(rule(w, this.theme));
     out.push(
@@ -185,10 +151,9 @@ export class ObservePanel implements Component {
     out.push(tabsLine(tabDefs, this.tabIndex, w, this.theme));
     out.push(rule(w, this.theme));
 
-    const body = this.renderBody(w, counts, pct);
-    const budget = 16;
-    for (const line of body.slice(0, budget)) out.push(line);
-    for (let i = body.length; i < budget; i++) out.push(fit("", w));
+    const body = this.renderBody(w);
+    for (const line of body.slice(0, BODY_BUDGET)) out.push(line);
+    for (let i = body.length; i < BODY_BUDGET; i++) out.push(fit("", w));
 
     out.push(rule(w, this.theme));
     const secondsLeft = Math.max(0, 2 - Math.round((Date.now() - this.lastRefresh) / 1000));
@@ -208,151 +173,24 @@ export class ObservePanel implements Component {
     return out;
   }
 
-  private renderBody(w: number, counts: Record<string, number>, pct: number): string[] {
-    const d = this.data;
-    // 注意：这里的 total / doneCount 必须在函数内计算。
-    // 曾经直接引用 render() 的局部变量 —— 因为 overview 的 Next 分支是短路求值，
-    // 只有"没有 pending 步骤"时才会执行到，于是测试数据里恰好有 pending 就掩盖了崩溃。
-    const total = d.steps.length;
-    const doneCount = counts.completed ?? 0;
-    const L: string[] = [];
-    const kv = (k: string, v: string) =>
-      L.push(fit(`  ${color(this.theme, "dim", k.padEnd(16))}${v}`, w));
-
-    if (this.tab === "steps") {
-      if (d.steps.length === 0) return [fit(color(this.theme, "dim", "  （当前 thread 没有 plan 步骤）"), w)];
-      L.push(fit(` ${bar(pct, 100, 20, this.theme)} ${pct.toFixed(0)}%`, w));
-      const [start, end] = this.stepList.range(d.steps.length);
-      d.steps.slice(start, end).forEach((step, i) => {
-        const active = start + i === this.stepList.selected;
-        const narrow = w < 60;
-        const nameWidth = narrow ? Math.max(8, w - 14) : Math.max(12, w - 46);
-        const name = (step.name || "").slice(0, nameWidth).padEnd(nameWidth);
-        const hb = step.status === "running" ? ` hb ${fmtAge(step.heartbeat_at)}` : "";
-        const text = narrow
-          ? ` ${active ? "›" : " "} ${color(this.theme, statusToken(step.status), statusMark(step.status))} ${name}`
-          : ` ${active ? "›" : " "} ${color(this.theme, statusToken(step.status), statusMark(step.status))} ` +
-            `${String(step.id).slice(0, 4).padEnd(4)} ${name} ${step.status.padEnd(10)} ${String(step.progress ?? 0).padStart(3)}%${hb}`;
-        L.push(fit(active ? hl(this.theme, text) : text, w));
-      });
-      const sel = d.steps[this.stepList.selected];
-      if (sel) {
-        L.push(fit(color(this.theme, "dim", "  ── 选中详情 ──"), w));
-        const meta = [
-          `status=${sel.status}`,
-          `progress=${sel.progress ?? 0}%`,
-          sel.subagent ? `subagent=${sel.subagent}` : "",
-          sel.agent_id ? `agent=${sel.agent_id}` : "",
-          sel.heartbeat_at ? `hb=${fmtAge(sel.heartbeat_at)} 前` : "",
-        ]
-          .filter(Boolean)
-          .join("  ");
-        L.push(fit(`  ${meta}`, w));
-        if (sel.error) L.push(fit(color(this.theme, "error", `  ✗ ${String(sel.error).slice(0, w - 6)}`), w));
-        const log = this.stepLogLines();
-        if (log.length > 0) {
-          L.push(fit(color(this.theme, "dim", `  ── log 尾部（${sel.log_path ?? "无"}） ──`), w));
-          for (const line of clip(log, 4)) L.push(fit(`   ${line}`, w));
-        }
-      }
-      return L;
-    }
-
-    if (this.tab === "recall") {
-      return renderRecallTab(d.recall, w, this.theme);
-    }
-
-    if (this.tab === "overview") {
-      kv("Plan status", d.planStatus);
-      kv("Progress", `${pct.toFixed(0)}%  (${bar(pct, 100, 16, this.theme)})`);
-      L.push(fit("", w));
-      L.push(fit(`  ${color(this.theme, "accent", "步骤状态")}`, w));
-      const order = ["completed", "running", "pending", "blocked", "failed", "interrupted"];
-      const max = Math.max(1, ...order.map((k) => counts[k] ?? 0));
-      for (const key of order) {
-        const value = counts[key] ?? 0;
-        L.push(
-          fit(
-            `  ${color(this.theme, statusToken(key), statusMark(key))} ${key.padEnd(12)} ${String(value).padStart(3)}  ${bar(value, max, 20, this.theme)}`,
-            w,
-          ),
-        );
-      }
-      const computed = this.computeReady();
-      kv("ready / waiting", `${computed.ready} / ${computed.waiting}`);
-      kv(
-        "Next",
-        total === 0
-          ? "当前 thread 没有 plan 步骤"
-          : doneCount === total
-            ? "全部完成"
-            : computed.ready > 0
-              ? `${computed.ready} 步可派发`
-              : "无就绪步骤（依赖未满足）",
-      );
-      return L;
-    }
-
-    if (this.tab === "env") {
-      kv("root", d.root);
-      kv("thread", d.threadId ?? "-");
-      kv("plan", d.planPath || "-");
-      kv("logs", d.logsDir || "-");
-      kv("shell logs", d.shellLogDir || "-");
-      kv("claude", d.claudeVersion || "-");
-      L.push(fit("", w));
-      L.push(fit(`  ${color(this.theme, "accent", "常用命令")}`, w));
-      const cmds = d.commands || {};
-      for (const [key, value] of Object.entries(cmds)) {
-        if (key === "shell_template") continue;
-        L.push(fit(`  ${color(this.theme, "dim", key.padEnd(12))} ${value}`, w));
-      }
-      if (cmds.shell_template) {
-        L.push(fit(color(this.theme, "dim", "  shell 跟踪模板（长任务用）:"), w));
-        L.push(fit(`   ${cmds.shell_template.slice(0, w - 4)}`, w));
-      }
-      return L;
-    }
-
-    // shell
-    if (d.shellLogs.length === 0) {
-      return [
-        fit(color(this.theme, "dim", `  （${d.shellLogDir || "logs/shell"} 下暂无 *.log）`), w),
-        fit("", w),
-        fit(color(this.theme, "dim", "  长任务建议用 tee 跟踪："), w),
-        fit(`   ${(d.commands?.shell_template || "").slice(0, w - 4)}`, w),
-      ];
-    }
-    const [sStart, sEnd] = this.shellList.range(d.shellLogs.length);
-    d.shellLogs.slice(sStart, sEnd).forEach((log, i) => {
-      const active = sStart + i === this.shellList.selected;
-      const name = log.path.split("/").pop() || log.path;
-      const text = ` ${active ? "›" : " "} ${name}`;
-      L.push(fit(active ? hl(this.theme, text) : text, w));
+  /**
+   * body 渲染只做分发 —— 每行怎么算都在 `observe-tabs.ts` 的纯函数里。
+   * 保留的唯一副作用是 steps tab 的 log 按需读取（别的 tab 不读盘）。
+   *
+   * 历史教训：这段逻辑原来就住在这里，而这里 import 了 pi-tui 的 `matchesKey`，
+   * 测试环境加载不了 → render 从未被执行 → `ReferenceError: total is not defined`
+   * 直接打到线上。抽出来之后同样的错误会在单测里立刻红。
+   */
+  private renderBody(w: number): string[] {
+    const logLines = this.tab === "steps" ? this.stepLogLines() : [];
+    return renderObserveBody(this.data, {
+      tab: this.tab,
+      width: w,
+      theme: this.theme,
+      stepIndex: this.stepList.selected,
+      shellIndex: this.shellList.selected,
+      logLines,
     });
-    const sel = d.shellLogs[this.shellList.selected];
-    if (sel && sel.tail?.length) {
-      L.push(fit(color(this.theme, "dim", "  ── 尾部 ──"), w));
-      for (const line of clip(sel.tail, 6)) L.push(fit(`   ${line}`, w));
-    }
-    return L;
-  }
-
-  /** 按 depends_on 计算真正"就绪"（依赖全部完成）与"等待中"的步数。 */
-  private computeReady(): { ready: number; waiting: number } {
-    const completed = new Set(
-      this.data.steps.filter((s) => s.status === "completed").map((s) => String(s.id)),
-    );
-    let ready = 0;
-    let waiting = 0;
-    for (const step of this.data.steps) {
-      if (step.status !== "pending") continue;
-      const deps = ((step as any).depends_on ?? []) as Array<number | string>;
-      const satisfied = deps.every((d) => completed.has(String(d)));
-      if (satisfied) ready += 1;
-      else waiting += 1;
-    }
-    return { ready, waiting };
   }
 
   invalidate(): void {

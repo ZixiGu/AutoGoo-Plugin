@@ -410,7 +410,18 @@ def log_candidates(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """只挑轮转归档；按大小预算 + 过期天数产生候选。"""
     if not logs_dir.is_dir() or is_symlink(logs_dir):
-        return [], {"total_bytes": 0, "rotated": [], "budget_hit": False}
+        # ⚠ 必须与正常路径返回**完全相同的字段集**。
+        # 实测 bug：这里曾少返回 rotated_count / rotated_bytes / budget_bytes /
+        # max_age_days，导致 .goo/logs 不存在时（新项目、清理后）build_report
+        # 直接 KeyError('rotated_count') 崩溃 —— 而 logs 缺失恰恰是最常见状态。
+        return [], {
+            "total_bytes": 0,
+            "rotated_count": 0,
+            "rotated_bytes": 0,
+            "budget_hit": False,
+            "budget_bytes": budget_bytes,
+            "max_age_days": max_age_days,
+        }
     all_entries = walk_files(logs_dir)
     total = sum(size for _, size, _ in all_entries)
 

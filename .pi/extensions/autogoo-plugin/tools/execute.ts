@@ -289,6 +289,26 @@ async function runSchedule(
     .slice(0, availableSlots);
   const dispatched: number[] = [];
 
+  // 并行写冲突：只告警不阻止（自动串行会拖慢本就该并行的任务）
+  const writeConflicts = detectWriteConflicts(toDispatch);
+  if (writeConflicts.length > 0) {
+    lines.push(...describeWriteConflicts(writeConflicts));
+    for (const c of writeConflicts) {
+      execPython(
+        UPDATE_STEP_PY,
+        ["--plan", planPath, "--step-id", String(c.a.id), "--heartbeat", "--note",
+         `写入范围与 #${c.b.id} 重叠: ${c.overlap.slice(0, 3).join(", ")}`],
+        cwd, { timeout: 10000 },
+      );
+      execPython(
+        UPDATE_STEP_PY,
+        ["--plan", planPath, "--step-id", String(c.b.id), "--heartbeat", "--note",
+         `写入范围与 #${c.a.id} 重叠: ${c.overlap.slice(0, 3).join(", ")}`],
+        cwd, { timeout: 10000 },
+      );
+    }
+  }
+
   if (toDispatch.length === 0) {
     if (completedIds.size === plan.steps.length) {
       plan.status = "completed";
@@ -534,6 +554,10 @@ async function runSchedule(
         );
       }
       // 兕底：子进程退出后 step 若仍 running，按退出码标记
+      // stderr 摘录：provider 认证/限流/模型不存在等错误只出现在 stderr。
+      // 不带上它时，所有非 0 退出看起来都像「wrapper 被信号杀」——实测因此
+      // 把一个 yj provider 并发失败误诊成「pi tool 调用 2 分钟超时」。
+      const stderrExcerpt = excerptStderr(result.stderr);
       const planNow = await loadPlan(cwd, planPath);
       const stepNow = planNow?.steps.find((s: any) => String(s.id) === String(step.id));
       if (stepNow?.status === "running") {
@@ -554,13 +578,15 @@ async function runSchedule(
                 "--interrupt",
                 "--error",
                 result.errorMessage ||
-                  `subagent wrapper 中断（exit ${result.exitCode}${result.timedOut ? "，超时" : "，被信号杀"}），任务本体可能继续运行，需检查后恢复`,
+                  `subagent wrapper 中断（exit ${result.exitCode}${result.timedOut ? "，超时" : "，被信号杀"}），任务本体可能继续运行，需检查后恢复` +
+                    (stderrExcerpt ? ` | stderr: ${stderrExcerpt}` : ""),
               ],
               cwd,
               { timeout: 10000 },
             );
           } else {
-            execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--fail", "--error", result.errorMessage || `subagent exit ${result.exitCode}`], cwd, { timeout: 10000 });
+            execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--fail", "--error",
+              (result.errorMessage || `subagent exit ${result.exitCode}`) + (stderrExcerpt ? ` | stderr: ${stderrExcerpt}` : "")], cwd, { timeout: 10000 });
           }
         }
       }
@@ -759,6 +785,85 @@ async function runHeartbeatCheck(
   };
 }
 
+// ── 并行写冲突检测 ────────────────────────────────────────────────────────────
+
+/** 一个步骤的写范围展开后的「冲突单元」集合。 */
+function writeScopeOf(step: any): Set<string> {
+  const out = new Set<string>();
+  for (const raw of step.allowed_write_paths || []) {
+    const p = String(raw).trim().replace(/^\.\//, "").replace(/\/+$/, "");
+    if (!p) continue;
+    // 目录（以 / 结尾或已知目录形态）→ 内部任意文件都冲突；
+    // 用「前缀 + 分隔符」表示，避免 "src" 误配 "srcfoo"
+    out.add(p.endsWith("/") ? p : `${p}/`);
+  }
+  return out;
+}
+
+/** 两个写范围是否重叠（互为前缀 / 相同 / 一方是另一方祖先）。 */
+function scopesOverlap(a: Set<string>, b: Set<string>): string[] {
+  const hits: string[] = [];
+  for (const x of a) {
+    for (const y of b) {
+      const xs = x.replace(/\/$/, "");
+      const ys = y.replace(/\/$/, "");
+      if (xs === ys) { hits.push(xs); continue; }
+      // 祖先关系：a 覆盖 b 或 b 覆盖 a
+      if (y.startsWith(`${x}`) || x.startsWith(`${y}/`)) hits.push(xs === ys ? xs : `${xs} ∩ ${ys}`);
+    }
+  }
+  return [...new Set(hits)];
+}
+
+export interface WriteConflict {
+  a: any;
+  b: any;
+  overlap: string[];
+}
+
+/**
+ * 找出**同批派发**步骤之间的写范围重叠。
+ *
+ * 为什么需要：`allowed_write_paths` 此前只写进 subagent prompt 当说明文字，
+ * **零强制**。实测一轮 4 个并行步骤的写范围全部重叠（check-plugin.sh 被
+ * 4 个步骤同时修改），系统毫无察觉 —— 两个 subagent 同时写同一文件时，
+ * 后写的直接覆盖先写的，且不会报错。
+ *
+ * 处置策略：**不阻止派发**（很多步骤确实要改同一批文件的不同位置），
+ * 而是把冲突明确告知：
+ *   - 写进主 Agent 的返回消息（人能看见）
+ *   - 写进每个受影响 step 的 log（事后可追溯）
+ * 是否降级为串行由人决定 —— 自动串行会显著拖慢本该并行的任务。
+ */
+export function detectWriteConflicts(steps: any[]): WriteConflict[] {
+  const out: WriteConflict[] = [];
+  const scopes = steps.map(writeScopeOf);
+  for (let i = 0; i < steps.length; i++) {
+    for (let j = i + 1; j < steps.length; j++) {
+      const overlap = scopesOverlap(scopes[i], scopes[j]);
+      if (overlap.length > 0) out.push({ a: steps[i], b: steps[j], overlap });
+    }
+  }
+  return out;
+}
+
+/** 把冲突渲染成主 Agent 与 step log 都能读懂的几行。 */
+export function describeWriteConflicts(conflicts: WriteConflict[]): string[] {
+  if (conflicts.length === 0) return [];
+  const lines = [
+    `⚠️ ${conflicts.length} 组并行步骤的写入范围重叠 —— 可能互相覆盖（不阻止执行）`,
+  ];
+  for (const c of conflicts.slice(0, 6)) {
+    lines.push(
+      `   #${c.a.id} ∩ #${c.b.id} → ${c.overlap.slice(0, 3).join(", ")}` +
+        (c.overlap.length > 3 ? ` 等 ${c.overlap.length} 处` : ""),
+    );
+  }
+  if (conflicts.length > 6) lines.push(`   …另有 ${conflicts.length - 6} 组`);
+  lines.push(`   建议：确认这些步骤不会改同一批文件；若会，改为串行或拆分写范围。`);
+  return lines;
+}
+
 // ── Detached 派发（绕开 pi tool call 2 分钟硬超时）────────────────────────────
 
 /**
@@ -861,7 +966,49 @@ async function dispatchDetached(
   return out;
 }
 
-// ── runScheduleDetached：非阻塞调度（full_cycle 使用）──────────────────────────
+/**
+ * 从 subagent 的 stderr 提取**有诊断价值**的一段。
+ *
+ * 为什么需要：pi 子进程非 0 退出时，真正的错误（provider 认证失败、限流、
+ * 模型不存在、参数非法）只在 stderr 里。调用方若只记 "exit 143"，
+ * 所有失败都长得一样 —— 实测把一个 provider 并发失败误诊为「tool 超时」，
+ * 白做了一轮 detached 改造。
+ *
+ * 策略：
+ *   - 过滤纯 JSON 事件行（--mode json 会把正常事件也写进 stderr 的场景）
+ *   - 优先挑含 error / failed / unauthorized / rate / model 的行
+ *   - 取最后 3 条有效行，总长 ≤ 300 字符
+ */
+export function excerptStderr(stderr: string | undefined | null): string {
+  if (!stderr) return "";
+  const lines = stderr
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .filter((l) => !l.startsWith("{"))     // 纯 JSON 事件不算错误文本
+    .filter((l) => !/^\s*at\s/.test(l));   // 堆栈帧让位给消息
+  if (lines.length === 0) return "";
+  const interesting = lines.filter((l) =>
+    /error|failed|unauthor|forbidden|rate.?limit|quota|invalid|not found|model/i.test(l),
+  );
+  const pick = (interesting.length > 0 ? interesting : lines).slice(-3);
+  const text = pick.join(" / ");
+  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
+}
+
+// ── runScheduleDetached：非阻塞调度（**当前未接入 full_cycle**）──────────────────
+//
+// ⚠ 状态：已实现 + 有测试，但**没有生产验证**，full_cycle 仍走阻塞的 runSchedule。
+//
+// 当初实现它的依据是一个错误诊断：以为 pi 对 tool call 有 2 分钟硬超时。
+// 实测推翻了这个判断（同一 tool call 跑了 14.5 分钟、另一轮 2 小时 11 分）。
+//
+// 保留的理由：异步派发在原理上更合理（tool call 不该阻塞几十分钟），代码与
+// 测试（__tests__/detached-dispatch.test.ts）完整，将来若确需可启用。
+// 启用前**必须**先验证：
+//   1. 孤儿进程清理（父 pi 会话退出后子进程仍在跑）
+//   2. agents/step-N.jsonl 的事后解析与 usage 统计
+//   3. 实时流式转发失效对用户观感的影响
 
 /**
  * 与 {@link runSchedule} 相同的"找就绪步骤"逻辑，但派发方式是 detached spawn
@@ -919,6 +1066,11 @@ async function runScheduleDetached(
   const toDispatch = ready
     .filter((s) => s.execution_target !== "remote")
     .slice(0, availableSlots);
+
+  const writeConflicts = detectWriteConflicts(toDispatch);
+  if (writeConflicts.length > 0) {
+    lines.push(...describeWriteConflicts(writeConflicts));
+  }
 
   if (autoRetried > 0) lines.push(`🔄 自动重试 ${autoRetried} 个 failed 步骤`);
   if (failed.length > 0) lines.push(`💀 ${failed.length} 步失败: #${failed.map((s) => s.id).join(", #")}`);
@@ -1041,13 +1193,17 @@ async function runFullCycle(
     };
   }
 
-  // 2. Schedule new steps —— **非阻塞派发**
+  // 2. Schedule new steps
   //
-  // ⚠ 这里不能用 runSchedule 的阻塞路径：pi 对每个 tool call 有硬编码
-  // TOOL_TIMEOUT_MS = 2 分钟，到点 abort 会 SIGTERM 掉所有 subagent，
-  // 表现为 exit=143、步骤停在 progress=15。真实 DAG 步骤远超 2 分钟。
-  // 所以 full_cycle 走 detached：spawn 后立即返回，进度靠 heartbeat_check 轮询。
-  const schedResult = await runScheduleDetached(pi, cwd, updatedPlan, planPath, ctx);
+  // 走**阻塞**的 runSchedule。曾被改成 runScheduleDetached，依据是一个错误诊断
+  // （「pi tool call 有 2 分钟硬超时」）。实测同一 tool call 跑了 14 分 48 秒、
+  // 后续一轮 2 小时 11 分 —— 阻塞路径完全可用，2 分钟限制并不作用于 extension
+  // 的 execute()。真实根因是 provider 配置漂移（config 写死 yj，主模型已换
+  // opencode-go，yj 在 4 并发下失败 → exit=143 被误读成 wrapper 问题）。
+  //
+  // detached 能力保留在 runScheduleDetached 里但**未接入**：它未经验证
+  // （会引入孤儿进程、日志事后解析、实时流式丢失），启用前必须先实测。
+  const schedResult = await runSchedule(pi, cwd, updatedPlan, planPath, ctx, signal, onUpdate);
 
   // Update status bar
   if (ctx) updateStatusBar(ctx);

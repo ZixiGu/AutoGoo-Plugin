@@ -3884,6 +3884,45 @@ if [[ -f "$RENAME_SCRIPT" ]]; then
   fi
 fi
 
+# ── 46. 并行写冲突必须可见 / 失败必须带 stderr ──
+# 两个都是本轮 DAG 执行暴露的真实缺口：
+#   - allowed_write_paths 只写进 prompt 当说明文字，零强制。实测 4 个并行步骤
+#     写范围全部重叠（check-plugin.sh 被 4 步同时改），系统毫无察觉。
+#   - subagent 非 0 退出时只记 "exit 143"，provider 认证/限流错误全丢，
+#     导致把 yj provider 并发失败误诊成「pi tool 超时」。
+echo ""
+echo "── 46. 写冲突可见 + 失败可诊断 ──"
+
+EXEC="$ROOT/.pi/extensions/autogoo-plugin/tools/execute.ts"
+# 必须**两条派发路径都接入**（阻塞 runSchedule + detached runScheduleDetached）。
+# 只断言「文件里有这个调用」会被单侧遗漏骗过 —— 实测过。
+_conf_calls=$(grep -c "detectWriteConflicts(toDispatch)" "$EXEC" 2>/dev/null || echo 0)
+if grep -q "export function detectWriteConflicts" "$EXEC" && [[ "$_conf_calls" -ge 2 ]]; then
+  pass "并行派发前检测写入范围重叠（两条派发路径均已接入）"
+else
+  fail "写冲突检测缺失或只接入一条路径（实际 $_conf_calls 处）—— 另一条路径仍会静默互相覆盖"
+fi
+
+if grep -q "export function excerptStderr" "$EXEC" \
+  && grep -q "stderr: \${stderrExcerpt}" "$EXEC"; then
+  pass "subagent 失败时把 stderr 摘录写进 step.error"
+else
+  fail "失败未带 stderr —— provider 层错误不可见，排查只能靠猜"
+fi
+
+# detached 必须明确标注未接入，避免后人误以为生产路径
+if grep -q "当前未接入 full_cycle" "$EXEC"; then
+  pass "detached 派发标注为未接入（避免误用未验证路径）"
+else
+  fail "detached 未标注状态 —— 可能被误当成生产路径启用"
+fi
+
+if grep -q "const schedResult = await runSchedule(pi, cwd, updatedPlan" "$EXEC"; then
+  pass "full_cycle 走已验证的阻塞派发路径"
+else
+  fail "full_cycle 未走已验证路径 —— 可能切到了未验证的 detached"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

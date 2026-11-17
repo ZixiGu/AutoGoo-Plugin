@@ -200,9 +200,11 @@ export async function resolveOrPromptSubagentModel(
 const HEARTBEAT_INTERVAL_MS = 20_000;
 /**
  * 总超时（默认 30 分钟）：兜底用，防止子进程永久驻留。
- * 注意它**不是**主要的时间保障 —— 真正防止"卡住还等满 30 分钟"的是 idle 检测。
+ * 语义是「**无进展**上限」而非「总时长上限」：只要子进程还有事件 / CPU 增长 /
+ * 活跃后代 / 心跳，计时器就续期。真正防止「卡住还等满 90 分钟」的是 idle 检测
+ * （默认 5 分钟无任何信号即杀）。
  */
-const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = 90 * 60 * 1000;
 /**
  * 空闲超时（默认 5 分钟）：连续这么久**没有任何事件**就判定卡住。
  *
@@ -355,7 +357,45 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
     let settled = false;
 
     /** 终止子进程：先 SIGTERM，5s 后仍未退出则 SIGKILL（P11：timer 可清理）。 */
+    /**
+     * 递归收集某个进程的全部后代 pid（先序）。
+     *
+     * 为什么需要：`proc.kill()` 只杀直接子进程。subagent 跑的是 pi 子进程，
+     * 而 pi 在执行工具时会再 spawn bash / python / node —— 这些孙进程**不会**
+     * 随父进程的 SIGTERM 一起死，因为它们通常不在同一进程组，且 shell 不转发信号。
+     *
+     * 实测：fake-pi 里 `sleep 30`，父进程 5 秒收到 SIGTERM 立刻退出，
+     * 但 sleep 变孤儿继续跑到 30 秒，stdout 管道因此不关闭，调用方要白等 25 秒。
+     * 真实场景里更糟：孤儿可能继续写文件 / 占用端口，与后续步骤冲突。
+     */
+    const collectDescendants = (pid: number, acc: number[] = []): number[] => {
+      try {
+        const kids = readFileSync(`/proc/${pid}/task/${pid}/children`, "utf-8")
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean)
+          .map(Number);
+        for (const k of kids) {
+          acc.push(k);
+          collectDescendants(k, acc);
+        }
+      } catch {
+        /* 非 Linux / 无权限 / 进程已退出 */
+      }
+      return acc;
+    };
+
     const killProc = (signal: NodeJS.Signals = "SIGTERM") => {
+      // 先杀后代再杀自己：否则父进程一死，后代被 init 收养，父子关系丢失，
+      // 再想通过 /proc/<pid>/children 找它们就不可能了。
+      const descendants = collectDescendants(proc.pid ?? -1);
+      for (const d of descendants.reverse()) {
+        try {
+          process.kill(d, signal);
+        } catch {
+          /* 已退出 */
+        }
+      }
       try {
         proc.kill(signal);
       } catch {
@@ -367,6 +407,14 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
           if (proc.exitCode === null) proc.kill("SIGKILL");
         } catch {
           /* ignore */
+        }
+        // 后代在 SIGTERM 后的宽限期内可能还没退：一并 SIGKILL
+        for (const d of descendants) {
+          try {
+            process.kill(d, "SIGKILL");
+          } catch {
+            /* 已退出 */
+          }
         }
       }, 5000);
     };
@@ -391,17 +439,46 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
     //   C. 子进程树里有活跃的后代（bash / node / python … 在执行工具）
     //   D. step log 文件在增长（用户要求"所有执行必须有 log"——这正是它的用途）
     let lastEventAt = Date.now();
+    /**
+     * 最后一次「可观测进展」的时间。
+     *
+     * 与 lastEventAt 的区别：lastEventAt 只由 JSON 事件驱动，而**无进展超时**
+     * 还要接受 CPU 增长 / 活跃后代 / 心跳。否则一个跑 40 分钟编译的任务
+     * （期间零 JSON 事件但有 CPU）会撞上「无进展」判定。
+     */
+    let lastProgressAt = Date.now();
     const markActivity = () => {
       lastEventAt = Date.now();
+      lastProgressAt = Date.now();
     };
     const idleMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
 
+    // ── 总超时：从「硬性总时长」改为「无进展上限」──────────────────────────
+    //
+    // 实测数据（circuit_gen 项目 exec.jsonl）：
+    //   S1 完成 27.4min
+    //   S2 start → 30min TIMEOUT(exit 143) → resume → 共 130min 才完成
+    //   S3 start → 12.7min fail → resume → 共 234.5min 完成
+    //   S5 start → 30min TIMEOUT(exit 143)
+    //
+    // 旧行为是 setTimeout(30min) **硬砍**，不看进展 —— 真实工程任务必然被杀，
+    // 然后 resume 从头再来一遍（浪费的 token 与时间远超任务本身）。
+    // 真正的「卡住」由 idle 检测（默认 5min 无任何信号）负责，这里只需要
+    // 挡住「一直在动但永远不结束」的病态情况（死循环输出等）。
+    //
+    // 新语义：**只要还有进展就续期**；连续 timeoutMs 完全无进展才杀。
     if (timeoutMs > 0) {
-      timeoutTimer = setTimeout(() => {
+      timeoutTimer = setInterval(() => {
+        if (Date.now() - lastProgressAt < timeoutMs) return;
         result.timedOut = true;
         result.timeoutReason = "total";
+        result.errorMessage =
+          `子进程连续 ${Math.round(timeoutMs / 60000)} 分钟无任何进展` +
+          `（无事件、CPU 无增长、无活跃后代、无心跳），已终止；` +
+          `可用 execution.subagent_timeout_seconds 调整该阈值`;
         killProc("SIGTERM");
-      }, timeoutMs);
+      }, Math.max(5_000, Math.min(30_000, Math.floor(timeoutMs / 10))));
+      (timeoutTimer as any).unref?.();
     }
 
     /**
@@ -468,6 +545,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
         if (cpuBusy || descendantsBusy) {
           // 有证据表明它在干活 → 不算 idle，并把锚点前移，避免下次立刻触发
           lastEventAt = Date.now();
+          lastProgressAt = Date.now();   // 同时续期「无进展总超时」
           return;
         }
 

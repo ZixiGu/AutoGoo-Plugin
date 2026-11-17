@@ -1058,6 +1058,45 @@ subagent 会拿到一堆没有上下文的原始日志 —— 理解原始记录
 }
 ```
 
+### Subagent 超时：从「硬性总时长」改为「无进展上限」
+
+**实测数据**（`circuit_gen` 项目的 `.goo/logs/exec.jsonl`）：
+
+| 步骤 | 结果 |
+| --- | --- |
+| S1 | 完成，27.4min |
+| S2 | start → **30min TIMEOUT(exit 143)** → resume → 共 130min 完成 |
+| S3 | start → 12.7min fail → resume → 共 **234.5min** 完成 |
+| S5 | start → **30min TIMEOUT(exit 143)** |
+
+旧实现 `setTimeout(30min)` 是**硬砍**，不看进展。真实工程任务必然被杀，
+然后 `resume` 从头重跑 —— 浪费的 token 与时间远超任务本身。
+
+新语义：
+
+| 机制 | 阈值 | 触发条件 |
+| --- | --- | --- |
+| **idle 检测** | 5min（`subagent_idle_timeout_seconds`） | 无 JSON 事件 + CPU 无增长 + 无活跃后代 |
+| **无进展上限** | 90min（`subagent_timeout_seconds`） | 连续这么久**完全无任何进展** |
+
+只要还有事件 / CPU 增长 / 活跃后代 / 心跳，计时器就**续期**。
+真正的「卡住」由 idle 检测负责；总超时只挡「一直在动但永远不结束」的病态情况。
+
+### kill 必须杀进程树
+
+`proc.kill(SIGTERM)` 只杀直接子进程。subagent 跑的是 pi，pi 再 spawn
+bash / python —— 这些孙进程**不会**随父进程一起死（shell 不转发信号），
+变成孤儿继续写文件 / 占端口 / 持有 stdout 管道。
+
+实测症状：父进程 5 秒就退出，但管道被孤儿占着，调用方白等 25 秒
+（`sleep 30` 跑满才 close）。
+
+修复：`killProc` 先递归收集 `/proc/<pid>/task/<pid>/children` 的全部后代，
+**从叶子往根**发信号（先杀后代，父进程死后后代会被 init 收养、关系丢失）；
+5 秒宽限期后再对残余后代补 SIGKILL。
+
+测试断言：超时后必须在「阈值 + 宽限期」内返回，而不是等孙进程自己跑完。
+
 ### Subagent 超时：三层机制，避免「卡住还等半小时」
 
 原来只有 **30 分钟总超时**，子进程卡住（网络断 / 模型挂起 / 内部死锁）时整个 DAG 要白等半小时。

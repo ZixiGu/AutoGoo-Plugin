@@ -1,5 +1,5 @@
 /**
- * AutoGoo-Plugin Pi Extension v0.32.0 — 主入口
+ * AutoGoo-Plugin Pi Extension v0.32.1 — 主入口
  *
  * DAG 驱动的多智能体编排框架，从 Claude Code 插件迁移。
  *
@@ -436,6 +436,7 @@ export default function (pi: ExtensionAPI) {
       "使用 auto_goo_ask_user 向用户提问，提供结构化选项让用户选择，而不是用普通文本要求用户回复编号。",
       "提问返回后必须检查 details.source：source=user 才是用户真实选择；source=recommended/first/default 表示超时或非交互下自动采用了兜底值，需在回复中明确告知用户；source=cancelled 表示未作答且无可推荐项，此时不要擅自继续不可逆操作。",
       "对不可逆操作（删除、覆盖、发布、执行移动/整理）显式传 onTimeout='cancel'，不要让超时替你确认。",
+      "调用本工具时必须传**结构化参数**（options 是一个对象数组）；不要把选项写成 XML/HTML 标签（如 <option label=...>）。写成标签形式会被 pi 当作普通文本原样打印给用户，看起来像一堆乱码。",
     ],
     // ⚠ 必须用 TypeBox（Type.Object）而不是原生 JSON Schema。
     // pi 的 registerTool 签名是 registerTool<TParams extends TSchema>，
@@ -661,5 +662,5 @@ export default function (pi: ExtensionAPI) {
   // 破坏宽度/光标计算 —— 表现为乱码、残影、界面错位。原注释写的
   // "Use stderr to avoid interfering with Pi's TUI rendering" 恰好说反了。
   // 加载状态由 pi 自己在 [Extensions] 列表里显示；诊断信息写 .auto-goo/logs/plugin.log。
-  logInfo("extension loaded", { version: "0.32.0" });
+  logInfo("extension loaded", { version: "0.32.1" });
 }

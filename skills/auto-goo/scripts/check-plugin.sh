@@ -2966,70 +2966,53 @@ else
   fail "缓存读取早于本地 HEAD 计算，校验必然失效"
 fi
 
-# ── 30. Subagent 超时优化（idle 检测 / 可配置 / 提前结束）──
-# 回归：原来只有 30 分钟总超时，子进程卡住时整个 DAG 要白等半小时。
+# ── 30. Subagent 生命周期（不自动 kill）──
+# 决策（2026-11）：**取消所有自动 kill**。
+#
+# 曾有两套自动终止：total timeout（无进展 90 分钟）与 idle 检测（4 信号 + 5 分钟）。
+# 两者都要回答「什么叫没进展」，而每个判据都有盲区 —— 模型思考无事件、
+# 命令 detach 脱离进程树、长命令无 log 写入… 逐轮修补 4 次（30min 硬砍 →
+# 无进展 → 四信号 → 内容分析）仍然会误杀。
+#
+# 现在只剩三种终止：子进程自己退出 / step 已结束（shouldStop）/ 用户 Esc（AbortSignal）。
+# 真卡住时由人/agent 决策：看得到进度，随时可 Esc 或 --interrupt。
 echo ""
-echo "── 30. Subagent 超时优化 ──"
+echo "── 30. Subagent 生命周期 ──"
 
 SUB_TS="$ROOT/.pi/extensions/autogoo-plugin/utils/subagent.ts"
 
-for sym in "idleTimeoutMs?: number" "shouldStop?: () => boolean" "timeoutReason" "stoppedEarly"; do
-  if grep -q "$sym" "$SUB_TS" 2>/dev/null; then
-    pass "subagent 提供 $sym"
-  else
-    fail "subagent 缺少 $sym"
-  fi
-done
-
-if grep -q "DEFAULT_IDLE_TIMEOUT_MS" "$SUB_TS" && grep -q "idleTimer" "$SUB_TS"; then
-  pass "实现 idle 检测（无事件即判定卡住）"
+# 不得再有 idle / total timeout 的自动 kill
+if grep -qE "idleTimer|timeoutTimer|DEFAULT_IDLE_TIMEOUT_MS|DEFAULT_TIMEOUT_MS" "$SUB_TS"; then
+  fail "仍存在自动超时 kill（idleTimer / timeoutTimer）—— 已决定交给 agent 把控"
 else
-  fail "缺少 idle 检测 —— 卡住时要等满总超时"
+  pass "无自动超时 kill（交给 agent / 用户决策）"
 fi
 
-# 关键安全性：idle 判定必须多信号，不能只看 JSON 事件
-# （实测：subagent 跑 sleep/编译/训练期间 --mode json 完全静默，只看事件会误杀）
-for sig in "readCpuTicks" "hasActiveDescendant" "cpuBusy" "descendantsBusy"; do
-  if grep -q "$sig" "$SUB_TS" 2>/dev/null; then
-    pass "idle 检测包含信号 $sig"
-  else
-    fail "idle 检测缺少信号 $sig —— 会误杀长命令"
-  fi
-done
-
-if grep -q "长命令执行期间不误杀" "$ROOT/.pi/extensions/autogoo-plugin/__tests__/subagent-idle-safety.test.ts" 2>/dev/null; then
-  pass "有「长命令不误杀」的回归测试"
+# 但 must-have：shouldStop（step 结束即停）与 AbortSignal（Esc）
+if grep -q "shouldStop?.()" "$SUB_TS" && grep -q "stoppedEarly" "$SUB_TS"; then
+  pass "保留 shouldStop：step 已结束则提前终止"
 else
-  fail "缺少「长命令不误杀」测试 —— 这是 idle 检测最危险的失效模式"
+  fail "缺少 shouldStop —— 干完活没退出的子进程会一直占着"
 fi
 
-if grep -q "clearInterval(idleTimer)" "$SUB_TS"; then
-  pass "idle 定时器在 stopTimers 中清理"
+if grep -q "onAbort" "$SUB_TS" && grep -q "opts.signal" "$SUB_TS"; then
+  pass "保留 AbortSignal：用户 Esc 可中断"
 else
-  fail "idle 定时器未清理（会泄漏）"
+  fail "缺少 AbortSignal 接入 —— 卡住时用户无法中断"
 fi
 
-# 超时必须可配置（两个派发路径都读 config.execution）
-if grep -q "subagent_idle_timeout_seconds" "$ROOT/.pi/extensions/autogoo-plugin/utils/paths.ts"; then
-  pass "config.execution 支持 subagent_idle_timeout_seconds"
+# 配置项也应一并移除（否则是「声明但不生效」）
+if grep -q "subagent_idle_timeout_seconds\|subagent_timeout_seconds" "$ROOT/.pi/extensions/autogoo-plugin/utils/paths.ts"; then
+  fail "配置里仍声明 subagent_timeout_seconds / subagent_idle_timeout_seconds —— 已无消费点"
 else
-  fail "超时不可配置（硬编码）"
-fi
-CFG_HITS=0
-for f in "$COMMANDS_DIR" "$ROOT/.pi/extensions/autogoo-plugin/tools/execute.ts"; do
-  grep -rq "subagentIdleTimeoutMs" "$f" && CFG_HITS=$((CFG_HITS + 1))
-done
-if [[ "$CFG_HITS" -ge 2 ]]; then
-  pass "两个派发路径都传入 idle 超时"
-else
-  fail "有派发路径未传 idle 超时（会回退默认值）"
+  pass "已从 config schema 移除失效的超时配置"
 fi
 
-# 提前结束：step 已结束就不必等
-if grep -q "shouldStop" "$SUB_TS" && grep -rq "loadPlanSync" "$COMMANDS_DIR"; then
-  pass "step 结束后提前终止子进程（不等满 timeout）"
+# 回归测试必须覆盖三种终止方式
+if [[ -f "$ROOT/.pi/extensions/autogoo-plugin/__tests__/subagent-lifecycle.test.ts" ]]; then
+  pass "有生命周期回归测试（静默不杀 / shouldStop / Esc）"
 else
-  fail "缺少 shouldStop 接入 —— 干完活没退出的子进程会拖满超时"
+  fail "缺少生命周期测试 —— 行为变更需要钉住"
 fi
 
 # ── 31. 工具参数必须用 TypeBox ──

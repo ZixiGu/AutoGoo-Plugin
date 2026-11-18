@@ -210,10 +210,6 @@ export interface AutogooPluginConfig {
     subagent_model?: string;
     /** Subagent 子进程显式 provider（默认使用主 agent 的 PI_PROVIDER；无时回退 pi 全局）。与 subagent_model 配对 */
     subagent_provider?: string;
-    /** Subagent 总超时秒数（默认 1800 = 30min）。兜底用，防止子进程永久驻留 */
-    subagent_timeout_seconds?: number;
-    /** Subagent 空闲超时秒数（默认 300 = 5min）。连续这么久无任何事件即判定卡住并终止 */
-    subagent_idle_timeout_seconds?: number;
     /**
      * 写冲突隔离（默认关闭）：并行步骤的 `allowed_write_paths` 重叠时，
      * 每个冲突步骤在独立 git worktree 中执行，完成后按依赖顺序合并。
@@ -283,7 +279,6 @@ export function getServers(config: AutogooPluginConfig | null | undefined): Serv
  * 只会让行为变得诡异：
  *
  *   stale_heartbeat_seconds: 15     ← 想填 15 分钟，实际 15 秒
- *   subagent_timeout_seconds: 30    ← 想填 30 分钟，实际 30 秒（subagent 秒退）
  *   step_timeout_minutes: 0.5       ← 想填 30 秒，碰巧对但语义混乱
  *
  * 这些值不会让程序崩，只会让**用户以为配好了却没生效** —— 与
@@ -327,8 +322,6 @@ export function validateTimingConfig(config: AutogooPluginConfig | null | undefi
 
   check(exec.heartbeat_seconds, "execution.heartbeat_seconds", { unit: "seconds", min: 5 });
   check(exec.stale_after_seconds, "execution.stale_after_seconds", { unit: "seconds", min: 60 });
-  check(exec.subagent_timeout_seconds, "execution.subagent_timeout_seconds", { unit: "seconds", min: 60 });
-  check(exec.subagent_idle_timeout_seconds, "execution.subagent_idle_timeout_seconds", { unit: "seconds", min: 30 });
   check(obs.alert_interval_seconds, "observability.alert_interval_seconds", { unit: "seconds", min: 15 });
   check(obs.cooldown_seconds, "observability.cooldown_seconds", { unit: "seconds", min: 60 });
   check(obs.stale_heartbeat_seconds, "observability.stale_heartbeat_seconds", { unit: "seconds", min: 60 });

@@ -384,8 +384,6 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
       // 配置写入 .goo/config.json；用户取消或仍解析不到则 blocked，绝不静默用 pi 全局默认。
       const execCfg = (await loadProjectConfig(cwd).catch(() => null))?.execution || {};
       // 超时可配：默认 total 30min / idle 5min。idle 才是"卡住不等满半小时"的关键。
-      const subagentTimeoutMs = (Number(execCfg.subagent_timeout_seconds) || 1800) * 1000;
-      const subagentIdleTimeoutMs = (Number(execCfg.subagent_idle_timeout_seconds) || 300) * 1000;
       const heartbeatIntervalMs = (Number(execCfg.heartbeat_seconds) || 20) * 1000;
       const subModel = await resolveOrPromptSubagentModel(
         { provider: execCfg.subagent_provider, model: execCfg.subagent_model },
@@ -486,15 +484,7 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
             /* 流式转发失败不阻塞 */
           }
         },
-        timeoutMs: (params as any).timeoutMs ?? subagentTimeoutMs,
-        idleTimeoutMs: subagentIdleTimeoutMs,
         logPath: (step as any)?.log_path ?? undefined,
-        toolLogPath: (() => {
-          const lp = (step as any)?.log_path;
-          if (!lp) return undefined;
-          const abs = lp.startsWith("/") ? lp : join(cwd, lp);
-          return abs.replace(/\.log$/, ".exec.jsonl");
-        })(),
       heartbeatIntervalMs: heartbeatIntervalMs,
         // step 已完成/失败但进程没退出时提前结束，避免白等
         shouldStop: () => {

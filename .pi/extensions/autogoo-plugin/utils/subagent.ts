@@ -218,21 +218,6 @@ export async function resolveOrPromptSubagentModel(
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 const HEARTBEAT_INTERVAL_MS = 20_000;
-/**
- * 总超时（默认 30 分钟）：兜底用，防止子进程永久驻留。
- * 语义是「**无进展**上限」而非「总时长上限」：只要子进程还有事件 / CPU 增长 /
- * 活跃后代 / 心跳，计时器就续期。真正防止「卡住还等满 90 分钟」的是 idle 检测
- * （默认 5 分钟无任何信号即杀）。
- */
-const DEFAULT_TIMEOUT_MS = 90 * 60 * 1000;
-/**
- * 空闲超时（默认 5 分钟）：连续这么久**没有任何事件**就判定卡住。
- *
- * 为什么需要它：子进程可能因为网络断、模型挂起、内部死锁而僵住，
- * 但进程还在。只靠 30 分钟总超时的话，整个 DAG 会白等半小时。
- * 阈值不能太短：模型 thinking 阶段可能长时间不输出事件。
- */
-const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** 解析当前 pi 可执行文件（复用官方 subagent 扩展逻辑）。
  *  支持 AUTOGOO_SUBAGENT_CMD 环境变量覆盖（测试/调试用）。 */
@@ -308,7 +293,6 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
   args.push(`Task: ${opts.task}`);
 
   const invocation = getPiInvocation(args);
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const usage = emptyUsage();
   const messages: unknown[] = [];
 
@@ -372,7 +356,6 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
       }
     }, heartbeatEvery);
 
-    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
     let killTimer: ReturnType<typeof setTimeout> | null = null;
     let settled = false;
 
@@ -446,206 +429,20 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
       }
     };
 
-    // ── 超时：total 兜底 + idle 检测 ────────────────────────────────────
-    // 只靠总超时的话，子进程卡住时要白等满 timeoutMs（默认 30 分钟）。
+    // ── 不自动终止子进程 ─────────────────────────────────────────────────────
     //
-    // ⚠ 但「没有 JSON 事件」**不等于**「没有进度」：实测 subagent 跑一个
-    //   `sleep 8`（或编译/训练）期间，--mode json 的输出是**完全静默**的，
-    //   事件只在工具结束后才出现。只看事件会误杀长命令。
+    // 这里曾有 total timeout（无进展 90 分钟）与 idle 检测（4 信号 + 5 分钟）
+    // 两套自动 kill。两者都需要判断「什么叫没进展」，而每个判据都有盲区
+    // （模型思考无事件、命令 detach 脱离进程树、长命令无 log 写入…），
+    // 逐轮修补的结果是规则越来越复杂、仍会误杀。
     //
-    // 因此用**多信号**判定，任一活跃就不算 idle：
-    //   A. JSON 事件（markActivity）
-    //   B. 子进程 CPU 时间增长（/proc/<pid>/stat 的 utime+stime）
-    //   C. 子进程树里有活跃的后代（bash / node / python … 在执行工具）
-    //   D. step log 文件在增长（用户要求"所有执行必须有 log"——这正是它的用途）
-    let lastEventAt = Date.now();
-    /**
-     * 最后一次「可观测进展」的时间。
-     *
-     * 与 lastEventAt 的区别：lastEventAt 只由 JSON 事件驱动，而**无进展超时**
-     * 还要接受 CPU 增长 / 活跃后代 / 心跳。否则一个跑 40 分钟编译的任务
-     * （期间零 JSON 事件但有 CPU）会撞上「无进展」判定。
-     */
-    let lastProgressAt = Date.now();
-    const markActivity = () => {
-      lastEventAt = Date.now();
-      lastProgressAt = Date.now();
-    };
-    const idleMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
-
-    // ── 总超时：从「硬性总时长」改为「无进展上限」──────────────────────────
+    // 决策：**不替用户判断**。子进程只在三种情况下结束：
+    //   1. 自己退出（正常路径）
+    //   2. step 已被标记 completed/failed（shouldStop，见上）
+    //   3. 调用方 AbortSignal 中断（用户 Esc / 会话中断，见下）
     //
-    // 实测数据（circuit_gen 项目 exec.jsonl）：
-    //   S1 完成 27.4min
-    //   S2 start → 30min TIMEOUT(exit 143) → resume → 共 130min 才完成
-    //   S3 start → 12.7min fail → resume → 共 234.5min 完成
-    //   S5 start → 30min TIMEOUT(exit 143)
-    //
-    // 旧行为是 setTimeout(30min) **硬砍**，不看进展 —— 真实工程任务必然被杀，
-    // 然后 resume 从头再来一遍（浪费的 token 与时间远超任务本身）。
-    // 真正的「卡住」由 idle 检测（默认 5min 无任何信号）负责，这里只需要
-    // 挡住「一直在动但永远不结束」的病态情况（死循环输出等）。
-    //
-    // 新语义：**只要还有进展就续期**；连续 timeoutMs 完全无进展才杀。
-    if (timeoutMs > 0) {
-      timeoutTimer = setInterval(() => {
-        if (Date.now() - lastProgressAt < timeoutMs) return;
-        result.timedOut = true;
-        result.timeoutReason = "total";
-        result.errorMessage =
-          `子进程连续 ${Math.round(timeoutMs / 60000)} 分钟无任何进展` +
-          `（无事件、CPU 无增长、无活跃后代、无心跳、step log 无增长），已终止；` +
-          `可用 execution.subagent_timeout_seconds 调整该阈值`;
-        killProc("SIGTERM");
-      }, Math.max(5_000, Math.min(30_000, Math.floor(timeoutMs / 10))));
-      (timeoutTimer as any).unref?.();
-    }
-
-    /**
-     * 读进程 CPU 时间（utime+stime，单位 tick）。不可用时返回 null。
-     * 用于区分「模型卡住」与「正在跑计算密集的长命令」。
-     */
-    const readCpuTicks = (pid: number | undefined): number | null => {
-      if (!pid) return null;
-      try {
-        const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
-        // 格式：pid (comm) state ppid ... utime(14) stime(15) ...
-        // comm 可能含空格/括号，从最后一个 ')' 之后开始切分
-        const tail = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-        // tail[0]=state, tail[1]=ppid, ..., utime=tail[11], stime=tail[12]
-        const utime = Number(tail[11]);
-        const stime = Number(tail[12]);
-        return Number.isFinite(utime) && Number.isFinite(stime) ? utime + stime : null;
-      } catch {
-        return null;
-      }
-    };
-
-    /** 是否有存活的后代进程（说明正在执行工具，而不是模型卡住）。 */
-    const hasActiveDescendant = (pid: number | undefined): boolean => {
-      if (!pid) return false;
-      try {
-        const childrenFile = `/proc/${pid}/task/${pid}/children`;
-        const raw = readFileSync(childrenFile, "utf-8").trim();
-        if (!raw) return false;
-        // 后代存在且不是僵尸（Z）就算活跃
-        for (const child of raw.split(/\s+/).filter(Boolean)) {
-          try {
-            const stat = readFileSync(`/proc/${child}/stat`, "utf-8");
-            const state = stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3);
-            if (state && state !== "Z") return true;
-          } catch {
-            /* 子进程已退出 */
-          }
-        }
-      } catch {
-        /* 无法读取（非 Linux / 无权限）→ 视为无信息 */
-      }
-      return false;
-    };
-
-    let lastCpuTicks = readCpuTicks(proc.pid);
-
-    // ── 信号 D：step log 有**实质**进展 ────────────────────────────────────
-    //
-    // ⚠ 不能只看「文件有没有变大」：父进程的 heartbeatTimer 每 20s 调一次
-    //   update-step.py --heartbeat，那会把**完全相同**的一行追加进 step log：
-    //
-    //     - 08:29:47 heartbeat status=running progress=80 detail=Subagent running (agent-1-…)
-    //     - 08:30:07 heartbeat status=running progress=80 detail=Subagent running (agent-1-…)  ← 一字不差
-    //
-    //   于是「文件在增长」永远成立 → idle 检测被自己的心跳架空。
-    //   （实测某 step log 里连续 3 条只有时间戳不同。）
-    //
-    // 因此判据是**内容**：progress 数值增加，或 detail 出现非模板内容。
-    // 模板化的 `detail=Subagent running (agent-…)` 视为「无新信息」。
-    const absLogPath = opts.logPath
-      ? (isAbsolute(opts.logPath) ? opts.logPath : join(opts.cwd, opts.logPath))
-      : null;
-
-    interface LogSignal { progress: number; sig: string }
-    const readLogSignal = (): LogSignal | null => {
-      if (!absLogPath) return null;
-      try {
-        const size = statSync(absLogPath).size;
-        if (size === 0) return null;
-        const start = Math.max(0, size - 8192);        // 尾部 8KB 足够覆盖最近几条
-        const len = size - start;
-        const fd = openSync(absLogPath, "r");
-        const buf = Buffer.alloc(len);
-        try {
-          readSync(fd, buf, 0, len, start);
-        } finally {
-          closeSync(fd);
-        }
-        const rows = buf.toString("utf-8").split("\n").filter((l) => l.startsWith("- "));
-        for (let i = rows.length - 1; i >= 0; i--) {
-          const pm = /progress=(\d+)/.exec(rows[i]);
-          if (!pm) continue;
-          const progress = Number(pm[1]);
-          const action = (/- \S+ (\w+)/.exec(rows[i]) || [])[1] || "";
-          const detail = ((/detail=(.+)$/.exec(rows[i]) || [])[1] || "").trim();
-          // 父进程心跳的固定模板：不含新信息
-          const templated = /^Subagent running \(agent-[^)]+\)$/.test(detail);
-          return { progress, sig: templated ? `tpl|${progress}` : `${action}|${progress}|${detail}` };
-        }
-        return null;
-      } catch {
-        return null;   // 文件不存在/读失败 → 不提供信息（不据此判活也不判死）
-      }
-    };
-    let lastLogSignal = readLogSignal();
-
-    let idleTimer: ReturnType<typeof setInterval> | null = null;
-    if (idleMs > 0) {
-      // 用 1/4 间隔轮询，既能及时判定又不至于太频繁
-      const tick = Math.max(1000, Math.floor(idleMs / 4));
-      idleTimer = setInterval(() => {
-        // ── 信号 D 的基线必须**每次 tick 都更新** ────────────────────────
-        // 放在 idle 阈值判断之前：否则「silentFor <= idleMs 就 return」会让
-        // 首次进入判定时 prevSig 仍为 null，判定成「无进展」，于是刚启动就被杀。
-        // （实测：idle=1200ms、log 每 400ms 有新内容，仍在 2s 被判 idle。）
-        const logSignalNow = readLogSignal();
-        let logBusy = false;
-        if (logSignalNow !== null) {
-          if (lastLogSignal !== null) {
-            logBusy =
-              logSignalNow.progress > lastLogSignal.progress ||
-              logSignalNow.sig !== lastLogSignal.sig;
-          }
-          lastLogSignal = logSignalNow;
-        }
-
-        // 信号 A：JSON 事件
-        const silentFor = Date.now() - lastEventAt;
-        if (silentFor <= idleMs) return;
-
-        // 信号 B：CPU 时间增长（计算密集的长命令）
-        const cpu = readCpuTicks(proc.pid);
-        const cpuBusy = cpu !== null && lastCpuTicks !== null && cpu > lastCpuTicks;
-        if (cpu !== null) lastCpuTicks = cpu;
-
-        // 信号 C：有活跃后代（bash / node / python 在执行工具）
-        const descendantsBusy = hasActiveDescendant(proc.pid);
-
-        if (cpuBusy || descendantsBusy || logBusy) {
-          // 有证据表明它在干活 → 不算 idle，并把锚点前移，避免下次立刻触发
-          lastEventAt = Date.now();
-          lastProgressAt = Date.now();   // 同时续期「无进展总超时」
-          return;
-        }
-
-        // 三个信号都沉默 → 判定卡住
-        result.timedOut = true;
-        result.timeoutReason = "idle";
-        result.errorMessage =
-          `子进程 ${Math.round(idleMs / 1000)}s 无事件、CPU 无增长、无活跃子进程、` +
-          `step log 无增长（疑似卡住），已终止；` +
-          `可用 execution.subagent_idle_timeout_seconds 调整该阈值`;
-        killProc("SIGTERM");
-      }, tick);
-      idleTimer.unref?.();
-    }
+    // 真卡住时由人/agent 决策：看得到进度，且随时可 Esc 或 --interrupt。
+    // 代价：卡住会让 tool call 一直等 —— 这是自觉接受的取舍。
 
     // P11：abort listener 在 close/error 时移除，避免泄漏
     // 显式区分「用户中断」与「超时」：两者都走 SIGTERM，但语义不同，
@@ -661,14 +458,6 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
 
     const stopTimers = () => {
       clearInterval(heartbeatTimer);
-      if (idleTimer) {
-        clearInterval(idleTimer);
-        idleTimer = null;
-      }
-      if (timeoutTimer) {
-        clearTimeout(timeoutTimer);
-        timeoutTimer = null;
-      }
       clearKillTimer();
       if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
     };
@@ -728,8 +517,6 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
       } catch {
         return; // 非 JSON 行（如日志）忽略
       }
-      // 任何合法事件都算「子进程还活着」，用于 idle 检测（见上方 idleTimer）
-      markActivity();
       if (event.type === "message_end" && event.message) {
         const msg = event.message as {
           role?: string;

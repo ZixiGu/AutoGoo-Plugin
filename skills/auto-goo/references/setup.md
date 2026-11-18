@@ -1082,7 +1082,6 @@ utils/exec-observe.ts:366 staleHeartbeatSeconds: 900,
 | 你填的 | 你以为 | 实际 |
 | --- | --- | --- |
 | `stale_heartbeat_seconds: 15` | 15 分钟 | **15 秒** |
-| `subagent_timeout_seconds: 30` | 30 分钟 | **30 秒**（subagent 秒退） |
 | `step_timeout_minutes: 0.5` | 30 秒 | 30 秒（碰巧对，但语义混乱） |
 
 `validateTimingConfig()` 在 `loadProjectConfig` 时校验，**警告而不拒绝**：
@@ -1167,29 +1166,38 @@ utils/exec-observe.ts:366 staleHeartbeatSeconds: 900,
 
 判据：`grep alert .goo/logs/exec.jsonl | wc -l` —— 这是**真实投递次数**。
 
-### Subagent 超时：从「硬性总时长」改为「无进展上限」
+### Subagent 生命周期：不自动 kill
 
-**实测数据**（`circuit_gen` 项目的 `.goo/logs/exec.jsonl`）：
+**决策（2026-11）**：取消所有自动终止。
 
-| 步骤 | 结果 |
-| --- | --- |
-| S1 | 完成，27.4min |
-| S2 | start → **30min TIMEOUT(exit 143)** → resume → 共 130min 完成 |
-| S3 | start → 12.7min fail → resume → 共 **234.5min** 完成 |
-| S5 | start → **30min TIMEOUT(exit 143)** |
+曾有两套自动 kill：
 
-旧实现 `setTimeout(30min)` 是**硬砍**，不看进展。真实工程任务必然被杀，
-然后 `resume` 从头重跑 —— 浪费的 token 与时间远超任务本身。
-
-新语义：
-
-| 机制 | 阈值 | 触发条件 |
+| 机制 | 阈值 | 结局 |
 | --- | --- | --- |
-| **idle 检测** | 5min（`subagent_idle_timeout_seconds`） | 四个信号同时沉默（见下） |
-| **无进展上限** | 90min（`subagent_timeout_seconds`） | 连续这么久**完全无任何进展** |
+| total timeout | 30min 硬砍 | 真实任务（27/130/234min）必然被杀 |
+| 改为「无进展上限」 | 90min | 判据仍需定义「什么算进展」 |
+| idle 检测 | 5min / 4 信号 | 模型思考无事件、命令 detach 脱离进程树 → 仍误杀 |
+| 再改「信号 D 看 log 内容」 | — | 父进程心跳每 20s 写同一行，把检测架空 |
 
-只要还有事件 / CPU 增长 / 活跃后代 / 心跳，计时器就**续期**。
-真正的「卡住」由 idle 检测负责；总超时只挡「一直在动但永远不结束」的病态情况。
+**共修了 4 轮，每轮都在给「什么叫没进展」下定义，而每个定义都有盲区。**
+
+最终取舍：**不替用户判断**。子进程只在三种情况下结束：
+
+1. 自己退出（正常路径）
+2. `step` 已被标记 `completed`/`failed`（`shouldStop`，见 `utils/subagent.ts`）
+3. 调用方 `AbortSignal` 中断（用户 Esc / 会话中断）
+
+真卡住时由人/agent 决策：进度可见，可 Esc，可 `auto_goo_update_step --interrupt`。
+
+**代价**：卡住会让 tool call 一直等（agent 也被阻塞在里面）。
+这是自觉接受的取舍 —— 换来的是「不再误杀」。
+
+配置项 `subagent_timeout_seconds` / `subagent_idle_timeout_seconds` 已随之移除
+（保留会变成「声明但不生效」）。
+
+**长命令的实际表现**（实测）：`idle` 一旦不再生效，跑 40 秒的 `sleep` 全程正常，
+不再需要任何信号兜底。
+
 
 ### 两类 step 日志：状态流 vs 执行轨迹
 
@@ -1216,53 +1224,11 @@ utils/exec-observe.ts:366 staleHeartbeatSeconds: 900,
 - `preview` 截断到 300 字符（不存全文，避免撑爆）
 - 由 `execute.ts` / `tools-execution.ts` 按 `step.log_path` 派生（`.log` → `.exec.jsonl`）
 
-### idle 检测的四个信号（缺一个就会误杀）
 
-| 信号 | 判据 | 覆盖的场景 |
-| --- | --- | --- |
-| **A. JSON 事件** | `--mode json` 输出行 | 模型正常产出的每一步 |
-| **B. CPU 增长** | `/proc/<pid>/stat` 的 `utime+stime` | 编译、训练等计算密集长命令 |
-| **C. 活跃后代** | `/proc/<pid>/task/<pid>/children`（排除僵尸 Z） | pi 正在跑 bash / python 工具 |
-| **D. step log 实质进展** | 解析 log 末尾的 `progress` 与 `detail`：progress 增加，或 detail 出现非模板内容 | **进程内纯 IO 等待** |
+### kill 必须杀进程树（现在只在 shouldStop / Esc 时触发）
 
-**为什么必须有 D**：A/B/C 覆盖不了「subagent 用 read 读超大文件」或
-「模型 API 在重试等待」—— 此时 pi 进程既没有子进程、CPU 也不明显增长、
-`--mode json` 又没有输出，三信号同时沉默就会被**误杀**。
-
-而 subagent 每次调 `auto_goo_update_step --heartbeat` 都会追加 step log，
-那是用户可见的真实进展，与 A/B/C 完全独立。
-
-> 历史坑：0.25.1 写多信号时**注释里写了 D**，但代码从未实现
-> （`git log -S` 确认）。注释撒谎比没注释更危险 —— 读代码的人会以为盲区已被覆盖。
-
-#### D 必须看内容，不能只看「文件有没有变大」
-
-父进程的 `heartbeatTimer` 每 20s 调 `update-step.py --heartbeat`，会把**完全相同**
-的一行追加进 step log：
-
-```
-- 08:29:47 heartbeat status=running progress=80 detail=Subagent running (agent-1-…)
-- 08:30:07 heartbeat status=running progress=80 detail=Subagent running (agent-1-…)  ← 一字不差
-```
-
-只看 size/mtime 的话，「文件在增长」永远成立 → **idle 检测被自己的心跳架空**。
-
-所以判据是内容：progress 数值增加，或 detail 出现非模板内容；
-模板化的 `detail=Subagent running (agent-…)` 视为「无新信息」。
-
-#### 基线更新必须在 idle 阈值判断之前
-
-第一版把 `lastLogSignal` 的刷新放在「`silentFor > idleMs` 之后」，
-于是首次进入判定时 `prevSig === null` → 判成「无进展」→ 刚启动就被杀。
-实测：`idle=1200ms`、log 每 400ms 有新内容，仍在 2s 被判 idle。
-
-正确做法：每次 tick **无条件**先刷新基线并算出 `logBusy`，再做 idle 阈值判断。
-
-**测试陷阱**：验证 idle 时 fixture 必须用 `exec sleep`。
-普通 `sleep` 是 shell 的子进程，会命中信号 C（活跃后代），idle 永远不触发 ——
-那样测不到任何东西（还没断言就"通过"了）。
-
-### kill 必须杀进程树
+> 自动超时已取消（见上节），但 `killProc` 仍在两处使用：step 已结束（shouldStop）
+> 与用户 Esc（AbortSignal）。这两条路径同样需要杀整棵树。
 
 `proc.kill(SIGTERM)` 只杀直接子进程。subagent 跑的是 pi，pi 再 spawn
 bash / python —— 这些孙进程**不会**随父进程一起死（shell 不转发信号），
@@ -1277,75 +1243,6 @@ bash / python —— 这些孙进程**不会**随父进程一起死（shell 不�
 
 测试断言：超时后必须在「阈值 + 宽限期」内返回，而不是等孙进程自己跑完。
 
-### Subagent 超时：三层机制，避免「卡住还等半小时」
-
-原来只有 **30 分钟总超时**，子进程卡住（网络断 / 模型挂起 / 内部死锁）时整个 DAG 要白等半小时。
-现在三层：
-
-| 机制 | 默认 | 作用 |
-| --- | --- | --- |
-| **idle 检测** | **5 分钟** | **多信号**都沉默 → 判定卡住，`timeoutReason="idle"` |
-| **shouldStop** | 心跳时（20s） | step 已 `completed`/`failed` 但进程没退出 → 提前结束，`stoppedEarly=true` |
-| **总超时兜底** | 30 分钟 | 防止子进程永久驻留，`timeoutReason="total"` |
-
-配置（`.goo/config.json` 或 `~/.auto-goo/config.json`）：
-
-```json
-{
-  "execution": {
-    "subagent_idle_timeout_seconds": 300,
-    "subagent_timeout_seconds": 1800
-  }
-}
-```
-
-| 字段 | 默认 | 说明 |
-| --- | --- | --- |
-| `subagent_idle_timeout_seconds` | 300（5min） | **卡住判定阈值**。太短会误杀长时间 thinking 的模型，太长又失去意义 |
-| `subagent_timeout_seconds` | 1800（30min） | 总超时兜底 |
-| `worktree_isolation` | false | 写范围重叠的并行步骤是否各自在独立 git worktree 中执行；开启后跨 step 支持冲突合并上报，关闭时行为与之前完全一致（详见 `execution-engine.md`「写冲突隔离」） |
-
-#### idle 为什么必须多信号（否则会误杀）
-
-**实测证据**：subagent 跑一个 `sleep 8`（或编译/训练）期间，`--mode json` 的输出是**完全静默**的：
-
-```
-[+101ms]  message_end（发出 sleep 8 命令）
-          ← 8 秒内零输出（pi 不流式转发工具执行过程）
-[+8109ms] tool_result_end
-```
-
-只看 JSON 事件的话，一个 10 分钟的训练命令会在第 5 分钟被 idle 检测**误杀**。
-
-所以 idle 判定用**四个信号，任一活跃即不算 idle**：
-
-| 信号 | 含义 | 覆盖场景 |
-| --- | --- | --- |
-| **A. JSON 事件** | 模型有输出 | thinking、回复、工具调用 |
-| **B. CPU 时间增长** | `/proc/<pid>/stat` 的 utime+stime 在涨 | 计算密集（训练、编译） |
-| **C. 有活跃后代** | `/proc/<pid>/task/<pid>/children` 里有非僵尸进程 | `bash` / `node` / `python` 正在执行工具 |
-| **D. 有 step log 更新** | （由调用方通过 `shouldStop` 等机制反映） | 长任务主动打点 |
-
-三者（A/B/C）都沉默满 `idleTimeoutMs` 才判定卡住。错误信息会写明是哪个组合：
-
-```
-子进程 300s 无事件、CPU 无增长、无活跃子进程（疑似卡住），已终止
-```
-
-**为什么阈值不能太短**：模型 thinking 阶段可能长时间不输出事件。5 分钟是"正常思考"与"真卡住"的分界经验值；如果任务里有超长单步（如大模型训练），应调大。
-
-**回归测试**：`__tests__/subagent-idle-safety.test.ts` 专门验证「idle 阈值(2s) < 命令时长(6s) 但不误杀」——
-这是 idle 检测最危险的失效模式，必须有测试守着。
-
-**结果字段区分**：
-
-| 字段 | 含义 |
-| --- | --- |
-| `timedOut` + `timeoutReason: "idle"` | 长时间无事件，多半是真卡住 |
-| `timedOut` + `timeoutReason: "total"` | 跑满总超时（任务可能确实很大） |
-| `stoppedEarly: true` | step 已结束但进程没退出，被提前终止（**不是失败**） |
-
-上层据此区分处理：`idle` 应考虑换模型/拆步骤，`total` 应调大超时，`stoppedEarly` 应直接按 step 的实际状态处理。
 
 ### 执行配置（`execution`）
 

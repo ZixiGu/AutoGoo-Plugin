@@ -30,12 +30,6 @@ describe("validateTimingConfig", () => {
     assert.match(issues[0], /900/, "应给出正确的换算值");
   });
 
-  it("subagent_timeout_seconds 填 30 → 提示可能是 30 分钟", () => {
-    const issues = validateTimingConfig({ execution: { subagent_timeout_seconds: 30 } } as any);
-    assert.equal(issues.length, 1);
-    assert.match(issues[0], /1800/);
-  });
-
   it("分钟字段填 0.5 → 提示单位是分钟", () => {
     const issues = validateTimingConfig({ observability: { step_timeout_minutes: 0.5 } } as any);
     assert.equal(issues.length, 1);

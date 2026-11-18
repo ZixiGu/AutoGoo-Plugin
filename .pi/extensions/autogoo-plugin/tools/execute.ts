@@ -514,9 +514,6 @@ async function runSchedule(
   // 未设置时用结构化 UI 询问用户是否配置（resolveOrPromptSubagentModel），
   // 配置写入 .goo/config.json；用户取消或仍解析不到则 blocked，绝不静默用 pi 全局默认。
   // （execCfg 已在写冲突检测处加载，见上）
-  // 超时可配：默认 total 30min / idle 5min。idle 才是"卡住不等满半小时"的关键。
-  const subagentTimeoutMs = (Number(execCfg.subagent_timeout_seconds) || 1800) * 1000;
-  const subagentIdleTimeoutMs = (Number(execCfg.subagent_idle_timeout_seconds) || 300) * 1000;
   const heartbeatIntervalMs = (Number(execCfg.heartbeat_seconds) || 20) * 1000;
   const subModel = await resolveOrPromptSubagentModel(
     { provider: execCfg.subagent_provider, model: execCfg.subagent_model },
@@ -680,11 +677,7 @@ async function runSchedule(
           /* 流式转发失败不阻塞 */
         }
       },
-      timeoutMs: subagentTimeoutMs,
-      idleTimeoutMs: subagentIdleTimeoutMs,
       heartbeatIntervalMs: heartbeatIntervalMs,
-      // 信号 D：subagent 追加 step log 即视为有进展（防「进程内纯 IO 等待」被误杀）
-      logPath: (step as any).log_path ?? undefined,
       // 工具执行轨迹：和 step log 同目录，命名 step-N.exec.jsonl
       toolLogPath: execTracePathOf(cwd, (step as any).log_path),
       // step 已完成/失败但进程没退出时提前结束，避免白等

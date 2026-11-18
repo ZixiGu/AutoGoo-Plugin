@@ -32,6 +32,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 
 import { EXEC_OBSERVE_PY, UPDATE_STEP_PY } from "./paths.js";
+import { DEFAULT_STALE_HEARTBEAT_SECONDS } from "../constants.js";
 import { execPython } from "./exec.js";
 import { logInfo, logWarn } from "./log.js";
 import type { AutogooPluginConfig } from "./paths.js";
@@ -363,7 +364,7 @@ export interface AlertThresholds {
 
 export const DEFAULT_THRESHOLDS: AlertThresholds = {
   stepTimeoutMinutes: 30,
-  staleHeartbeatSeconds: 900,
+  staleHeartbeatSeconds: DEFAULT_STALE_HEARTBEAT_SECONDS,
   planStallMinutes: 15,
   maxRetries: 1,
 };

@@ -1058,6 +1058,49 @@ subagent 会拿到一堆没有上下文的原始日志 —— 理解原始记录
 }
 ```
 
+### 配置的「三个不骗人」原则
+
+#### 1. 同一个语义只能有一个常量
+
+`DEFAULT_STALE_HEARTBEAT_SECONDS` 曾经散落三处硬编码，靠注释「与 X 对齐」维持：
+
+```
+status.ts:244             900;
+tools/execute.ts:128      STALE_SECONDS_DEFAULT = 900;
+utils/exec-observe.ts:366 staleHeartbeatSeconds: 900,
+```
+
+靠人肉保证的一致性迟早会破，而破裂后的症状极隐蔽：**执行侧判 stale 并按 stale
+重试，状态栏/告警侧却认为「没到阈值」，两边对同一时刻的同一步骤给出不同结论。**
+
+现已收敛到 `constants.ts`。同类先例：`DEFAULT_MEMORY_LAYER`、`memory_layer` 编号方向。
+
+#### 2. 单位混用必须有校验
+
+配置里 `_seconds` 与 `_minutes` 并存，填错不会报错，只会让行为诡异：
+
+| 你填的 | 你以为 | 实际 |
+| --- | --- | --- |
+| `stale_heartbeat_seconds: 15` | 15 分钟 | **15 秒** |
+| `subagent_timeout_seconds: 30` | 30 分钟 | **30 秒**（subagent 秒退） |
+| `step_timeout_minutes: 0.5` | 30 秒 | 30 秒（碰巧对，但语义混乱） |
+
+`validateTimingConfig()` 在 `loadProjectConfig` 时校验，**警告而不拒绝**：
+
+```
+[config] execution.stale_after_seconds = 15s 偏小；
+         你可能想填 15 分钟？那应写成 900（本字段单位是**秒**）
+```
+
+不拒绝的理由：用户可能有自己的理由（比如测试时故意设极小值），
+但必须让他知道「你填的单位可能搞反了」。
+
+#### 3. 配置项必须有消费点
+
+见「配置字段必须有消费点」一节。本项目已因此栽过四次：
+`planning.recall_wiki`、`execution.heartbeat_seconds`、`memory_layer`、
+`execution.stale_after_seconds`（告警侧不读）。
+
 ### 执行告警：三个必须对齐的点
 
 #### 1. stale 阈值只能有一个事实源

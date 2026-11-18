@@ -14,7 +14,7 @@
 
 import { Type } from "typebox";
 import { logWarn } from "../utils/log.js";
-import { DEFAULT_MEMORY_LAYER } from "../constants.js";
+import { DEFAULT_MEMORY_LAYER, DEFAULT_STALE_HEARTBEAT_SECONDS } from "../constants.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execPython, execShell } from "../utils/exec.js";
 import { runSubagent, resolveSubagentModel, resolveOrPromptSubagentModel, spawnSubagentDetached, isDetachedAlive, type DetachedHandle } from "../utils/subagent.js";
@@ -125,7 +125,7 @@ const MAX_CONCURRENT_DEFAULT = 6;
 // 运行中超时默认 15 分钟（与 execution-engine.md 规范一致；plan.json
 // execution.stale_after_seconds 可覆盖）。120s 只用于跨会话恢复（goo-continue）
 // 的僵尸判断，不得用作运行中失败阈值。
-const STALE_SECONDS_DEFAULT = 900;
+const STALE_SECONDS_DEFAULT = DEFAULT_STALE_HEARTBEAT_SECONDS;
 const MAX_RETRIES = 1;
 
 /**

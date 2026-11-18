@@ -15,7 +15,7 @@ import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadPlan, getCurrentThreadId, loadThreadMeta, type Plan, type Step } from "./plan.js";
 import { projectThreadDir } from "./paths.js";
-import { DEFAULT_MEMORY_LAYER, DEFAULT_MEMORY_LAYER_BY_STEP_TYPE } from "../constants.js";
+import { DEFAULT_MEMORY_LAYER, DEFAULT_MEMORY_LAYER_BY_STEP_TYPE, DEFAULT_STALE_HEARTBEAT_SECONDS } from "../constants.js";
 
 const STATUS_KEY = "autogoo-plugin";
 
@@ -241,7 +241,7 @@ export async function snapshotPlan(cwd: string): Promise<PlanSnapshot | null> {
   const staleSec =
     execCfg.stale_after_seconds ??
     (((plan as any).heartbeat_timeout_min ?? 0) > 0 ? (plan as any).heartbeat_timeout_min * 60 : undefined) ??
-    900;
+    DEFAULT_STALE_HEARTBEAT_SECONDS;
   let stale = 0;
   for (const s of steps) {
     if (s.status === "running" && s.heartbeat_at) {

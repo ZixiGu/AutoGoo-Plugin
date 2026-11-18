@@ -337,6 +337,23 @@ export const DEFAULT_WIKI_PATHS_BY_STEP_TYPE: Record<string, string[]> = {
  * 注意：历史上前四个 step 声明的是 "L2"（旧语义 L2=场景知识）。
  * 方向修正后场景知识是 L1，所以这里同步改成 L1。
  */
+/**
+ * running 步骤「多久没心跳算卡住」的默认阈值（秒）。
+ *
+ * 为什么必须集中：这个值曾经散落在三处硬编码，靠注释「与 X 对齐」维持一致：
+ *   status.ts:244            900;
+ * tools/execute.ts:128      STALE_SECONDS_DEFAULT = 900;
+ * utils/exec-observe.ts:366 staleHeartbeatSeconds: 900,
+ *
+ * 靠人肉保证的一致性迟早会破 —— 而它破了之后的症状极隐蔽：执行侧判 stale
+ * 并按 stale 重试，状态栏/告警侧却还认为「没到阈值」，两边对同一时刻的
+ * 同一个步骤给出不同结论。实测过 execution.stale_after_seconds 与
+ * observability.stale_heartbeat_seconds 分属两段配置、两处读取的同类问题。
+ *
+ * 15 分钟的依据：模型 thinking 阶段可能长时间不输出事件，阈值太短会误杀。
+ */
+export const DEFAULT_STALE_HEARTBEAT_SECONDS = 900;
+
 /** 默认记忆层（场景知识）。集中定义，避免散落的 "L1" 字面量漂移。 */
 export const DEFAULT_MEMORY_LAYER = "L1";
 

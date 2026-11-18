@@ -262,12 +262,82 @@ export function getServers(config: AutogooPluginConfig | null | undefined): Serv
   return Array.isArray(list) ? list : [];
 }
 
+/**
+ * 校验配置里的时间字段：单位 + 合理范围。
+ *
+ * 为什么需要
+ * ----------
+ * 配置里单位是**混用**的（`_seconds` 与 `_minutes` 并存），填错不会有任何报错，
+ * 只会让行为变得诡异：
+ *
+ *   stale_heartbeat_seconds: 15     ← 想填 15 分钟，实际 15 秒
+ *   subagent_timeout_seconds: 30    ← 想填 30 分钟，实际 30 秒（subagent 秒退）
+ *   step_timeout_minutes: 0.5       ← 想填 30 秒，碰巧对但语义混乱
+ *
+ * 这些值不会让程序崩，只会让**用户以为配好了却没生效** —— 与
+ * `execution.stale_after_seconds` / `observability.stale_heartbeat_seconds`
+ * 分属两处是同一类问题：配置骗人。
+ *
+ * 策略：**警告而不拒绝**。配置非法时仍按原值运行（用户可能有自己的理由），
+ * 但把「你可能想填的是 X」明确说出来，写进 plugin.log 并返回给调用方。
+ *
+ * @returns 人类可读的问题列表（空表示全部合理）
+ */
+export function validateTimingConfig(config: AutogooPluginConfig | null | undefined): string[] {
+  const issues: string[] = [];
+  if (!config) return issues;
+  const exec = (config as any).execution ?? {};
+  const obs = (config as any).observability ?? {};
+
+  const check = (
+    value: unknown,
+    path: string,
+    opts: { unit: "seconds" | "minutes"; min: number; hint?: string },
+  ) => {
+    if (value === undefined || value === null) return;
+    const n = Number(value);
+    if (!Number.isFinite(n)) {
+      issues.push(`${path} 不是数字（${JSON.stringify(value)}），已忽略`);
+      return;
+    }
+    if (n <= 0) {
+      issues.push(`${path} = ${n} 必须为正数，否则该阈值会失效或立即触发`);
+      return;
+    }
+    if (n < opts.min) {
+      const alt =
+        opts.unit === "seconds"
+          ? `你可能想填 ${n} 分钟？那应写成 ${n * 60}（本字段单位是**秒**）`
+          : `你可能想填 ${n} 秒？那应写成 ${(n / 60).toFixed(2)}（本字段单位是**分钟**）`;
+      issues.push(`${path} = ${n}${opts.unit === "seconds" ? "s" : "min"} 偏小；${alt}`);
+    }
+  };
+
+  check(exec.heartbeat_seconds, "execution.heartbeat_seconds", { unit: "seconds", min: 5 });
+  check(exec.stale_after_seconds, "execution.stale_after_seconds", { unit: "seconds", min: 60 });
+  check(exec.subagent_timeout_seconds, "execution.subagent_timeout_seconds", { unit: "seconds", min: 60 });
+  check(exec.subagent_idle_timeout_seconds, "execution.subagent_idle_timeout_seconds", { unit: "seconds", min: 30 });
+  check(obs.alert_interval_seconds, "observability.alert_interval_seconds", { unit: "seconds", min: 15 });
+  check(obs.cooldown_seconds, "observability.cooldown_seconds", { unit: "seconds", min: 60 });
+  check(obs.stale_heartbeat_seconds, "observability.stale_heartbeat_seconds", { unit: "seconds", min: 60 });
+  check(obs.step_timeout_minutes, "observability.step_timeout_minutes", { unit: "minutes", min: 1 });
+  check(obs.plan_stall_minutes, "observability.plan_stall_minutes", { unit: "minutes", min: 1 });
+
+  return issues;
+}
+
 export async function loadProjectConfig(cwd: string): Promise<AutogooPluginConfig | null> {
   const p = projectConfigPath(cwd);
   try {
     await access(p);
     const raw = await readFile(p, "utf-8");
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw) as AutogooPluginConfig;
+    // 配置校验：单位/范围填错时警告（不拒绝，用户可能有自己的理由）
+    const issues = validateTimingConfig(parsed);
+    if (issues.length > 0) {
+      for (const msg of issues) logWarn(`[config] ${msg}`);
+    }
+    return parsed;
   } catch {
     return null;
   }

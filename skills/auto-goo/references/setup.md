@@ -1286,6 +1286,20 @@ bash / python —— 这些孙进程**不会**随父进程一起死（shell 不�
 | `subagent_model` | **Subagent 子进程显式模型**（默认空=直接用主 agent 的模型，见下方实测结论）。必须与 `subagent_provider` 成对设置——模型 id 常跨多个已认证 provider（如 `deepseek-v4-flash` 同时存在于 deepseek/opencode-go/opencode/yj 等），单独传 `--model` 会报 `Model ambiguous across providers`。 |
 | `subagent_provider` | **Subagent 子进程显式 provider**（默认空=直接用主 agent 的 provider）。与 `subagent_model` 配对，必须同时设置。 |
 
+**配置入口**（不需要手改 JSON）：
+
+```bash
+# 用便宜的 flash 模型跑 subagent
+bash skills/auto-goo/scripts/goo-init.sh --project \
+  --subagent-provider opencode-go --subagent-model deepseek-v4.1-flash
+
+# 恢复默认（跟随主模型）
+bash skills/auto-goo/scripts/goo-init.sh --project --force
+```
+
+两个参数**必须成对**（模型 id 常跨多个已认证 provider，单独 `--model` 会报
+`Model ambiguous across providers`）；只传一个会 exit 2。不传即跟随主模型。
+
 > 派发实现：`runSubagent`（`.pi/extensions/autogoo-plugin/utils/subagent.ts`）只在显式传入时才追加 `--provider` / `--model`；`auto_goo_dispatch` 与 `auto_goo_execute`（runSchedule）已读取 `config.execution.subagent_model` / `subagent_provider` 并透传。
 
 **默认值实测结论**（2026-08-18）：空/不设时 Subagent **直接用主 agent 的模型（动态解析，不固定到某个具体型号）**——`resolveSubagentModel` 依序取 `config.execution.subagent_*` → `ctx.model`（会话真实模型，主 agent 用哪个就跟随哪个）→ `PI_*` 环境变量，把结果显式转成 `--provider`/`--model` flag 传给子进程（pi 忽略环境变量、只认 flag，不传 flag 会按 `defaultProvider`(=yj) 误解析为 `deepseek-v4-pro`，与主会话不一致）。**全缺 / 未配置时触发用户交互**：派发 encounter 到未配置的 Subagent 模型时，`auto_goo_dispatch` / `auto_goo_execute` 会用结构化 UI 询问是否配置（用主 agent 当前模型写入 config / 手动输入 provider+model / 不配置自动跟随本进程不再问 / 取消本次派发）；用户选「不配置」后本进程自动跟随主 agent 模型，不再逐 step 弹窗；用户取消则 step 保持 blocked，绝不静默回退 pi 全局默认。显式配置优先于 ctx.model 与 env。

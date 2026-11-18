@@ -315,3 +315,28 @@ def test_wiki_suggest_handles_both_project_entry_layouts():
                 capture_output=True, text=True, timeout=60,
             )
             assert r.stdout.strip() == "L0", f"{rel} 应判 L0，实际 {r.stdout.strip()}"
+
+
+def test_goo_init_subagent_model_entry(tmp_path):
+    """goo-init 必须提供 subagent 模型配置入口，且必须成对。
+
+    背景：默认已改为「跟随主模型、不弹窗」，但用户仍需要一种方式主动指定
+    （比如用便宜的 flash 模型跑 subagent）。入口放在 goo-init，不新增命令。
+    """
+    script = SCRIPTS / "goo-init.sh"
+    assert script.exists()
+
+    # usage 必须列出这两个参数
+    r = subprocess.run(["bash", str(script), "--help"], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0
+    assert "--subagent-provider" in r.stdout
+    assert "--subagent-model" in r.stdout
+    assert "follow the main agent" in r.stdout or "主 agent" in r.stdout
+
+    # 只传一个必须被拒绝（exit 2），不能静默写入半个配置
+    r = subprocess.run(
+        ["bash", str(script), "--project", "--yes", "--subagent-provider", "x"],
+        capture_output=True, text=True, timeout=60, cwd=str(tmp_path),
+    )
+    assert r.returncode == 2, f"只传 provider 应 exit 2，实际 {r.returncode}: {r.stderr[:200]}"
+    assert "必须同时提供" in (r.stdout + r.stderr)

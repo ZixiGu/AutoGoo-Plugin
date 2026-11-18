@@ -30,7 +30,7 @@ fi
 usage() {
   cat <<'EOF'
 Usage:
-  goo-init.sh [--user|--project] [--wiki-dir PATH] [--project-layout NAME] [--project-dirs LIST] [--project-slug SLUG] [--server SPEC] [--yes] [--force] [--agent claude|codex|both] [--update-claude-md] [--skip-claude-md]
+  goo-init.sh [--user|--project] [--wiki-dir PATH] [--subagent-provider V --subagent-model V] [--project-layout NAME] [--project-dirs LIST] [--project-slug SLUG] [--server SPEC] [--yes] [--force] [--agent claude|codex|both] [--update-claude-md] [--skip-claude-md]
 
 Options:
   --user            Write user-level config + conventions to ~/.auto-goo/ (config.json + goo.md)
@@ -42,6 +42,14 @@ Options:
                     Comma-separated project directories to create/record, e.g. src,data/raw,docs,references/papers
   --project-slug SLUG
                     Set Goo-wiki project archive folder name (default: project directory name)
+  --subagent-provider VALUE
+  --subagent-model VALUE
+                    Pin the Subagent subprocess to a specific provider/model pair
+                    (e.g. a cheap flash model). Both must be given together:
+                    model ids often exist on several authenticated providers, so
+                    --model alone fails with "Model ambiguous across providers".
+                    Omit both to follow the main agent's model (recommended default;
+                    no prompt, no config needed).
   --server SPEC     Add a remote server without entering the TTY prompts. Repeatable.
                     SPEC uses comma-separated key=value pairs:
                     name=gpu-box,host=HOST,user=USER,port=22,type=gpu,purpose=模型训练
@@ -82,6 +90,8 @@ FORCE=0
 UPDATE_CLAUDE_MD=0
 SKIP_CLAUDE_MD=0
 AGENT_TARGET=""
+SUBAGENT_PROVIDER=""
+SUBAGENT_MODEL=""
 USER_POINTER=""
 USER_POINTER_SEEN=0
 SERVER_SPECS=()
@@ -195,6 +205,25 @@ while [[ $# -gt 0 ]]; do
           ;;
       esac
       AGENT_TARGET="$2"
+      shift 2
+      ;;
+    --subagent-provider)
+      # Subagent 子进程用的 provider。不传则跟随主 agent（推荐默认）。
+      if [[ $# -lt 2 ]]; then
+        echo "error: --subagent-provider requires a value (e.g. opencode-go)" >&2
+        exit 2
+      fi
+      SUBAGENT_PROVIDER="$2"
+      shift 2
+      ;;
+    --subagent-model)
+      # 必须与 --subagent-provider 成对：模型 id 常跨多个已认证 provider，
+      # 单独传 --model 会报 Model ambiguous across providers。
+      if [[ $# -lt 2 ]]; then
+        echo "error: --subagent-model requires a value (e.g. deepseek-v4.1-flash)" >&2
+        exit 2
+      fi
+      SUBAGENT_MODEL="$2"
       shift 2
       ;;
     --print-wiki-default)
@@ -774,6 +803,14 @@ PY
 }
 
 # A 项：查询入口必须在 scope 解析之前处理，否则调用方得先伪造一个作用域。
+# Subagent 模型必须成对：模型 id 常跨多个已认证 provider，单独 --model 会
+# 报 "Model ambiguous across providers"。
+if [[ -n "$SUBAGENT_PROVIDER" && -z "$SUBAGENT_MODEL" ]] || [[ -z "$SUBAGENT_PROVIDER" && -n "$SUBAGENT_MODEL" ]]; then
+  echo "error: --subagent-provider 与 --subagent-model 必须同时提供（模型 id 常跨多个 provider，单独指定会歧义）" >&2
+  echo "       不传这两个参数即表示跟随主 agent 模型（推荐）" >&2
+  exit 2
+fi
+
 if [[ "$PRINT_WIKI_DEFAULT" -eq 1 ]]; then
   WIKI_DEFAULT_JSON="$(resolve_default_wiki_dir_json)"
   if [[ "$PRINT_WIKI_JSON" -eq 1 ]]; then
@@ -1187,7 +1224,7 @@ fi
 if [[ "$CONFIG_WRITE_SKIPPED" -eq 0 ]]; then
   mkdir -p "$CONFIG_DIR"
 
-  python3 - "$CONFIG_FILE" "$WIKI_DIR" "$FALLBACK_DIR" "$PROJECT_SLUG" "$PROJECT_ARCHIVE_DIR" "$FALLBACK_PROJECT_ARCHIVE_DIR" "$GIT_REMOTE_URL" "$SERVERS_JSON" "$WORK_DIR" "$WORKSPACE_LAYOUT" "$WORKSPACE_THREADS_DIR" "$WORKSPACE_CURRENT_THREAD_FILE" "$WORKSPACE_COMPAT_PLAN_FILE" "$WORKSPACE_COMPAT_BRAINSTORM_FILE" "$WORKSPACE_PLANS_HISTORY_DIR" "$WORKSPACE_BRAINSTORMS_HISTORY_DIR" "$WORKSPACE_LOGS_DIR" "$WORKSPACE_ARTIFACTS_DIR" "$WORKSPACE_REPORTS_DIR" "$WORKSPACE_LOCKS_DIR" "$WORKSPACE_CHANGE_REQUESTS_DIR" "$WORKSPACE_OBSIDIAN_DIR" "$WORKSPACE_SITE_DIR" "$WORKSPACE_INDEX_FILE" "$PROJECT_LAYOUT" "$PROJECT_LAYOUT_DIRS_JSON" <<'PY'
+  python3 - "$CONFIG_FILE" "$WIKI_DIR" "$FALLBACK_DIR" "$PROJECT_SLUG" "$PROJECT_ARCHIVE_DIR" "$FALLBACK_PROJECT_ARCHIVE_DIR" "$GIT_REMOTE_URL" "$SERVERS_JSON" "$WORK_DIR" "$WORKSPACE_LAYOUT" "$WORKSPACE_THREADS_DIR" "$WORKSPACE_CURRENT_THREAD_FILE" "$WORKSPACE_COMPAT_PLAN_FILE" "$WORKSPACE_COMPAT_BRAINSTORM_FILE" "$WORKSPACE_PLANS_HISTORY_DIR" "$WORKSPACE_BRAINSTORMS_HISTORY_DIR" "$WORKSPACE_LOGS_DIR" "$WORKSPACE_ARTIFACTS_DIR" "$WORKSPACE_REPORTS_DIR" "$WORKSPACE_LOCKS_DIR" "$WORKSPACE_CHANGE_REQUESTS_DIR" "$WORKSPACE_OBSIDIAN_DIR" "$WORKSPACE_SITE_DIR" "$WORKSPACE_INDEX_FILE" "$PROJECT_LAYOUT" "$PROJECT_LAYOUT_DIRS_JSON"  "$SUBAGENT_PROVIDER" "$SUBAGENT_MODEL" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -1218,6 +1255,8 @@ workspace_site_dir = sys.argv[23]
 workspace_index_file = sys.argv[24]
 project_layout = sys.argv[25]
 project_layout_dirs = json.loads(sys.argv[26])
+subagent_provider = sys.argv[27] if len(sys.argv) > 27 else ""
+subagent_model = sys.argv[28] if len(sys.argv) > 28 else ""
 
 config = {
     "version": 1,
@@ -1273,6 +1312,12 @@ config = {
         "max_concurrent": 6,
         "heartbeat_seconds": 30,
         "stale_after_seconds": 120,
+        # 只有显式成对指定时才写；否则留空 = 跟随主 agent 模型（默认，不弹窗）
+        **(
+            {"subagent_provider": subagent_provider, "subagent_model": subagent_model}
+            if subagent_provider and subagent_model
+            else {}
+        ),
     },
     "planning": {
         "recall_wiki": True,

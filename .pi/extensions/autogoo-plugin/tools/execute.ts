@@ -126,6 +126,52 @@ const MAX_CONCURRENT_DEFAULT = 6;
 // execution.stale_after_seconds 可覆盖）。120s 只用于跨会话恢复（goo-continue）
 // 的僵尸判断，不得用作运行中失败阈值。
 const STALE_SECONDS_DEFAULT = DEFAULT_STALE_HEARTBEAT_SECONDS;
+
+/**
+ * 调用 update-step.py 更新步骤状态，**并检查结果**。
+ *
+ * 为什么需要：`execPython(UPDATE_STEP_PY, ...)` 在本文件里有 15 处裸调用，
+ * 覆盖 start / complete / fail / interrupt / block / status 全部核心状态变更，
+ * 而返回值从未检查。脚本失败时（plan 被并发写坏、python 异常、锁超时）
+ * 唯一的后果是「什么都没发生」：
+ *
+ *   --start 失败   → 子进程已启动但 step 还是 pending，状态分裂
+ *   --complete 失败 → 步骤做完了但 plan 不知道，随后被判为僵尸
+ *   --fail 失败    → 失败原因丢了，重试策略拿不到信息
+ *
+ * 这些都不会报错，只会让 plan 与事实悄悄偏离 —— 与「空 catch」是同一类病。
+ *
+ * 策略：**尽力而为 + 留痕**。失败不抛（状态更新不该让 DAG 崩），
+ * 但一定 logWarn 并返回 false，让调用方/日志能看到「这次没更新成功」。
+ */
+function updateStep(
+  cwd: string,
+  planPath: string,
+  stepId: string | number,
+  args: string[],
+  label: string,
+): boolean {
+  try {
+    // ⚠ 这里必须直接调 execPython，不能调 updateStep —— 否则递归调用自己。
+    const r = execPython(
+      UPDATE_STEP_PY,
+      ["--plan", planPath, "--step-id", String(stepId), ...args],
+      cwd,
+      { timeout: 15000 },
+    );
+    if (r.exitCode !== 0) {
+      logWarn(
+        `[execute] 状态更新失败 #${stepId} ${label}: exit=${r.exitCode} ` +
+          `${(r.stderr || r.stdout || "").slice(0, 160)}`,
+      );
+      return false;
+    }
+    return true;
+  } catch (e: any) {
+    logWarn(`[execute] 状态更新异常 #${stepId} ${label}: ${e?.message ?? String(e)}`);
+    return false;
+  }
+}
 const MAX_RETRIES = 1;
 
 /**
@@ -236,7 +282,7 @@ async function runSchedule(
       step.agent_id = null;
       step.error = undefined;
       autoRetried++;
-      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--status", "pending", "--retry", "--note", retryNote(step, retryCount + 1)], cwd, { timeout: 10000 });
+      updateStep(cwd, planPath, step.id, ["--status", "pending", "--retry", "--note", retryNote(step, retryCount + 1)], "status");
     }
   }
 
@@ -294,7 +340,7 @@ async function runSchedule(
       declinedIds.add(String(step.id));
       step.status = "blocked";
       step.error = "requires user confirm (no interactive ui)";
-      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--block", "--error", "requires user confirm (no interactive ui)"], cwd, { timeout: 10000 });
+      updateStep(cwd, planPath, step.id, ["--block", "--error", "requires user confirm (no interactive ui)"], "block");
       lines.push(`🚧 #${step.id} 需用户确认，但当前无可交互 UI，已标记 blocked`);
       continue;
     }
@@ -314,7 +360,7 @@ async function runSchedule(
       answer = false;
     }
     if (answer) {
-      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--confirmed", "--note", "user confirmed via scheduler"], cwd, { timeout: 10000 });
+      updateStep(cwd, planPath, step.id, ["--confirmed", "--note", "user confirmed via scheduler"], "confirmed");
       step.confirmed = true;
       step.confirmed_at = new Date().toISOString();
       if (step.status === "blocked") {
@@ -326,7 +372,7 @@ async function runSchedule(
       declinedIds.add(String(step.id));
       step.status = "blocked";
       step.error = "user declined confirmation";
-      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--block", "--error", "user declined confirmation"], cwd, { timeout: 10000 });
+      updateStep(cwd, planPath, step.id, ["--block", "--error", "user declined confirmation"], "block");
       lines.push(`🚧 #${step.id} 用户拒绝确认，已标记 blocked（后续不再自动询问）`);
     }
   }
@@ -375,18 +421,10 @@ async function runSchedule(
   if (writeConflicts.length > 0) {
     lines.push(...describeWriteConflicts(writeConflicts, { isolationEnabled: isolationDecision.enabled }));
     for (const c of writeConflicts) {
-      execPython(
-        UPDATE_STEP_PY,
-        ["--plan", planPath, "--step-id", String(c.a.id), "--heartbeat", "--note",
-         `写入范围与 #${c.b.id} 重叠: ${c.overlap.slice(0, 3).join(", ")}`],
-        cwd, { timeout: 10000 },
-      );
-      execPython(
-        UPDATE_STEP_PY,
-        ["--plan", planPath, "--step-id", String(c.b.id), "--heartbeat", "--note",
-         `写入范围与 #${c.a.id} 重叠: ${c.overlap.slice(0, 3).join(", ")}`],
-        cwd, { timeout: 10000 },
-      );
+      updateStep(cwd, planPath, c.a.id, ["--heartbeat", "--note",
+         `写入范围与 #${c.b.id} 重叠: ${c.overlap.slice(0, 3).join(", ")}`], "heartbeat");
+      updateStep(cwd, planPath, c.b.id, ["--heartbeat", "--note",
+         `写入范围与 #${c.a.id} 重叠: ${c.overlap.slice(0, 3).join(", ")}`], "heartbeat");
     }
   }
 
@@ -435,8 +473,8 @@ async function runSchedule(
     const agentId = `agent-${step.id}-${Date.now()}`;
     agentIds.set(String(step.id), agentId);
     dispatched.push(step.id);
-    execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--start", "--progress", "5", "--agent-id", agentId], cwd, { timeout: 15000 });
-    execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--precreate-log", "--note", `Dispatched to ${step.subagent} (${agentId})`], cwd, { timeout: 15000 });
+    updateStep(cwd, planPath, step.id, ["--start", "--progress", "5", "--agent-id", agentId], "start");
+    updateStep(cwd, planPath, step.id, ["--precreate-log", "--note", `Dispatched to ${step.subagent} (${agentId})`], "note");
   }
 
   // P5: 为每个待派发 step 生成 wiki graph packet（与 auto_goo_dispatch 一致，
@@ -492,12 +530,7 @@ async function runSchedule(
   if (!lockCheck.ok) {
     const detail = describeConflicts(lockCheck.conflicts) || lockCheck.error || "未知冲突";
     for (const step of toDispatch) {
-      execPython(
-        UPDATE_STEP_PY,
-        ["--plan", planPath, "--step-id", String(step.id), "--block", "--error", `资源冲突：${detail}`],
-        cwd,
-        { timeout: 10000 },
-      );
+      updateStep(cwd, planPath, step.id, ["--block", "--error", `资源冲突：${detail}`], "block");
       lines.push(`🚧 #${step.id} 资源冲突已 blocked：${detail}`);
     }
     return {
@@ -672,33 +705,24 @@ async function runSchedule(
         stderrExcerpt,
       });
       if (ok) {
-        execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--complete", "--note", `Subagent exit 0（兕底标记完成）`, ...execMeta], cwd, { timeout: 10000 });
+        updateStep(cwd, planPath, step.id, ["--complete", "--note", `Subagent exit 0（兕底标记完成）`, ...execMeta], "complete");
       } else {
         // 信号杀（143=SIGTERM / 137=SIGKILL）或超时：wrapper 中断 ≠ 任务失败。
         // 远程管线（execution_target=remote）或本地任务本体可能仍在运行，
         // 标 interrupted 让主 Agent 检查后 resume / 重启 / 确认失败，而不是直接 failed。
         const killedBySignal = result.exitCode === 143 || result.exitCode === 137 || result.signal === "SIGTERM" || result.signal === "SIGKILL";
         if (result.timedOut || killedBySignal) {
-          execPython(
-            UPDATE_STEP_PY,
-            [
-              "--plan", planPath,
-              "--step-id", String(step.id),
-              "--interrupt",
+          updateStep(cwd, planPath, step.id, ["--interrupt",
               "--timed-out",
               "--error",
               result.errorMessage ||
                 `subagent wrapper 中断（exit ${result.exitCode}${result.timedOut ? "，超时" : "，被信号杀"}），任务本体可能继续运行，需检查后恢复` +
                   (stderrExcerpt ? ` | stderr: ${stderrExcerpt}` : ""),
-              ...execMeta,
-            ],
-            cwd,
-            { timeout: 10000 },
-          );
+              ...execMeta], "interrupt");
         } else {
-          execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--fail", "--error",
+          updateStep(cwd, planPath, step.id, ["--fail", "--error",
             (result.errorMessage || `subagent exit ${result.exitCode}`) + (stderrExcerpt ? ` | stderr: ${stderrExcerpt}` : ""),
-            ...execMeta], cwd, { timeout: 10000 });
+            ...execMeta], "fail");
         }
       }
     }
@@ -883,12 +907,7 @@ async function runHeartbeatCheck(
     step.error = `detached 子进程已退出但 step 未标记完成（log: .goo/threads/<tid>/agents/step-${step.id}.jsonl）`;
     step.agent_id = null;
     lines.push(`💀 #${step.id} detached 子进程已退出 → interrupted（检查 agents/step-${step.id}.jsonl）`);
-    execPython(
-      UPDATE_STEP_PY,
-      ["--plan", planPath, "--step-id", String(step.id), "--interrupt", "--timed-out", "--error", step.error],
-      cwd,
-      { timeout: 10000 },
-    );
+    updateStep(cwd, planPath, step.id, ["--interrupt", "--timed-out", "--error", step.error], "interrupt");
   }
 
   for (const step of plan.steps) {
@@ -910,7 +929,7 @@ async function runHeartbeatCheck(
       step.error = `Heartbeat timeout > ${staleSeconds}s：wrapper 中断，远程管线可能继续运行，需检查后 resume / 重启 / 确认失败`;
       step.agent_id = null;
       lines.push(`⚠️ #${step.id} 心跳超时（远程步骤）→ interrupted，待检查`);
-      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--interrupt", "--timed-out", "--error", step.error], cwd, { timeout: 10000 });
+      updateStep(cwd, planPath, step.id, ["--interrupt", "--timed-out", "--error", step.error], "interrupt");
       continue;
     }
     if (((step as any).retry_count ?? 0) < MAX_RETRIES) {
@@ -919,13 +938,13 @@ async function runHeartbeatCheck(
       step.progress = 0;
       step.agent_id = null;
       lines.push(`🔄 #${step.id} 重试 (#${(step as any).retry_count})`);
-      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--status", "pending", "--progress", "0", "--retry", "--note", retryNote(step, (step as any).retry_count)], cwd, { timeout: 10000 });
+      updateStep(cwd, planPath, step.id, ["--status", "pending", "--progress", "0", "--retry", "--note", retryNote(step, (step as any).retry_count)], "status");
     } else {
       step.status = "interrupted";
       step.error = `Heartbeat timeout > ${staleSeconds}s`;
       step.agent_id = null;
       lines.push(`💀 #${step.id} 心跳超时（重试耗尽）→ interrupted，待检查`);
-      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--interrupt", "--timed-out", "--error", step.error], cwd, { timeout: 10000 });
+      updateStep(cwd, planPath, step.id, ["--interrupt", "--timed-out", "--error", step.error], "interrupt");
     }
   }
 
@@ -1133,21 +1152,13 @@ async function dispatchDetached(
         "utf-8",
       );
 
-      execPython(
-        UPDATE_STEP_PY,
-        ["--plan", planPath, "--step-id", String(step.id), "--heartbeat", "--progress", "8",
-         "--note", `detached pid=${handle.pid} (${subModel.provider}/${subModel.model})`],
-        cwd, { timeout: 10000 },
-      );
+      updateStep(cwd, planPath, step.id, ["--heartbeat", "--progress", "8",
+         "--note", `detached pid=${handle.pid} (${subModel.provider}/${subModel.model})`], "heartbeat");
       out.push({ stepId: step.id, pid: handle.pid, logPath });
     } catch (e: any) {
       const msg = e?.message ?? String(e);
       lines.push(`❌ #${step.id} 派发失败: ${msg}`);
-      execPython(
-        UPDATE_STEP_PY,
-        ["--plan", planPath, "--step-id", String(step.id), "--fail", "--error", `派发失败: ${msg}`],
-        cwd, { timeout: 10000 },
-      );
+      updateStep(cwd, planPath, step.id, ["--fail", "--error", `派发失败: ${msg}`], "fail");
       out.push({ stepId: step.id, pid: 0, logPath, error: msg });
     }
   }
@@ -1238,7 +1249,7 @@ async function runScheduleDetached(
       step.agent_id = null;
       step.error = undefined;
       autoRetried++;
-      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--status", "pending", "--retry", "--note", retryNote(step, retryCount + 1)], cwd, { timeout: 10000 });
+      updateStep(cwd, planPath, step.id, ["--status", "pending", "--retry", "--note", retryNote(step, retryCount + 1)], "status");
     }
   }
 
@@ -1285,8 +1296,8 @@ async function runScheduleDetached(
   for (const step of toDispatch) {
     const agentId = `agent-${step.id}-${Date.now()}`;
     agentIds.set(String(step.id), agentId);
-    execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--start", "--progress", "5", "--agent-id", agentId], cwd, { timeout: 15000 });
-    execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--precreate-log", "--note", `Detached dispatch to ${step.subagent} (${agentId})`], cwd, { timeout: 15000 });
+    updateStep(cwd, planPath, step.id, ["--start", "--progress", "5", "--agent-id", agentId], "start");
+    updateStep(cwd, planPath, step.id, ["--precreate-log", "--note", `Detached dispatch to ${step.subagent} (${agentId})`], "note");
   }
 
   // wiki packet
@@ -1324,7 +1335,7 @@ async function runScheduleDetached(
   if (!lockCheck.ok) {
     const detail = describeConflicts(lockCheck.conflicts) || lockCheck.error || "未知冲突";
     for (const step of toDispatch) {
-      execPython(UPDATE_STEP_PY, ["--plan", planPath, "--step-id", String(step.id), "--block", "--error", `资源冲突：${detail}`], cwd, { timeout: 10000 });
+      updateStep(cwd, planPath, step.id, ["--block", "--error", `资源冲突：${detail}`], "block");
     }
     return {
       content: [{ type: "text", text: `blocked: 资源冲突，${toDispatch.length} 步未派发。\n${detail}` }],

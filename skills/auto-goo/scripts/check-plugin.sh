@@ -4528,6 +4528,35 @@ else
   fail "缺少 --preflight-json —— 前置检查无法被 CI/脚本单独调用"
 fi
 
+# ── 51. 状态更新必须检查结果，且 helper 不得自我递归 ──
+# 回归 A：`execPython(UPDATE_STEP_PY, ...)` 曾有 23 处裸调用覆盖
+#   start/complete/fail/interrupt/block/status 全部核心状态变更，返回值从未检查。
+#   脚本失败时唯一后果是「什么都没发生」，plan 与事实悄悄偏离。
+# 回归 B：批量替换时把 helper **自己内部**的调用也替换了 → updateStep 递归调用自己。
+echo ""
+echo "── 51. 状态更新留痕 + 无自递归 ──"
+
+EXEC2="$ROOT/.pi/extensions/autogoo-plugin/tools/execute.ts"
+_bare=$(grep -cE "^[[:space:]]*execPython\(UPDATE_STEP_PY" "$EXEC2" 2>/dev/null || true)
+if [[ "${_bare:-0}" -eq 0 ]]; then
+  pass "无裸 execPython(UPDATE_STEP_PY) 调用（统一走 updateStep）"
+else
+  fail "仍有 ${_bare} 处裸调用未检查状态更新结果 —— 失败时静默"
+fi
+
+# helper 内部必须是 execPython，不能是 updateStep（否则无限递归）
+if awk '/^function updateStep\(/,/^}/' "$EXEC2" | grep -q "const r = updateStep("; then
+  fail "updateStep 内部调用了自己（无限递归）"
+else
+  pass "updateStep 内部不自我递归"
+fi
+
+if grep -q "状态更新失败 #" "$EXEC2"; then
+  pass "状态更新失败会 logWarn（可追溯）"
+else
+  fail "状态更新失败不落日志 —— 与「空 catch」同类"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

@@ -1058,6 +1058,54 @@ subagent 会拿到一堆没有上下文的原始日志 —— 理解原始记录
 }
 ```
 
+### 执行告警：三个必须对齐的点
+
+#### 1. stale 阈值只能有一个事实源
+
+`execution.stale_after_seconds` 与 `observability.stale_heartbeat_seconds`
+是**同一个语义**（running 步骤多久没心跳算卡住），但历史上分属两段配置、两处读取：
+
+| 读取方 | 配置来源 |
+| --- | --- |
+| `execute.ts` 的 heartbeat_check | `execution.stale_after_seconds` |
+| 告警判定 | `observability.stale_heartbeat_seconds`（默认 900s） |
+
+实测后果：某项目配 `execution.stale_after_seconds: 120`（2 分钟），
+执行侧 2 分钟就判 stale，告警侧却按 15 分钟算 —— 用户看到
+「已 16min 没有心跳（阈值 15min）」会困惑「我明明配的 2 分钟」。
+
+`observabilityOf()` 现做**单向回退**：observability 显式配置优先，
+缺省时沿用 execution。反向不成立（execution 段更基础）。
+
+#### 2. 僵尸步骤必须能自愈，不能只靠告警
+
+告警只能提醒，不能收敛状态。实测 `circuit_gen` 的 plan 卡在 `running`、
+`#A` 心跳停在两天前 —— 于是：看门狗每 60s 检查、每 key 每会话最多通知 2 次，
+**但每开新会话就重置计数、又响 2 次**，plan 永远不会自己结束。
+
+根因不是告警太吵，是 **RUNNING 的语义应该等于「有东西在跑」**，而僵尸步骤
+没有任何东西在跑，它就该是 `interrupted`。
+
+`reconcileZombieSteps()` 三条同时满足才降级（避免误伤）：
+
+1. `status == "running"`
+2. 心跳距今 > `staleHeartbeatSeconds × 6`（覆盖机器休眠 / 长 GC 等偶发）
+3. `agents/step-<id>.json` 里没有活着的 detached 子进程
+
+只降级到 `interrupted`（不是 failed）：任务本体可能真的完成了，只是没人收尾；
+`interrupted` 允许 `--resume`，也允许人看一眼后直接 `--complete`。
+
+#### 3. 用户看到「告警一直显示」时先查历史
+
+告警有**两道闸**：15 分钟冷却 + 每 key 每会话最多 2 次。
+如果看到多条同类告警，通常不是"刷屏"，而是：
+
+- 那是**历史**告警（TUI 的 notify 消息不会消失，滚动就能看到）
+- 或跨了多个会话（每会话重置计数）
+- 或步骤真的卡了（此时应看 `/goo-health` 的实时状态）
+
+判据：`grep alert .goo/logs/exec.jsonl | wc -l` —— 这是**真实投递次数**。
+
 ### Subagent 超时：从「硬性总时长」改为「无进展上限」
 
 **实测数据**（`circuit_gen` 项目的 `.goo/logs/exec.jsonl`）：

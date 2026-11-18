@@ -1,7 +1,7 @@
 ---
 name: goo-workflow
 description: "Use when the user says '/auto-goo:goo-init', '/auto-goo:goo-brainstorm', '/auto-goo:goo-plan', '/auto-goo:goo-start', '/auto-goo:goo-research', '/auto-goo:goo-daily-report', '/auto-goo:goo-usage', '/auto-goo:goo-usage-analyse', '/auto-goo:goo-observe', '/auto-goo:goo-publish', '找目标', '开始任务', 'run:', '日报', '周报', 'usage', 'token统计', 'token降本', '后台观察', '发布HTML', '自改进', or gives a goal-clear multi-step task that can be decomposed into sub-tasks. Runs Goo workflow: config init, wiki-based brainstorm, wiki recall, DAG planning, subagent execution, research material archiving, status/observe, HTML publishing, optimization, Goo-wiki archiving, usage monitor, usage cost analysis, daily reports, and plugin self-improvement. Compatible with Claude Code and Codex."
-version: 0.32.2
+version: 0.32.3
 tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent, wait_agent, request_user_input]
 ---
 
@@ -69,7 +69,7 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 | **L3** | 原始记录 | `.goo/logs/` step log、原始命令输出、未脱敏 transcript、`execution/record.md` | 大而冷 | 只做 trace/audit |
 
 > 历史说明：早期版本的编号方向是反的（L0=原始日志、L3=项目总览），
-> 与 CPU 缓存和命名来源 TencentDB 相反，已于 0.32.2 全量翻转。
+> 与 CPU 缓存和命名来源 TencentDB 相反，已于 0.32.3 全量翻转。
 > 若看到旧笔记里 "L0 原始日志" 的说法，那是旧语义。
 
 规则：

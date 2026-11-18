@@ -29,11 +29,11 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
-import { EXEC_OBSERVE_PY } from "./paths.js";
+import { EXEC_OBSERVE_PY, UPDATE_STEP_PY } from "./paths.js";
 import { execPython } from "./exec.js";
-import { logWarn } from "./log.js";
+import { logInfo, logWarn } from "./log.js";
 import type { AutogooPluginConfig } from "./paths.js";
 
 /** 4MB 后轮转为 `.1`（与 recall.jsonl 完全一致，见 exec_observe.py）。 */
@@ -934,6 +934,85 @@ function gooDirOf(planPath: string): string {
 }
 
 /**
+ * 僵尸步骤自愈：把「心跳早已过期且无任何进程」的 running 步骤降级为 interrupted。
+ *
+ * 为什么需要
+ * ----------
+ * 告警只能提醒，不能解决问题。实测 `circuit_gen` 项目的 plan 卡在
+ * `status=running`、`#A` 心跳停在两天前 —— 于是：
+ *   - 看门狗每 60s 检查一次
+ *   - 每个 key 在一个会话内最多通知 2 次（maxPerKey）
+ *   - **但每开一个新会话就重置计数，又响 2 次**
+ *   - plan 永远不会自己结束 → 用户看到「一直显示」
+ *
+ * 根因不是告警太吵，是**状态没有被收敛**。RUNNING 的语义应该是
+ * 「有东西在跑」，而僵尸步骤没有任何东西在跑，它就该是 interrupted。
+ *
+ * 判定条件（三条同时满足，避免误伤）：
+ *   1. step.status == "running"
+ *   2. 心跳（或 started_at）距今 > staleHeartbeatSeconds × 6
+ *      —— 心跳由父进程每 20s 更新；父进程死了心跳就停。
+ *         给 6 倍余量覆盖机器休眠/长时间 GC 等偶发情况。
+ *   3. 该 step 没有登记活的 detached 子进程（agents/step-N.json 里的 pid）
+ *
+ * 只降级到 interrupted（不是 failed）：任务本体可能真的完成了，只是没人收尾。
+ * interrupted 允许 `--resume`，也允许人看一眼后直接 `--complete`。
+ *
+ * @returns 被降级的 step id 列表（调用方据此在同一次告警里说明）
+ */
+export function reconcileZombieSteps(
+  planPath: string,
+  plan: PlanLike,
+  thresholds: AlertThresholds,
+  nowMs = Date.now(),
+): Array<string | number> {
+  const staleSeconds = Math.max(60, thresholds.staleHeartbeatSeconds);
+  const hardLimit = staleSeconds * 6;
+  const zombies: Array<string | number> = [];
+  const agentsDir = join(dirname(planPath), "agents");
+
+  for (const step of plan.steps ?? []) {
+    if (String(step?.status ?? "").toLowerCase() !== "running") continue;
+    const age = ageSeconds(step?.heartbeat_at ?? step?.started_at, nowMs);
+    if (age === null || age <= hardLimit) continue;
+
+    // 证据 3：有活着的 detached 子进程就不动它
+    if (stepHasLiveProcess(agentsDir, step?.id)) continue;
+
+    const res = execPython(
+      UPDATE_STEP_PY,
+      [
+        "--plan", planPath,
+        "--step-id", String(step?.id),
+        "--interrupt",
+        "--error",
+        `自动中断：心跳已 ${Math.round(age / 60)} 分钟无更新（阈值 ${Math.round(hardLimit / 60)} 分钟），` +
+          `且未找到活跃子进程。任务本体可能已结束，检查后 --resume 或 --complete。`,
+      ],
+      dirname(dirname(dirname(planPath))),
+      { timeout: 15000 },
+    );
+    if (res.exitCode === 0) zombies.push(step?.id);
+  }
+  return zombies;
+}
+
+/** 检查 agents/step-<id>.json 里登记的 detached 子进程是否还活着。 */
+function stepHasLiveProcess(agentsDir: string, stepId: string | number | undefined): boolean {
+  if (stepId === undefined) return false;
+  const metaPath = join(agentsDir, `step-${stepId}.json`);
+  try {
+    const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+    const pid = Number(meta?.pid);
+    if (!Number.isFinite(pid) || pid <= 0) return false;
+    process.kill(pid, 0);   // 不发信号，只探测存在性
+    return true;
+  } catch (e: any) {
+    return e?.code === "EPERM";   // 存在但无权限 → 视为活着
+  }
+}
+
+/**
  * 读 plan + 指标，判定阈值，投递告警。调度器每轮和看门狗定时都调用它。
  *
  * 永不抛异常：观测/告警挂掉不能把 DAG 一起挂掉。
@@ -945,11 +1024,23 @@ export function checkAndDeliverAlerts(ctx: any, planPath: string, opts: CheckOpt
     if (!plan) return { alerts: [], delivered: [], state };
     const stats = opts.stats ?? readExecStats(gooDirOf(planPath));
     const status = String(plan.status ?? "").toLowerCase();
+    const thresholds = opts.thresholds ?? thresholdsFromConfig(opts.config);
+
+    // 先自愈再判定：把僵尸 running 步骤降级为 interrupted，
+    // 否则「状态永远不收敛 → 每个新会话都重新告警 2 次」。
+    // dryRun（/goo-health 只读预览）不改状态。
+    if (!opts.dryRun && isPlanActive(plan)) {
+      const healed = reconcileZombieSteps(planPath, plan, thresholds, opts.now ?? Date.now());
+      if (healed.length > 0) {
+        logInfo(`[exec-observe] 自动中断 ${healed.length} 个僵尸步骤: ${healed.map((x) => `#${x}`).join(", ")}`);
+      }
+    }
+
     const alerts = evaluatePlanAlerts({
       plan,
       stats,
       now: opts.now,
-      thresholds: opts.thresholds ?? thresholdsFromConfig(opts.config),
+      thresholds,
     });
     // 已完成的 plan 不再推送任何执行告警：历史失败是「已归档的事实」，
     // 不是「现在要处理的风险」。可见性留给 /goo-health 报告。
@@ -1046,6 +1137,29 @@ export function stopExecWatchdog(): void {
 }
 
 /** 从 config 取 observability 段（缺失时返回 undefined）。 */
+/**
+ * 从项目配置里取出可观测性设置。
+ *
+ * ⚠ 坑：`execution.stale_after_seconds` 与 `observability.stale_heartbeat_seconds`
+ * 是**同一个语义**（running 步骤多久没心跳算卡住），但历史上分属两个配置段、
+ * 由两处代码读取：
+ *   - execute.ts 的 heartbeat_check 读 `execution.stale_after_seconds`
+ *   - 告警读 `observability.stale_heartbeat_seconds`（默认 900s）
+ *
+ * 实测后果：某项目配了 `execution.stale_after_seconds: 120`（2 分钟），
+ * 执行侧 2 分钟就判 stale，而告警侧还按 15 分钟算 —— 用户看到「已 16min
+ * 没有心跳（阈值 15min）」时会困惑「我明明配的 2 分钟」。
+ *
+ * 这里做单向回退：**observability 显式配置优先，缺省时沿用 execution**。
+ * 反向不成立（execution 段更基础，不该被 observability 反向覆盖）。
+ */
 export function observabilityOf(config: AutogooPluginConfig | null | undefined): ObservabilityConfig | undefined {
-  return (config as any)?.observability ?? undefined;
+  const obs = (config as any)?.observability as ObservabilityConfig | undefined;
+  const exec = (config as any)?.execution as { stale_after_seconds?: number } | undefined;
+  if (!obs && !exec) return undefined;
+  const merged: ObservabilityConfig = { ...(obs ?? {}) };
+  if (merged.stale_heartbeat_seconds === undefined && exec?.stale_after_seconds !== undefined) {
+    merged.stale_heartbeat_seconds = Number(exec.stale_after_seconds);
+  }
+  return merged;
 }

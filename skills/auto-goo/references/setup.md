@@ -1191,6 +1191,31 @@ utils/exec-observe.ts:366 staleHeartbeatSeconds: 900,
 只要还有事件 / CPU 增长 / 活跃后代 / 心跳，计时器就**续期**。
 真正的「卡住」由 idle 检测负责；总超时只挡「一直在动但永远不结束」的病态情况。
 
+### 两类 step 日志：状态流 vs 执行轨迹
+
+| 文件 | 内容 | 写入方 | 用途 |
+| --- | --- | --- | --- |
+| `logs/step-N.log` | **状态事件流**：`start` / `heartbeat` / `update` / `complete` / `fail`，含 status、progress、detail | `update-step.py` | 回答「这个 step 处于什么状态」 |
+| `logs/step-N.exec.jsonl` | **工具执行轨迹**：每次 toolCall 的 name + args，每次 toolResult 的字节数与预览 | `runSubagent` | 回答「它实际跑了什么命令、改了哪些文件」 |
+
+**为什么必须分开**：`step-N.log` 里**没有**执行细节 —— 实测一条 20 行的 log
+全是 `heartbeat status=running progress=80 detail=Subagent running (agent-…)`。
+排查「它到底做了什么」时完全无从下手。而 `--mode json` 的 stdout 里本来有
+工具事件，但 `runSubagent` 解析完就丢了。
+
+轨迹格式（JSONL，一行一个事件）：
+
+```json
+{"ts":"...","kind":"toolCall","name":"bash","id":"call_x","args":{"command":"echo hello","timeout":30}}
+{"ts":"...","kind":"toolResult","isError":false,"bytes":12,"preview":"hello-trace\n"}
+```
+
+约束：
+- 默认不写（`toolLogPath` 为空时零 IO 开销）
+- 单文件上限 4MB，超出写一条 `{"kind":"truncated"}` 后停止
+- `preview` 截断到 300 字符（不存全文，避免撑爆）
+- 由 `execute.ts` / `tools-execution.ts` 按 `step.log_path` 派生（`.log` → `.exec.jsonl`）
+
 ### idle 检测的四个信号（缺一个就会误杀）
 
 | 信号 | 判据 | 覆盖的场景 |

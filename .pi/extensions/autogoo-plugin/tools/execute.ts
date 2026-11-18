@@ -128,6 +128,20 @@ const MAX_CONCURRENT_DEFAULT = 6;
 const STALE_SECONDS_DEFAULT = DEFAULT_STALE_HEARTBEAT_SECONDS;
 
 /**
+ * 由 step log 路径派生工具执行轨迹路径：
+ *   logs/step-3.log  →  logs/step-3.exec.jsonl
+ *
+ * 与状态日志分开存放：step log 是「状态事件流」（start/heartbeat/complete，
+ * 由 update-step.py 维护），exec 轨迹是「实际跑了什么命令」——两者格式、
+ * 写入方、查看场景都不同，混在一起会让两边都难读。
+ */
+function execTracePathOf(cwd: string, logPath?: string | null): string | undefined {
+  if (!logPath) return undefined;
+  const abs = logPath.startsWith("/") ? logPath : join(cwd, logPath);
+  return abs.replace(/\.log$/, ".exec.jsonl");
+}
+
+/**
  * 调用 update-step.py 更新步骤状态，**并检查结果**。
  *
  * 为什么需要：`execPython(UPDATE_STEP_PY, ...)` 在本文件里有 15 处裸调用，
@@ -671,6 +685,8 @@ async function runSchedule(
       heartbeatIntervalMs: heartbeatIntervalMs,
       // 信号 D：subagent 追加 step log 即视为有进展（防「进程内纯 IO 等待」被误杀）
       logPath: (step as any).log_path ?? undefined,
+      // 工具执行轨迹：和 step log 同目录，命名 step-N.exec.jsonl
+      toolLogPath: execTracePathOf(cwd, (step as any).log_path),
       // step 已完成/失败但进程没退出时提前结束，避免白等
       shouldStop: () => {
         try {

@@ -17,6 +17,7 @@
 
 import { spawn } from "node:child_process";
 import {
+  appendFileSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -73,6 +74,21 @@ export interface SubagentRunOptions {
    * 那是**用户可见的真实进展**，与 A/B/C 完全独立。
    */
   logPath?: string;
+  /**
+   * 工具执行轨迹落盘路径（JSONL，可选）。
+   *
+   * 提供后，subagent 的**每一次工具调用**都会记录一行：
+   *   {"ts","kind":"toolCall","name":"bash","args":{...},"id"}
+   *   {"ts","kind":"toolResult","ok":true,"bytes":123,"preview":"..."}
+   *
+   * 为什么需要：step log 只有状态事件流（start/heartbeat/complete），
+   * **不记录 subagent 实际跑了什么命令、改了哪些文件**。排查「它到底做了什么」
+   * 时只能靠猜。--mode json 的 stdout 里本来有这些信息，但解析完就丢了。
+   *
+   * 默认不写（避免给所有任务增加 IO）：由调用方按需传 `step.log_path`
+   * 派生出 `.exec.jsonl`。
+   */
+  toolLogPath?: string;
   /**
    * 提前结束判断（在每次心跳时调用）：返回 true 则终止子进程。
    *
@@ -667,6 +683,43 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
       resolve(result);
     };
 
+    // ── 工具执行轨迹（可选）────────────────────────────────────────────────
+    // 单文件上限 4MB：工具调用可能极多（一次 DAG 步骤几十上百次），
+    // 超出后停止写入并记一条截断标记，避免把磁盘写满。
+    const absToolLog = opts.toolLogPath
+      ? (isAbsolute(opts.toolLogPath) ? opts.toolLogPath : join(opts.cwd, opts.toolLogPath))
+      : null;
+    const TOOL_LOG_MAX_BYTES = 4 * 1024 * 1024;
+    let toolLogBytes = 0;
+    let toolLogTruncated = false;
+    try {
+      if (absToolLog) {
+        mkdirSync(dirname(absToolLog), { recursive: true });
+        toolLogBytes = existsSync(absToolLog) ? statSync(absToolLog).size : 0;
+      }
+    } catch {
+      /* 初始化失败不影响执行 */
+    }
+    const writeToolEvent = (ev: Record<string, unknown>) => {
+      if (!absToolLog || toolLogTruncated) return;
+      try {
+        const line = JSON.stringify({ ts: new Date().toISOString(), ...ev }) + "\n";
+        if (toolLogBytes + line.length > TOOL_LOG_MAX_BYTES) {
+          toolLogTruncated = true;
+          appendFileSync(
+            absToolLog,
+            JSON.stringify({ ts: new Date().toISOString(), kind: "truncated", limit_bytes: TOOL_LOG_MAX_BYTES }) + "\n",
+            "utf-8",
+          );
+          return;
+        }
+        appendFileSync(absToolLog, line, "utf-8");
+        toolLogBytes += line.length;
+      } catch {
+        /* 轨迹写入失败绝不阻塞执行 */
+      }
+    };
+
     const processLine = (line: string) => {
       if (!line.trim()) return;
       let event: any;
@@ -694,6 +747,32 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
           errorMessage?: string;
         };
         messages.push(msg);
+
+        // 工具轨迹：assistant 的 toolCall 与 toolResult 角色的结果
+        if (absToolLog && Array.isArray(msg.content)) {
+          for (const block of msg.content as any[]) {
+            if (block?.type === "toolCall") {
+              writeToolEvent({
+                kind: "toolCall",
+                name: block.name ?? "?",
+                id: block.id ?? null,
+                args: block.arguments ?? block.input ?? null,
+              });
+            }
+          }
+          if (msg.role === "toolResult") {
+            const text = (msg.content as any[])
+              .map((c) => (typeof c?.text === "string" ? c.text : ""))
+              .join("\n");
+            writeToolEvent({
+              kind: "toolResult",
+              isError: (msg as any).isError === true,
+              bytes: Buffer.byteLength(text, "utf-8"),
+              preview: text.slice(0, 300),
+            });
+          }
+        }
+
         if (msg.role === "assistant") {
           usage.turns++;
           if (msg.usage) {

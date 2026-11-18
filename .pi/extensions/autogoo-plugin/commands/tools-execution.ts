@@ -7,6 +7,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { join } from "node:path";
 import { logWarn } from "../utils/log.js";
 import {
   loadPlanSync, loadPlan,
@@ -488,6 +489,12 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
         timeoutMs: (params as any).timeoutMs ?? subagentTimeoutMs,
         idleTimeoutMs: subagentIdleTimeoutMs,
         logPath: (step as any)?.log_path ?? undefined,
+        toolLogPath: (() => {
+          const lp = (step as any)?.log_path;
+          if (!lp) return undefined;
+          const abs = lp.startsWith("/") ? lp : join(cwd, lp);
+          return abs.replace(/\.log$/, ".exec.jsonl");
+        })(),
       heartbeatIntervalMs: heartbeatIntervalMs,
         // step 已完成/失败但进程没退出时提前结束，避免白等
         shouldStop: () => {

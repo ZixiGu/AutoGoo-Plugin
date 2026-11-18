@@ -447,6 +447,8 @@ export function lastActivityMs(plan: PlanLike | null, stats?: ExecStats): number
 
 export interface EvaluateAlertsInput {
   plan: PlanLike | null | undefined;
+  /** plan.json 路径：用于定位 agents/ 目录下的 pid 登记 */
+  planPath?: string;
   stats?: ExecStats;
   now?: number;
   thresholds?: Partial<AlertThresholds>;
@@ -462,6 +464,12 @@ export interface EvaluateAlertsInput {
  *   - 连续重试 / 失败 / 中断：重试通道自己坏了或任务本体失败了；
  *   - plan 停滞：所有状态都合法但就是不动 —— 无人值守时最危险的一种。
  */
+/** 由 plan 路径推 agents 目录（与 reconcileZombieSteps 同一约定）。 */
+function agentsDirOf(input: EvaluateAlertsInput): string {
+  const p = (input as any)?.planPath;
+  return p ? join(dirname(String(p)), "agents") : "";
+}
+
 export function evaluatePlanAlerts(input: EvaluateAlertsInput): ExecAlert[] {
   const nowMs = input.now ?? Date.now();
   const th = { ...DEFAULT_THRESHOLDS, ...(input.thresholds ?? {}) };
@@ -484,6 +492,10 @@ export function evaluatePlanAlerts(input: EvaluateAlertsInput): ExecAlert[] {
 
     if (status === "running" && active) {
       const hbAge = ageSeconds(step?.heartbeat_at ?? step?.started_at, nowMs);
+      // 有活进程就不报「卡住」：心跳只反映「父进程还在不在」，
+      // 父进程退出后子进程可能仍在跑（长任务）。判据应看进程，不是心跳。
+      const procState = stepProcessState(agentsDirOf(input), id);
+      if (procState === "alive") continue;
       const runAge = ageSeconds(step?.started_at, nowMs);
       const timeoutSeconds = Math.max(60, th.stepTimeoutMinutes * 60);
       if (hbAge !== null && hbAge > staleSeconds) {
@@ -977,8 +989,18 @@ export function reconcileZombieSteps(
     const age = ageSeconds(step?.heartbeat_at ?? step?.started_at, nowMs);
     if (age === null || age <= hardLimit) continue;
 
-    // 证据 3：有活着的 detached 子进程就不动它
-    if (stepHasLiveProcess(agentsDir, step?.id)) continue;
+    // 证据 3：能否证明它死了？
+    //
+    // ⚠ 只有 **detached 派发** 才会写 agents/step-N.json。
+    // 阻塞派发（runSchedule → await runSubagent）**不写** —— 那时进程活在
+    // 父进程内部，根本没有独立 pid 文件。
+    //
+    // 所以「没有 pid 文件」≠「进程已死」，而是「**无法判断**」。
+    // 早期版本把「无 pid 文件」当成「无进程」直接降级，会把正在跑的长任务
+    // （阻塞路径 2 小时、心跳由父进程维护）在 90 分钟时误标 interrupted。
+    // 保守做法：证明不了就不动它 —— 假阴性（漏掉真僵尸）远好于假阳性（杀掉真任务）。
+    const pidState = stepProcessState(agentsDir, step?.id);
+    if (pidState !== "dead") continue;   // "alive" 或 "unknown" 都跳过
 
     const res = execPython(
       UPDATE_STEP_PY,
@@ -998,18 +1020,36 @@ export function reconcileZombieSteps(
   return zombies;
 }
 
-/** 检查 agents/step-<id>.json 里登记的 detached 子进程是否还活着。 */
-function stepHasLiveProcess(agentsDir: string, stepId: string | number | undefined): boolean {
-  if (stepId === undefined) return false;
+/**
+ * 该 step 对应的子进程状态（三态，**不能合并成 boolean**）。
+ *
+ *   "alive"   —— agents/step-N.json 里的 pid 还活着
+ *   "dead"    —— 有 pid 文件，但进程已不存在（真僵尸）
+ *   "unknown" —— 没有 pid 文件 / 读不了：**无法判断**
+ *
+ * 为什么必须区分 "dead" 和 "unknown"：只有 detached 派发才写 pid 文件；
+ * 阻塞派发（runSchedule await runSubagent）没有独立 pid，此时进程可能正
+ * 好好地跑在父进程内部。把 "unknown" 当成 "dead" 会在 90 分钟时误杀长任务。
+ */
+function stepProcessState(
+  agentsDir: string,
+  stepId: string | number | undefined,
+): "alive" | "dead" | "unknown" {
+  if (stepId === undefined) return "unknown";
   const metaPath = join(agentsDir, `step-${stepId}.json`);
+  if (!existsSync(metaPath)) return "unknown";
+  let pid = 0;
   try {
-    const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
-    const pid = Number(meta?.pid);
-    if (!Number.isFinite(pid) || pid <= 0) return false;
+    pid = Number(JSON.parse(readFileSync(metaPath, "utf-8"))?.pid);
+  } catch {
+    return "unknown";
+  }
+  if (!Number.isFinite(pid) || pid <= 0) return "unknown";
+  try {
     process.kill(pid, 0);   // 不发信号，只探测存在性
-    return true;
+    return "alive";
   } catch (e: any) {
-    return e?.code === "EPERM";   // 存在但无权限 → 视为活着
+    return e?.code === "EPERM" ? "alive" : "dead";
   }
 }
 
@@ -1039,6 +1079,7 @@ export function checkAndDeliverAlerts(ctx: any, planPath: string, opts: CheckOpt
 
     const alerts = evaluatePlanAlerts({
       plan,
+      planPath,
       stats,
       now: opts.now,
       thresholds,

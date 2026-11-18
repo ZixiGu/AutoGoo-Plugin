@@ -135,6 +135,14 @@ const STALE_SECONDS_DEFAULT = DEFAULT_STALE_HEARTBEAT_SECONDS;
  * 由 update-step.py 维护），exec 轨迹是「实际跑了什么命令」——两者格式、
  * 写入方、查看场景都不同，混在一起会让两边都难读。
  */
+/**
+ * step 的 pid 登记文件路径：`.goo/threads/<tid>/agents/step-<id>.json`
+ * （与 detached 派发共用同一位置，让告警/自愈用统一判据）。
+ */
+function pidFileOf(cwd: string, threadId: string, stepId: string | number): string {
+  return join(cwd, ".goo", "threads", threadId, "agents", `step-${stepId}.json`);
+}
+
 function execTracePathOf(cwd: string, logPath?: string | null): string | undefined {
   if (!logPath) return undefined;
   const abs = logPath.startsWith("/") ? logPath : join(cwd, logPath);
@@ -680,6 +688,10 @@ async function runSchedule(
       heartbeatIntervalMs: heartbeatIntervalMs,
       // 工具执行轨迹：和 step log 同目录，命名 step-N.exec.jsonl
       toolLogPath: execTracePathOf(cwd, (step as any).log_path),
+      // 登记 pid：告警/僵尸自愈据此判断「这个 step 还有没有进程在跑」。
+      // 阻塞派发原本完全没有 pid 记录，导致告警只能看心跳、自愈会把
+      // 「无 pid 文件」误当「进程已死」而在 90 分钟后错杀长任务。
+      pidFile: pidFileOf(cwd, threadId, step.id),
       // step 已完成/失败但进程没退出时提前结束，避免白等
       shouldStop: () => {
         try {

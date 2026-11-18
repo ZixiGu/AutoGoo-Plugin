@@ -1199,6 +1199,49 @@ utils/exec-observe.ts:366 staleHeartbeatSeconds: 900,
 不再需要任何信号兜底。
 
 
+### 告警/自愈必须看「进程」，不能只看「心跳」
+
+**实测症状**（用户反馈）：
+
+```
+⏱ #2 clock_opt + route_opt 已 50min 没有心跳（阈值 15min），很可能卡住
+🛑 plan 已 19min 无任何进展（阈值 15min）
+```
+
+但任务**其实还在跑**。
+
+**根因**：心跳只反映「**父进程**还在不在」。阻塞派发时心跳由
+`runSubagent` 里的 `heartbeatTimer` 维护 —— 父进程一退出（关会话、切换项目），
+心跳就停，而子进程可能仍在跑：
+
+```
+父进程退出 → heartbeatTimer 停 → 心跳不再更新
+                        ↓
+              子进程仍在跑（长任务）
+                        ↓
+          告警：「50min 没心跳，很可能卡住」← 误报
+```
+
+更危险的是 `reconcileZombieSteps`：它把「没有 pid 文件」当成「进程已死」，
+而**阻塞派发从来不写 pid 文件** → 90 分钟后会把正在跑的长任务误标 `interrupted`。
+
+#### 修复：两处判据都改为看进程
+
+| 位置 | 旧行为 | 新行为 |
+| --- | --- | --- |
+| `evaluatePlanAlerts` | 只看 `hbAge > stale` | **有活进程 → 跳过**（不报卡住） |
+| `reconcileZombieSteps` | 无 pid 文件 = 已死 | **三态**：`alive` / `dead` / `unknown`，只有 `dead` 才降级 |
+| `runSubagent` | 阻塞派发不写 pid | **写 `agents/step-<id>.json`**（退出时删除；父进程崩溃时残留正好可用于判僵尸） |
+
+三态而不是 boolean 的原因：**「无法判断」不等于「已死」**。
+假阴性（漏掉真僵尸）远好于假阳性（杀掉正在跑的长任务）。
+
+`agents/step-<id>.json` 现在两种派发路径共用：
+
+```json
+{"pid":12345,"startedAt":"...","mode":"blocking"}   // 或 "detached"
+```
+
 ### 两类 step 日志：状态流 vs 执行轨迹
 
 | 文件 | 内容 | 写入方 | 用途 |

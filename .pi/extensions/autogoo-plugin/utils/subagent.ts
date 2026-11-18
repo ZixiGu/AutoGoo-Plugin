@@ -90,6 +90,19 @@ export interface SubagentRunOptions {
    */
   toolLogPath?: string;
   /**
+   * 把子进程 pid 写到这个文件（JSON：{pid, startedAt, mode}），退出时删除。
+   *
+   * 为什么要写：**告警与僵尸自愈需要判断「这个 step 到底还有没有进程在跑」**。
+   * 它们原本只能读 `agents/step-N.json` —— 那是 detached 派发才写的，
+   * 阻塞派发（本函数，`runSchedule` 里被 await）从来没有 pid 记录，于是：
+   *   - 告警只能看心跳时间 → 父进程一停就报「卡住」，哪怕子进程还在跑
+   *   - 自愈更危险：把「无 pid 文件」当「进程已死」，90 分钟后误标 interrupted
+   *
+   * 父进程崩溃时 pid 文件会残留 —— 那正好有用：下次检查发现 pid 已不存在
+   * 就能判定「真僵尸」，而不是「无法判断」。
+   */
+  pidFile?: string;
+  /**
    * 提前结束判断（在每次心跳时调用）：返回 true 则终止子进程。
    *
    * 用途：subagent 已经把 step 标记为 completed/failed，但进程因清理逻辑
@@ -307,6 +320,14 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
   };
 
   const cleanup = () => {
+    // 进程已退出 → 删掉 pid 登记，避免后续检查误以为它还在
+    if (opts.pidFile) {
+      try {
+        rmSync(opts.pidFile, { force: true });
+      } catch {
+        /* ignore */
+      }
+    }
     if (tmpDir) {
       try {
         rmSync(tmpDir, { recursive: true, force: true });
@@ -332,6 +353,24 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
       cleanup();
       resolve({ ...result, exitCode: 1, errorMessage: e instanceof Error ? e.message : String(e) });
       return;
+    }
+
+    // 登记 pid：让告警/自愈能判断「这个 step 还有没有进程」
+    if (opts.pidFile) {
+      try {
+        mkdirSync(dirname(opts.pidFile), { recursive: true });
+        writeFileSync(
+          opts.pidFile,
+          JSON.stringify(
+            { pid: proc.pid, startedAt: new Date().toISOString(), mode: "blocking" },
+            null,
+            2,
+          ),
+          "utf-8",
+        );
+      } catch {
+        /* 登记失败不影响执行 */
+      }
     }
 
     // 心跳间隔可配（config.execution.heartbeat_seconds）；默认 20s

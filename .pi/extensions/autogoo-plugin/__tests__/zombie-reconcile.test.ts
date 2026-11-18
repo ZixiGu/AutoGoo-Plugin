@@ -42,12 +42,18 @@ const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString(
 
 describe("reconcileZombieSteps", () => {
   it("心跳超过 6 倍阈值的 running 步骤被降级为 interrupted", () => {
-    const { planPath } = setup([
-      { id: "A", name: "A", status: "running", heartbeat_at: hoursAgo(48) },
-      { id: "B", name: "B", status: "pending" },
-    ]);
+    // ⚠ 必须登记一个「已死」的 pid：否则状态是 unknown（无法判断），不会降级。
+    // 这是 2026-11 的语义收紧 —— 详见 alert-proc-aware.test.ts 里
+    // 「无 pid 文件 → 不降级」的用例。
+    const { planPath } = setup(
+      [
+        { id: "A", name: "A", status: "running", heartbeat_at: hoursAgo(48) },
+        { id: "B", name: "B", status: "pending" },
+      ],
+      { A: { pid: 999999, logPath: "", startedAt: "" } },
+    );
     const healed = reconcileZombieSteps(planPath, JSON.parse(readFileSync(planPath, "utf-8")), TH);
-    assert.deepEqual(healed, ["A"], "应降级 #A");
+    assert.deepEqual(healed, ["A"], "有已死 pid 才应降级 #A");
   });
 
   it("刚跑不久的 running 步骤不动（避免误伤）", () => {
@@ -61,9 +67,10 @@ describe("reconcileZombieSteps", () => {
   it("阈值边界：5 倍不降级、7 倍降级（6 倍是分界）", () => {
     // staleHeartbeatSeconds=900 → 6 倍 = 5400s = 1.5h
     const mk = (h: number) => {
-      const { planPath } = setup([
-        { id: "A", name: "A", status: "running", heartbeat_at: hoursAgo(h) },
-      ]);
+      const { planPath } = setup(
+        [{ id: "A", name: "A", status: "running", heartbeat_at: hoursAgo(h) }],
+        { A: { pid: 999999, logPath: "", startedAt: "" } },
+      );
       const plan = JSON.parse(readFileSync(planPath, "utf-8"));
       return reconcileZombieSteps(planPath, plan, TH).length;
     };

@@ -107,14 +107,46 @@ def read_frontmatter(text: str) -> dict[str, str] | None:
     return fm
 
 
+def rel_from_path(path: Path) -> str:
+    """从（可能绝对的）路径里切出「相对 wiki 根」的路径。
+
+    为什么需要：`suggest_layer` 的路径规则全靠 `wiki/projects/...` 这类前缀，
+    而 `--suggest` 之前传的是 `path.name`（只有文件名）—— 于是**所有路径规则
+    从来没生效过**，一律落到默认 L1。
+
+    实测：`wiki/projects/doc_collect/execution/record.md` 应为 L3（原始记录），
+    修复前返回 L1。所有 `execution/` `/journal/` `/raw/` 的层级标注都受影响。
+
+    切分规则：找路径里的 `wiki` 段，从它开始取；找不到就用文件名。
+    """
+    parts = path.parts
+    if "wiki" in parts:
+        return "/".join(parts[parts.index("wiki"):])
+    return path.name
+
+
 def suggest_layer(rel: str, fm: dict[str, str] | None, text: str) -> str:
     """按路径推断层级；项目入口文件优先判为 L3。"""
     fm = fm or {}
     if fm.get("type") == "project":
         return "L0"
-    # 项目入口：wiki/projects/<slug>.md（两层，末尾是文件名）
+    # 项目入口有两种并存的写法，**都必须判 L0**：
+    #   根目录模式：wiki/projects/<slug>.md
+    #   子目录模式：wiki/projects/<slug>/<slug>.md   ← Goo-wiki CLAUDE.md 的新约定
+    # 只认根目录模式时，子目录入口会落到默认 L1（实测 autogoo/autogoo.md 被判 L1，
+    # 但它就是项目总览，本该最热）。
     if re.match(r"^wiki/projects/[^/]+\.md$", rel):
         return "L0"
+    if re.match(r"^wiki/projects/([^/]+)/\1\.md$", rel):
+        return "L0"
+
+    # Goo-wiki 新增的目录语义
+    if re.match(r"^wiki/domains/[^/]+\.md$", rel):
+        return "L1"          # 领域页：跨项目的主线问题与关键概念，属场景知识
+    if re.match(r"^wiki/logs/[^/]+\.md$", rel):
+        return "L3"          # 领域日志索引：由脚本生成的活动流水，属原始记录
+    if re.match(r"^wiki/maps/", rel):
+        return "L1"          # 导航地图：帮助定位，属场景知识
     if rel.endswith("/operations.md"):
         return "L3"
     for needle, layer in FILENAME_HINTS:
@@ -232,7 +264,7 @@ def main() -> int:
         path = Path(args.suggest).expanduser()
         text = path.read_text(encoding="utf-8", errors="ignore")
         fm = read_frontmatter(text)
-        print(suggest_layer(path.name, fm, text))
+        print(suggest_layer(rel_from_path(path), fm, text))
         return 0
 
     wiki_root = Path(args.audit).expanduser()

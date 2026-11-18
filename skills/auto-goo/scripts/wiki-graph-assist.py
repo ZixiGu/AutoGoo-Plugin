@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -511,6 +512,79 @@ def replace_or_append_recent(index_path: Path, task_link: str, title: str, today
     index_path.parent.mkdir(parents=True, exist_ok=True)
     index_path.write_text(new_text, encoding="utf-8")
     return True
+
+
+def preflight_git(wiki_dir: Path, timeout: int = 20) -> dict:
+    """归档写盘前的跨环境 Git 前置检查（**只警告，不阻塞**）。
+
+    为什么需要（Goo-wiki CLAUDE.md「跨环境 Git 协作」）：
+      - 写入 log.md 与领域索引前应先 `git pull --rebase`，否则多机同时归档
+        会产生冲突；冲突时要求手工按日期重排，**不要 `merge=union`**。
+      - vault 内不得有 symlink、换行/Unicode 需归一化、运行时文件不得入库
+        —— 这些由 vault 自带的 `scripts/git-env-check.sh` 检查。
+
+    为什么只警告不阻塞：归档的价值在于「内容落盘」。因为 git 状态不干净就
+    拒绝写 wiki，等于让一次失败的 rebase 把整轮任务的产出全丢掉 —— 这是更糟的
+    结局。所以这里把问题**显式说出来**（recorder 会看到），由人或后续步骤处理。
+    """
+    result: dict = {"is_repo": False, "warnings": [], "checks": {}}
+    try:
+        top = subprocess.run(
+            ["git", "-C", str(wiki_dir), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if top.returncode != 0:
+            result["warnings"].append("wiki 不在 git 仓库内：多机归档无法自动同步")
+            return result
+        result["is_repo"] = True
+        repo = Path(top.stdout.strip())
+
+        # 1) 有冲突标记 → 必须先解决（否则写进去的内容永远不会被提交）
+        unmerged = subprocess.run(
+            ["git", "-C", str(repo), "diff", "--name-only", "--diff-filter=U"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        conflicts = [l for l in unmerged.stdout.splitlines() if l.strip()]
+        result["checks"]["conflicts"] = conflicts
+        if conflicts:
+            result["warnings"].append(
+                f"仓库存在未解决的合并冲突（{len(conflicts)} 个文件）："
+                + ", ".join(conflicts[:3])
+                + "；CLAUDE.md 要求冲突时手工按日期重排，不要 merge=union"
+            )
+
+        # 2) 落后远端 → 提示先 pull --rebase
+        behind = subprocess.run(
+            ["git", "-C", str(repo), "rev-list", "--count", "HEAD..@{upstream}"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if behind.returncode == 0 and behind.stdout.strip().isdigit():
+            n = int(behind.stdout.strip())
+            result["checks"]["behind"] = n
+            if n > 0:
+                result["warnings"].append(
+                    f"本地落后远端 {n} 个提交：写 log.md 前应先 `git pull --rebase`（CLAUDE.md 要求）"
+                )
+
+        # 3) vault 自带检查脚本
+        env_check = repo / "scripts" / "git-env-check.sh"
+        if env_check.exists():
+            chk = subprocess.run(
+                ["bash", str(env_check)],
+                capture_output=True, text=True, timeout=max(timeout, 60), cwd=str(repo),
+            )
+            tail = (chk.stdout or "").strip().splitlines()
+            summary = next((l for l in reversed(tail) if l.startswith("== 结果")), "")
+            result["checks"]["git_env"] = summary or f"exit={chk.returncode}"
+            if chk.returncode != 0:
+                result["warnings"].append(
+                    f"git-env-check.sh 失败：{summary or chk.stderr.strip()[:120]}"
+                )
+            elif summary:
+                result["checks"]["git_env_summary"] = summary
+    except (subprocess.TimeoutExpired, OSError) as e:
+        result["warnings"].append(f"git 前置检查未完成：{e}")
+    return result
 
 
 def append_log(log_path: Path, task_link: str, title: str, project_slug: str | None, git_remote: str | None) -> bool:
@@ -1011,6 +1085,11 @@ def main() -> int:
     )
     parser.add_argument("--update-index", action="store_true", help="Update project index recent-record marker")
     parser.add_argument("--append-log", action="store_true", help="Append a compact linked activity entry to log.md")
+    parser.add_argument(
+        "--preflight-json",
+        action="store_true",
+        help="Only run the cross-environment git preflight and print JSON (no search / no writes)",
+    )
 
     graph_group = parser.add_argument_group("wiki graph（图遍历召回）")
     graph_group.add_argument(
@@ -1084,6 +1163,11 @@ def main() -> int:
     args = parser.parse_args()
 
     wiki_dir = expand_path(args.wiki_dir)
+
+    if args.preflight_json:
+        print(json.dumps(preflight_git(wiki_dir), ensure_ascii=False, indent=2))
+        return 0
+
     search_paths = args.search_path or list(DEFAULT_SEARCH_PATHS)
     graph_scope = args.graph_scope or list(DEFAULT_SEARCH_PATHS)
     title = args.title or (args.query.strip().splitlines()[0][:80] if args.query else "")
@@ -1185,6 +1269,10 @@ def main() -> int:
         if not args.task_page:
             raise SystemExit("--append-log requires --task-page")
         log_path = wiki_dir / "log.md"
+        # 跨环境 Git 前置检查：只警告不阻塞（理由见 preflight_git 文档串）
+        _pf = preflight_git(wiki_dir)
+        for _w in _pf["warnings"]:
+            print(f"::warning:: {_w}", file=sys.stderr)
         if append_log(log_path, wikilink(args.task_page, title), title, args.project_slug, args.git_remote):
             changed.append("log.md")
 

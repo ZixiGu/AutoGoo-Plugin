@@ -261,3 +261,57 @@ def test_goo_metrics_reports_non_negative_durations() -> None:
                 f"{record['thread_id']} plan.started_at 晚于步骤起始: "
                 f"{record['plan_started_at']} > {min(starts)}"
             )
+
+
+def test_wiki_suggest_uses_wiki_relative_path():
+    """`--suggest` 必须按 wiki 相对路径推断，不能只看文件名。
+
+    回归：CLI 之前传的是 `path.name`（basename），导致所有路径规则
+    （`/execution/`、`/journal/`、`/raw/`、`/lessons/`…）**从未生效**，
+    一律落到默认 L1。全库实测 337 篇笔记的建议层级因此是错的
+    （修复前 L0=41/L1=935，修复后 L0=46/L1=598/L2=100/L3=232）。
+    """
+    script = SCRIPTS / "check-wiki-frontmatter.py"
+    with tempfile.TemporaryDirectory() as d:
+        wiki = Path(d) / "wiki"
+        cases = {
+            "projects/demo/execution/record.md": "L3",       # 原始执行流水
+            "projects/demo/lessons/foo.md": "L1",           # 场景知识（默认）
+            "projects/demo/demo.md": "L0",                  # 子目录模式的项目入口
+            "journal/weekly/2026-W01.md": "L3",             # 周报 → 原始记录
+            "domains/agent-tooling.md": "L1",               # 领域页
+            "logs/agent-tooling.md": "L3",                  # 日志索引（脚本生成）
+        }
+        for rel, expected in cases.items():
+            f = wiki / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("---\ntitle: T\nmemory_layer: L1\n---\n\n# T\n", encoding="utf-8")
+            r = subprocess.run(
+                ["python3", str(script), "--suggest", str(f)],
+                capture_output=True, text=True, timeout=60,
+            )
+            assert r.returncode == 0, r.stderr
+            assert r.stdout.strip() == expected, (
+                f"{rel} 应建议 {expected}，实际 {r.stdout.strip()}"
+            )
+
+
+def test_wiki_suggest_handles_both_project_entry_layouts():
+    """项目入口两种写法都必须判 L0。
+
+    Goo-wiki 的 CLAUDE.md 新约定是 `wiki/projects/<slug>/<slug>.md`，
+    但存量里也大量存在 `wiki/projects/<slug>.md`（实测各半：19 vs 20）。
+    只认根目录模式会让子目录入口落到默认 L1 —— 而它就是项目总览，本该最热。
+    """
+    script = SCRIPTS / "check-wiki-frontmatter.py"
+    with tempfile.TemporaryDirectory() as d:
+        wiki = Path(d) / "wiki"
+        for rel in ("projects/root-style.md", "projects/sub-style/sub-style.md"):
+            f = wiki / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("---\ntitle: T\n---\n\n# T\n", encoding="utf-8")
+            r = subprocess.run(
+                ["python3", str(script), "--suggest", str(f)],
+                capture_output=True, text=True, timeout=60,
+            )
+            assert r.stdout.strip() == "L0", f"{rel} 应判 L0，实际 {r.stdout.strip()}"

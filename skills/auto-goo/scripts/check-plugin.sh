@@ -4496,6 +4496,38 @@ fi
 chmod -R u+w "$EO_TMP" 2>/dev/null || true
 rm -rf "$EO_TMP"
 
+# ── 50. 归档前跨环境 Git 前置检查 ──
+# Goo-wiki CLAUDE.md「跨环境 Git 协作」要求：写 log.md 与领域索引前先
+# `git pull --rebase`；冲突时手工按日期重排、不要 merge=union；
+# vault 内禁 symlink / 换行与 Unicode 需归一化（由 vault 自带 git-env-check.sh 检查）。
+echo ""
+echo "── 50. 归档前 git 前置检查 ──"
+
+WGA="$ROOT/skills/auto-goo/scripts/wiki-graph-assist.py"
+# 必须**在 append_log 之前**真的调用（不是只在 --preflight-json 分支里调用）。
+# 只断言「文件里有这个调用」会被单侧遗漏骗过 —— 之前 §46 就这么被骗过。
+# ⚠ grep -c 在计数为 0 时退出码是 1，配合 set -e 会让整个脚本**静默退出**
+# （症状：只打印节标题，后面什么都没有）。必须显式吃掉退出码。
+_pf_before_log=$(awk '/if args.append_log:/,/append_log\(log_path/' "$WGA" | grep -c "preflight_git(wiki_dir)" || true)
+if grep -q "def preflight_git" "$WGA" && [[ "${_pf_before_log:-0}" -ge 1 ]]; then
+  pass "归档写 log.md 前执行 preflight_git（冲突/落后远端/git-env-check）"
+else
+  fail "append-log 路径未调用 preflight_git（实际 ${_pf_before_log:-0} 处）—— 多机同时归档会冲突且无人知晓"
+fi
+
+# 关键取舍必须写成可读的约束：只警告不阻塞
+if grep -q "只警告，不阻塞" "$WGA"; then
+  pass "preflight 明确为「只警告不阻塞」（不因 git 脏丢掉本轮产出）"
+else
+  fail "preflight 阻塞语义未声明 —— 可能把归档写盘挡在 git 状态后面"
+fi
+
+if grep -q '\-\-preflight-json' "$WGA"; then
+  pass "提供 --preflight-json（可脚本化检查，不需跑完整召回）"
+else
+  fail "缺少 --preflight-json —— 前置检查无法被 CI/脚本单独调用"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

@@ -487,6 +487,7 @@ export function registerExecutionTools(pi: any, options: { skipDispatch?: boolea
         },
         timeoutMs: (params as any).timeoutMs ?? subagentTimeoutMs,
         idleTimeoutMs: subagentIdleTimeoutMs,
+        logPath: (step as any)?.log_path ?? undefined,
       heartbeatIntervalMs: heartbeatIntervalMs,
         // step 已完成/失败但进程没退出时提前结束，避免白等
         shouldStop: () => {

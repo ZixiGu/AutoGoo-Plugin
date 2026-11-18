@@ -24,9 +24,10 @@ import {
   openSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -60,6 +61,17 @@ export interface SubagentRunOptions {
   idleTimeoutMs?: number;
   /** 心跳间隔毫秒（默认 20000）。对应 config.execution.heartbeat_seconds */
   heartbeatIntervalMs?: number;
+  /**
+   * step log 路径（相对 cwd 或绝对）。提供后作为 idle 检测的**信号 D**：
+   * 文件 mtime 或大小变化即视为有进展。
+   *
+   * 为什么需要它：A(JSON 事件) / B(CPU) / C(活跃后代) 覆盖不了「进程内纯 IO 等待」——
+   * 比如 subagent 用 read 读超大文件、或模型 API 在重试等待时，pi 进程既没有
+   * 子进程、CPU 也不明显增长、--mode json 又没有输出，三个信号同时沉默会被误杀。
+   * 而 subagent 每次调 `auto_goo_update_step --heartbeat` 都会追加 step log，
+   * 那是**用户可见的真实进展**，与 A/B/C 完全独立。
+   */
+  logPath?: string;
   /**
    * 提前结束判断（在每次心跳时调用）：返回 true 则终止子进程。
    *
@@ -465,7 +477,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
         result.timeoutReason = "total";
         result.errorMessage =
           `子进程连续 ${Math.round(timeoutMs / 60000)} 分钟无任何进展` +
-          `（无事件、CPU 无增长、无活跃后代、无心跳），已终止；` +
+          `（无事件、CPU 无增长、无活跃后代、无心跳、step log 无增长），已终止；` +
           `可用 execution.subagent_timeout_seconds 调整该阈值`;
         killProc("SIGTERM");
       }, Math.max(5_000, Math.min(30_000, Math.floor(timeoutMs / 10))));
@@ -516,6 +528,24 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
     };
 
     let lastCpuTicks = readCpuTicks(proc.pid);
+
+    // ── 信号 D：step log 增长 ──────────────────────────────────────────────
+    // 判据用 mtimeMs + size 的组合：只比 size 会漏掉「等长覆盖写」，
+    // 只比 mtime 在某些文件系统（mtime 精度 1s）上会漏掉同一秒内的多次写。
+    const absLogPath = opts.logPath
+      ? (isAbsolute(opts.logPath) ? opts.logPath : join(opts.cwd, opts.logPath))
+      : null;
+    const readLogStamp = (): string | null => {
+      if (!absLogPath) return null;
+      try {
+        const st = statSync(absLogPath);
+        return `${st.mtimeMs}:${st.size}`;
+      } catch {
+        return null;   // 文件还不存在 → 不提供信息，不据此判活或判死
+      }
+    };
+    let lastLogStamp = readLogStamp();
+
     let idleTimer: ReturnType<typeof setInterval> | null = null;
     if (idleMs > 0) {
       // 用 1/4 间隔轮询，既能及时判定又不至于太频繁
@@ -533,7 +563,12 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
         // 信号 C：有活跃后代（bash / node / python 在执行工具）
         const descendantsBusy = hasActiveDescendant(proc.pid);
 
-        if (cpuBusy || descendantsBusy) {
+        // 信号 D：step log 有增长（subagent 主动 heartbeat 的记录）
+        const stamp = readLogStamp();
+        const logBusy = stamp !== null && stamp !== lastLogStamp;
+        if (stamp !== null) lastLogStamp = stamp;
+
+        if (cpuBusy || descendantsBusy || logBusy) {
           // 有证据表明它在干活 → 不算 idle，并把锚点前移，避免下次立刻触发
           lastEventAt = Date.now();
           lastProgressAt = Date.now();   // 同时续期「无进展总超时」
@@ -544,7 +579,8 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
         result.timedOut = true;
         result.timeoutReason = "idle";
         result.errorMessage =
-          `子进程 ${Math.round(idleMs / 1000)}s 无事件、CPU 无增长、无活跃子进程（疑似卡住），已终止；` +
+          `子进程 ${Math.round(idleMs / 1000)}s 无事件、CPU 无增长、无活跃子进程、` +
+          `step log 无增长（疑似卡住），已终止；` +
           `可用 execution.subagent_idle_timeout_seconds 调整该阈值`;
         killProc("SIGTERM");
       }, tick);

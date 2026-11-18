@@ -668,7 +668,9 @@ async function runSchedule(
       },
       timeoutMs: subagentTimeoutMs,
       idleTimeoutMs: subagentIdleTimeoutMs,
-  heartbeatIntervalMs: heartbeatIntervalMs,
+      heartbeatIntervalMs: heartbeatIntervalMs,
+      // 信号 D：subagent 追加 step log 即视为有进展（防「进程内纯 IO 等待」被误杀）
+      logPath: (step as any).log_path ?? undefined,
       // step 已完成/失败但进程没退出时提前结束，避免白等
       shouldStop: () => {
         try {

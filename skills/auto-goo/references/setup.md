@@ -1185,11 +1185,35 @@ utils/exec-observe.ts:366 staleHeartbeatSeconds: 900,
 
 | 机制 | 阈值 | 触发条件 |
 | --- | --- | --- |
-| **idle 检测** | 5min（`subagent_idle_timeout_seconds`） | 无 JSON 事件 + CPU 无增长 + 无活跃后代 |
+| **idle 检测** | 5min（`subagent_idle_timeout_seconds`） | 四个信号同时沉默（见下） |
 | **无进展上限** | 90min（`subagent_timeout_seconds`） | 连续这么久**完全无任何进展** |
 
 只要还有事件 / CPU 增长 / 活跃后代 / 心跳，计时器就**续期**。
 真正的「卡住」由 idle 检测负责；总超时只挡「一直在动但永远不结束」的病态情况。
+
+### idle 检测的四个信号（缺一个就会误杀）
+
+| 信号 | 判据 | 覆盖的场景 |
+| --- | --- | --- |
+| **A. JSON 事件** | `--mode json` 输出行 | 模型正常产出的每一步 |
+| **B. CPU 增长** | `/proc/<pid>/stat` 的 `utime+stime` | 编译、训练等计算密集长命令 |
+| **C. 活跃后代** | `/proc/<pid>/task/<pid>/children`（排除僵尸 Z） | pi 正在跑 bash / python 工具 |
+| **D. step log 增长** | log 的 `mtimeMs + size` 变化 | **进程内纯 IO 等待** |
+
+**为什么必须有 D**：A/B/C 覆盖不了「subagent 用 read 读超大文件」或
+「模型 API 在重试等待」—— 此时 pi 进程既没有子进程、CPU 也不明显增长、
+`--mode json` 又没有输出，三信号同时沉默就会被**误杀**。
+
+而 subagent 每次调 `auto_goo_update_step --heartbeat` 都会追加 step log，
+那是用户可见的真实进展，与 A/B/C 完全独立。
+
+> 历史坑：0.25.1 写多信号时**注释里写了 D**，但代码从未实现
+> （`git log -S` 确认）。注释撒谎比没注释更危险 —— 读代码的人会以为盲区已被覆盖。
+> 现已实现并有反向验证：移除 D 分支后「只有 log 在增长」的测试立即报红。
+
+**测试陷阱**：验证 idle 时 fixture 必须用 `exec sleep`。
+普通 `sleep` 是 shell 的子进程，会命中信号 C（活跃后代），idle 永远不触发 ——
+那样测不到任何东西（还没断言就"通过"了）。
 
 ### kill 必须杀进程树
 

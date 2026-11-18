@@ -1101,6 +1101,24 @@ utils/exec-observe.ts:366 staleHeartbeatSeconds: 900,
 `planning.recall_wiki`、`execution.heartbeat_seconds`、`memory_layer`、
 `execution.stale_after_seconds`（告警侧不读）。
 
+### Subagent 模型：默认跟随主模型，不弹窗
+
+`resolveOrPromptSubagentModel()` 的解析顺序（2026-11 起）：
+
+| 情况 | 行为 | 是否弹窗 |
+| --- | --- | --- |
+| `config.execution.subagent_provider/model` 都配了 | 用它 | 否 |
+| 没配，但能拿到主模型（`ctx.model` 或 `PI_*`） | **跟随主模型** | **否** |
+| 拿不到主模型（headless 无 `PI_*`、`ctx.model` 缺失） | 才询问 | 是 |
+| 无 UI（json/headless） | 跟随主模型；解析不到则 fail-fast | 否 |
+
+**为什么要改**：原设计是「无显式配置就问一次，把选择写进 config」。
+实际体验是**每个新会话第一次派发都弹窗**，而绝大多数人想要的就是
+「跟主模型一样」—— 默认行为不该需要用户确认。
+
+想用别的模型（比如便宜的 flash 模型跑 subagent）时，显式写 config 即可，
+那时走 `configured` 分支，同样不问。
+
 ### 执行告警：三个必须对齐的点
 
 #### 1. stale 阈值只能有一个事实源

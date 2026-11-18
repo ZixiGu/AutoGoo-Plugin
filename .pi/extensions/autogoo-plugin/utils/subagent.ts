@@ -115,9 +115,6 @@ export type SubagentModelResult =
   | { provider: string; model: string; action: "configured" | "resolved" | "declined" }
   | { provider?: undefined; model?: undefined; action: "cancelled" };
 
-/** 本进程是否已问过「不配置 subagent 模型」并跳过（避免每个 step 都弹窗）。 */
-let subagentModelPromptDeclined = false;
-
 /**
  * 派发前确保有 Subagent 模型 provider/model 成对。
  * 0) 显式配置已齐 → 直接解析返回（不再询问）。
@@ -139,12 +136,6 @@ export async function resolveOrPromptSubagentModel(
   if (both) {
     return { provider: explicit.provider!, model: explicit.model!, action: "configured" };
   }
-  if (subagentModelPromptDeclined) {
-    const r = resolveSubagentModel(explicit, sessionModel);
-    return r.provider && r.model
-      ? { provider: r.provider, model: r.model, action: "declined" }
-      : { action: "cancelled" };
-  }
   const ui = ctx?.ui;
   if (!ui?.select || !ui?.notify) {
     // 无 UI（json/headless）：不阻塞，自动跟随主 agent；解析不到才 fail-fast
@@ -155,23 +146,29 @@ export async function resolveOrPromptSubagentModel(
   }
   const autoResolved = resolveSubagentModel(explicit, sessionModel);
   const canAuto = !!(autoResolved.provider && autoResolved.model);
-  const options: string[] = [];
+
+  // ── 能解析出主 agent 模型时，**默认直接跟随，不打扰用户** ────────────────
+  //
+  // 原设计是「没有显式配置就问一次，把选择写进 config」。实际体验是：
+  // 每个新会话第一次派发都弹窗，而绝大多数人想要的就是「跟主模型一样」。
+  // 默认行为不该需要用户确认 —— 想用别的模型时写 config 即可，那时
+  // explicit 已有值，走上面的 configured 分支，同样不问。
+  //
+  // 只有「拿不到主模型」（headless 环境无 PI_*、ctx.model 缺失）才需要问，
+  // 因为那时确实无从判断该用哪个。
   if (canAuto) {
-    options.push(`用主 agent 当前模型（${autoResolved.provider}/${autoResolved.model}）写入 .goo/config.json`);
+    return { provider: autoResolved.provider!, model: autoResolved.model!, action: "resolved" };
   }
+
+  const options: string[] = [];
   options.push("手动输入 provider/model（写入 config）");
-  options.push("不配置，自动跟随主 agent 模型（本进程不再问）");
   options.push("取消本次派发");
-  const pick = await ui.select("Subagent 模型未配置，如何处理？", options);
+  const pick = await ui.select(
+    "无法确定主 agent 模型（ctx.model 与 PI_* 均不可用），请指定 Subagent 模型",
+    options,
+  );
   if (!pick) {
     return { action: "cancelled" };
-  }
-  if (pick.startsWith("用主 agent 当前模型")) {
-    const ok = await onWriteConfig(autoResolved.provider!, autoResolved.model!);
-    ui.notify(ok ? `已写入 config.execution.subagent_model=${autoResolved.model}` : "写入 config 失败，本次仍跟随主 agent", ok ? "info" : "error");
-    return ok
-      ? { provider: autoResolved.provider!, model: autoResolved.model!, action: "configured" }
-      : { provider: autoResolved.provider!, model: autoResolved.model!, action: "resolved" };
   }
   if (pick.startsWith("手动输入")) {
     const p = (await ui.input("Subagent provider（如 opencode-go；同主 agent 时留空）", sessionModel?.provider ?? ""))?.trim();
@@ -185,12 +182,6 @@ export async function resolveOrPromptSubagentModel(
     }
     ui.notify("provider 与 model 未能成对解析，本次取消派发", "error");
     return { action: "cancelled" };
-  }
-  if (pick.startsWith("不配置")) {
-    subagentModelPromptDeclined = true;
-    return canAuto
-      ? { provider: autoResolved.provider!, model: autoResolved.model!, action: "declined" }
-      : { action: "cancelled" };
   }
   return { action: "cancelled" };
 }

@@ -4557,6 +4557,33 @@ else
   fail "状态更新失败不落日志 —— 与「空 catch」同类"
 fi
 
+# ── 52. subagent 模型配置入口必须可发现 ──
+# 默认改为「跟随主模型、不弹窗」后，若没有入口，用户想指定 flash 模型
+# 只能手改 JSON（不可发现）。入口挂在已有的 /goo-subagent 子命令上，
+# 不新增 /goo-xx 命令。
+echo ""
+echo "── 52. subagent 模型配置入口 ──"
+
+SUB_CMD="$ROOT/.pi/extensions/autogoo-plugin/commands/subagent.ts"
+if grep -q "handleSubagentModelConfig" "$SUB_CMD"; then
+  pass "/goo-subagent model 提供交互式配置"
+else
+  fail "subagent 模型无交互入口 —— 用户只能手改 config.json（不可发现）"
+fi
+
+if grep -q "model|模型" "$SUB_CMD"; then
+  pass "子命令解析支持 model / 模型"
+else
+  fail "子命令未接入参数分发"
+fi
+
+# 清除配置的能力（恢复跟随主模型）
+if grep -q "delete execution.subagent_provider" "$ROOT/.pi/extensions/autogoo-plugin/utils/paths.ts"; then
+  pass "writeExecutionModelConfig 支持清除（恢复跟随主模型）"
+else
+  fail "无法清除固定配置 —— 用户改回默认只能手删 key"
+fi
+
 # ── 结果汇总 ──
 echo ""
 echo "============================================"

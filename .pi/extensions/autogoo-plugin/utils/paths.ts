@@ -5,7 +5,7 @@
  * directories from within the extension's own location.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { logWarn } from "./log.js";
 import { readFile, access, writeFile } from "node:fs/promises";
 import { resolve, dirname, join, relative } from "node:path";
@@ -88,11 +88,15 @@ export function projectConfigPath(cwd: string): string {
  */
 export async function writeExecutionModelConfig(
   cwd: string,
-  provider: string,
-  model: string,
+  provider: string | null,
+  model: string | null,
 ): Promise<boolean> {
   const p = projectConfigPath(cwd);
   try {
+    // 目标目录可能不存在（全新项目、或 .goo/ 被清理过）—— 不先建目录
+    // writeFile 会 ENOENT，而错误被 catch 吞成「写入失败」，用户只看到
+    // 一句「见 plugin.log」却不知原因。
+    mkdirSync(dirname(p), { recursive: true });
     let config: Record<string, unknown> = {};
     try {
       config = JSON.parse(readFileSync(p, "utf-8"));
@@ -100,8 +104,16 @@ export async function writeExecutionModelConfig(
       config = {};
     }
     const execution = (config.execution as Record<string, unknown>) || (config.execution = {});
-    execution.subagent_provider = provider;
-    execution.subagent_model = model;
+    if (provider && model) {
+      execution.subagent_provider = provider;
+      execution.subagent_model = model;
+    } else {
+      // 传 null/空 = 清除显式配置，恢复「跟随主模型」默认。
+      // 保留 key 但置空会让 resolveSubagentModel 的 explicit 判断为假值，
+      // 效果相同，但删除更干净 —— 也让用户看 config 时不会被空字段误导。
+      delete execution.subagent_provider;
+      delete execution.subagent_model;
+    }
     await writeFile(p, JSON.stringify(config, null, 2) + "\n", "utf-8");
     return true;
   } catch (e) {

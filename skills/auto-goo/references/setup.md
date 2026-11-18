@@ -1286,6 +1286,11 @@ bash / python —— 这些孙进程**不会**随父进程一起死（shell 不�
 | `subagent_model` | **Subagent 子进程显式模型**（默认空=直接用主 agent 的模型，见下方实测结论）。必须与 `subagent_provider` 成对设置——模型 id 常跨多个已认证 provider（如 `deepseek-v4-flash` 同时存在于 deepseek/opencode-go/opencode/yj 等），单独传 `--model` 会报 `Model ambiguous across providers`。 |
 | `subagent_provider` | **Subagent 子进程显式 provider**（默认空=直接用主 agent 的 provider）。与 `subagent_model` 配对，必须同时设置。 |
 
+**配置入口**（两种，选一个）：
+
+- 交互式：`/goo-subagent model` —— 显示当前配置并引导修改
+- 非交互：`goo-init.sh --subagent-provider X --subagent-model Y`
+
 **配置入口**（不需要手改 JSON）：
 
 ```bash

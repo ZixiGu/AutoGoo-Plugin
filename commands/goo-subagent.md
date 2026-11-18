@@ -110,3 +110,29 @@ description: 查看 subagent 实时活动 — 状态栏下面的 widget 与可�
 - 每个 step 保留最近 400 条事件、最多 20 个 step（FIFO 淘汰）。
 - `session_shutdown` 时清理 widget，避免跨会话残留。
 - 非 TUI 模式退化为一行文本摘要。
+
+## 子命令：`/goo-subagent model`
+
+查看并修改 subagent 使用的模型。
+
+```
+/goo-subagent model
+```
+
+三种状态：
+
+| 当前 | 显示 | 可选操作 |
+| --- | --- | --- |
+| config 配了 `subagent_provider/model` | 固定使用 X/Y | 改回「跟随主模型」/ 重新指定 |
+| 没配，能解析主模型 | 跟随主模型（X/Y） | 指定固定模型 |
+| 都解析不到 | 未确定 | 指定固定模型 |
+
+**为什么要这个入口**：默认跟随主模型、不弹窗（零打扰）；但想用便宜的 flash
+模型跑 subagent 时需要一个可发现的方式，不必手改 `.goo/config.json`。
+
+对应的非交互写法：
+
+```bash
+bash skills/auto-goo/scripts/goo-init.sh --project \
+  --subagent-provider opencode-go --subagent-model deepseek-v4.1-flash
+```

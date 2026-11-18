@@ -23,6 +23,7 @@ import {
   mkdtempSync,
   openSync,
   readFileSync,
+  readSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -529,28 +530,76 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
 
     let lastCpuTicks = readCpuTicks(proc.pid);
 
-    // ── 信号 D：step log 增长 ──────────────────────────────────────────────
-    // 判据用 mtimeMs + size 的组合：只比 size 会漏掉「等长覆盖写」，
-    // 只比 mtime 在某些文件系统（mtime 精度 1s）上会漏掉同一秒内的多次写。
+    // ── 信号 D：step log 有**实质**进展 ────────────────────────────────────
+    //
+    // ⚠ 不能只看「文件有没有变大」：父进程的 heartbeatTimer 每 20s 调一次
+    //   update-step.py --heartbeat，那会把**完全相同**的一行追加进 step log：
+    //
+    //     - 08:29:47 heartbeat status=running progress=80 detail=Subagent running (agent-1-…)
+    //     - 08:30:07 heartbeat status=running progress=80 detail=Subagent running (agent-1-…)  ← 一字不差
+    //
+    //   于是「文件在增长」永远成立 → idle 检测被自己的心跳架空。
+    //   （实测某 step log 里连续 3 条只有时间戳不同。）
+    //
+    // 因此判据是**内容**：progress 数值增加，或 detail 出现非模板内容。
+    // 模板化的 `detail=Subagent running (agent-…)` 视为「无新信息」。
     const absLogPath = opts.logPath
       ? (isAbsolute(opts.logPath) ? opts.logPath : join(opts.cwd, opts.logPath))
       : null;
-    const readLogStamp = (): string | null => {
+
+    interface LogSignal { progress: number; sig: string }
+    const readLogSignal = (): LogSignal | null => {
       if (!absLogPath) return null;
       try {
-        const st = statSync(absLogPath);
-        return `${st.mtimeMs}:${st.size}`;
+        const size = statSync(absLogPath).size;
+        if (size === 0) return null;
+        const start = Math.max(0, size - 8192);        // 尾部 8KB 足够覆盖最近几条
+        const len = size - start;
+        const fd = openSync(absLogPath, "r");
+        const buf = Buffer.alloc(len);
+        try {
+          readSync(fd, buf, 0, len, start);
+        } finally {
+          closeSync(fd);
+        }
+        const rows = buf.toString("utf-8").split("\n").filter((l) => l.startsWith("- "));
+        for (let i = rows.length - 1; i >= 0; i--) {
+          const pm = /progress=(\d+)/.exec(rows[i]);
+          if (!pm) continue;
+          const progress = Number(pm[1]);
+          const action = (/- \S+ (\w+)/.exec(rows[i]) || [])[1] || "";
+          const detail = ((/detail=(.+)$/.exec(rows[i]) || [])[1] || "").trim();
+          // 父进程心跳的固定模板：不含新信息
+          const templated = /^Subagent running \(agent-[^)]+\)$/.test(detail);
+          return { progress, sig: templated ? `tpl|${progress}` : `${action}|${progress}|${detail}` };
+        }
+        return null;
       } catch {
-        return null;   // 文件还不存在 → 不提供信息，不据此判活或判死
+        return null;   // 文件不存在/读失败 → 不提供信息（不据此判活也不判死）
       }
     };
-    let lastLogStamp = readLogStamp();
+    let lastLogSignal = readLogSignal();
 
     let idleTimer: ReturnType<typeof setInterval> | null = null;
     if (idleMs > 0) {
       // 用 1/4 间隔轮询，既能及时判定又不至于太频繁
       const tick = Math.max(1000, Math.floor(idleMs / 4));
       idleTimer = setInterval(() => {
+        // ── 信号 D 的基线必须**每次 tick 都更新** ────────────────────────
+        // 放在 idle 阈值判断之前：否则「silentFor <= idleMs 就 return」会让
+        // 首次进入判定时 prevSig 仍为 null，判定成「无进展」，于是刚启动就被杀。
+        // （实测：idle=1200ms、log 每 400ms 有新内容，仍在 2s 被判 idle。）
+        const logSignalNow = readLogSignal();
+        let logBusy = false;
+        if (logSignalNow !== null) {
+          if (lastLogSignal !== null) {
+            logBusy =
+              logSignalNow.progress > lastLogSignal.progress ||
+              logSignalNow.sig !== lastLogSignal.sig;
+          }
+          lastLogSignal = logSignalNow;
+        }
+
         // 信号 A：JSON 事件
         const silentFor = Date.now() - lastEventAt;
         if (silentFor <= idleMs) return;
@@ -562,11 +611,6 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRun
 
         // 信号 C：有活跃后代（bash / node / python 在执行工具）
         const descendantsBusy = hasActiveDescendant(proc.pid);
-
-        // 信号 D：step log 有增长（subagent 主动 heartbeat 的记录）
-        const stamp = readLogStamp();
-        const logBusy = stamp !== null && stamp !== lastLogStamp;
-        if (stamp !== null) lastLogStamp = stamp;
 
         if (cpuBusy || descendantsBusy || logBusy) {
           // 有证据表明它在干活 → 不算 idle，并把锚点前移，避免下次立刻触发

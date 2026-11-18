@@ -34,14 +34,22 @@ describe("信号 D：step log 增长算有进展", () => {
     const logPath = join(dir, "step-1.log");
     writeFileSync(logPath, "start\n", "utf-8");
 
-    // 假 pi：完全静默（无 JSON 事件、无子进程），但外部在往 log 追加。
-    // 用 `sleep` 保持进程存活，CPU 几乎不增长。
-    const cmd = fakePi("sleep 6", dir);
+    // 假 pi：完全静默（无 JSON 事件、无子进程），但外部在往 log 追加**符合真实格式**的行。
+    // ⚠ 必须用 `- <ts> update ... progress=N detail=...` 格式 —— 旧版本写的是
+    //   `[tick] <ts>`，readLogSignal 解析不到（行首不是 "- "、无 progress=），
+    //   于是信号 D 根本没生效，测试只是靠 `sleep 6` 自然结束而"通过"（假通过）。
+    //   同时用 `exec sleep` 消除信号 C。
+    const cmd = fakePi("exec sleep 12", dir);
 
-    // 后台每 400ms 追加一行 log（模拟 subagent 的 heartbeat 记录）
+    let pct = 10;
     const writer = setInterval(() => {
       try {
-        appendFileSync(logPath, `[tick] ${Date.now()}\n`, "utf-8");
+        pct += 5;
+        appendFileSync(
+          logPath,
+          `- ${new Date().toISOString()} update status=running progress=${pct} detail=处理第 ${pct} 批\n`,
+          "utf-8",
+        );
       } catch {
         /* ignore */
       }
@@ -93,6 +101,84 @@ describe("信号 D：step log 增长算有进展", () => {
       assert.equal(r.timeoutReason, "idle");
       assert.ok(elapsed < 15_000, `应及时终止，实际 ${elapsed}ms`);
     } finally {
+      if (prev === undefined) delete process.env.AUTOGOO_SUBAGENT_CMD;
+      else process.env.AUTOGOO_SUBAGENT_CMD = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("重复的模板化 heartbeat 不算进展（关键：父进程每 20s 写一次）", async () => {
+    // 实测：父进程 heartbeatTimer 每 20s 调 update-step --heartbeat，
+    // 追加的是**完全相同**的一行（只有时间戳不同）：
+    //   - 08:29:47 heartbeat status=running progress=80 detail=Subagent running (agent-1-…)
+    //   - 08:30:07 heartbeat status=running progress=80 detail=Subagent running (agent-1-…)
+    // 若只看「文件变大」，idle 检测会被自己的心跳架空，永远判活。
+    const dir = mkdtempSync(join(tmpdir(), "autogoo-logd-tpl-"));
+    const logPath = join(dir, "step-tpl.log");
+    const ts = (i: number) => new Date(Date.now() + i * 1000).toISOString().replace(/\.\d+Z$/, "Z");
+    writeFileSync(
+      logPath,
+      `- ${ts(0)} heartbeat status=running progress=80 agent=a detail=Subagent running (agent-1-123)\n`,
+      "utf-8",
+    );
+
+    // 每 400ms 追加一条**内容完全相同**的模板心跳
+    let n = 1;
+    const writer = setInterval(() => {
+      try {
+        appendFileSync(
+          logPath,
+          `- ${ts(n++)} heartbeat status=running progress=80 agent=a detail=Subagent running (agent-1-123)\n`,
+          "utf-8",
+        );
+      } catch { /* ignore */ }
+    }, 400);
+
+    const cmd = fakePi("exec sleep 30", dir);
+    const prev = process.env.AUTOGOO_SUBAGENT_CMD;
+    process.env.AUTOGOO_SUBAGENT_CMD = cmd;
+    try {
+      const r = await runSubagent({
+        provider: "p", model: "m", task: "x", cwd: dir,
+        timeoutMs: 60_000, idleTimeoutMs: 1500, logPath,
+      });
+      assert.equal(
+        r.timedOut, true,
+        "模板化 heartbeat 只增行数、不含新信息，必须仍判 idle（否则 idle 检测形同虚设）",
+      );
+      assert.equal(r.timeoutReason, "idle");
+    } finally {
+      clearInterval(writer);
+      if (prev === undefined) delete process.env.AUTOGOO_SUBAGENT_CMD;
+      else process.env.AUTOGOO_SUBAGENT_CMD = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("progress 增加算实质进展", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "autogoo-logd-prog-"));
+    const logPath = join(dir, "step-prog.log");
+    writeFileSync(logPath, "- t0 heartbeat status=running progress=10 detail=start\n", "utf-8");
+
+    let pct = 10;
+    const writer = setInterval(() => {
+      try {
+        pct += 5;
+        appendFileSync(logPath, `- t${pct} update status=running progress=${pct} detail=阶段性完成\n`, "utf-8");
+      } catch { /* ignore */ }
+    }, 400);
+
+    const cmd = fakePi("exec sleep 6", dir);
+    const prev = process.env.AUTOGOO_SUBAGENT_CMD;
+    process.env.AUTOGOO_SUBAGENT_CMD = cmd;
+    try {
+      const r = await runSubagent({
+        provider: "p", model: "m", task: "x", cwd: dir,
+        timeoutMs: 60_000, idleTimeoutMs: 1500, logPath,
+      });
+      assert.equal(r.timedOut, false, "progress 持续增加时不应判 idle");
+    } finally {
+      clearInterval(writer);
       if (prev === undefined) delete process.env.AUTOGOO_SUBAGENT_CMD;
       else process.env.AUTOGOO_SUBAGENT_CMD = prev;
       rmSync(dir, { recursive: true, force: true });

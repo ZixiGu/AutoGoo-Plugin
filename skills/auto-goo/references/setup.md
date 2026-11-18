@@ -1198,7 +1198,7 @@ utils/exec-observe.ts:366 staleHeartbeatSeconds: 900,
 | **A. JSON 事件** | `--mode json` 输出行 | 模型正常产出的每一步 |
 | **B. CPU 增长** | `/proc/<pid>/stat` 的 `utime+stime` | 编译、训练等计算密集长命令 |
 | **C. 活跃后代** | `/proc/<pid>/task/<pid>/children`（排除僵尸 Z） | pi 正在跑 bash / python 工具 |
-| **D. step log 增长** | log 的 `mtimeMs + size` 变化 | **进程内纯 IO 等待** |
+| **D. step log 实质进展** | 解析 log 末尾的 `progress` 与 `detail`：progress 增加，或 detail 出现非模板内容 | **进程内纯 IO 等待** |
 
 **为什么必须有 D**：A/B/C 覆盖不了「subagent 用 read 读超大文件」或
 「模型 API 在重试等待」—— 此时 pi 进程既没有子进程、CPU 也不明显增长、
@@ -1209,7 +1209,29 @@ utils/exec-observe.ts:366 staleHeartbeatSeconds: 900,
 
 > 历史坑：0.25.1 写多信号时**注释里写了 D**，但代码从未实现
 > （`git log -S` 确认）。注释撒谎比没注释更危险 —— 读代码的人会以为盲区已被覆盖。
-> 现已实现并有反向验证：移除 D 分支后「只有 log 在增长」的测试立即报红。
+
+#### D 必须看内容，不能只看「文件有没有变大」
+
+父进程的 `heartbeatTimer` 每 20s 调 `update-step.py --heartbeat`，会把**完全相同**
+的一行追加进 step log：
+
+```
+- 08:29:47 heartbeat status=running progress=80 detail=Subagent running (agent-1-…)
+- 08:30:07 heartbeat status=running progress=80 detail=Subagent running (agent-1-…)  ← 一字不差
+```
+
+只看 size/mtime 的话，「文件在增长」永远成立 → **idle 检测被自己的心跳架空**。
+
+所以判据是内容：progress 数值增加，或 detail 出现非模板内容；
+模板化的 `detail=Subagent running (agent-…)` 视为「无新信息」。
+
+#### 基线更新必须在 idle 阈值判断之前
+
+第一版把 `lastLogSignal` 的刷新放在「`silentFor > idleMs` 之后」，
+于是首次进入判定时 `prevSig === null` → 判成「无进展」→ 刚启动就被杀。
+实测：`idle=1200ms`、log 每 400ms 有新内容，仍在 2s 被判 idle。
+
+正确做法：每次 tick **无条件**先刷新基线并算出 `logBusy`，再做 idle 阈值判断。
 
 **测试陷阱**：验证 idle 时 fixture 必须用 `exec sleep`。
 普通 `sleep` 是 shell 的子进程，会命中信号 C（活跃后代），idle 永远不触发 ——

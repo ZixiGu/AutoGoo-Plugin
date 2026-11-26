@@ -84,3 +84,5 @@ python3 scripts/audit-memory-layer.py
 - 0.27.0 曾把编号方向整体翻转（旧：L0=原始记录、L3=项目总览）。看到 `L0` 出现在 `journal/`、`raw/`、
   `execution/` 里，或 `L3` 出现在项目入口上，**基本可以判定是旧值残留**。
 - 检查器只允许**一处**路径表实现（`policy.json`）。任何脚本自带一份 `path_hints` 都算回归。
+- **生成物**（`wiki/logs/*.md`、`memory/audit.md`、代码概览等）的 `memory_layer` 由生成脚本写死；
+  改 `policy.json` 后必须同步生成器，否则每次重建都会把回填结果刷回去（实测撞过：生成器写 L2，policy 要求 L3）。

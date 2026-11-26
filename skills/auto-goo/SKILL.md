@@ -1,7 +1,7 @@
 ---
 name: goo-workflow
 description: "Use when the user says '/auto-goo:goo-init', '/auto-goo:goo-brainstorm', '/auto-goo:goo-plan', '/auto-goo:goo-start', '/auto-goo:goo-research', '/auto-goo:goo-daily-report', '/auto-goo:goo-usage', '/auto-goo:goo-usage-analyse', '/auto-goo:goo-observe', '/auto-goo:goo-publish', '找目标', '开始任务', 'run:', '日报', '周报', 'usage', 'token统计', 'token降本', '后台观察', '发布HTML', '自改进', or gives a goal-clear multi-step task that can be decomposed into sub-tasks. Runs Goo workflow: config init, wiki-based brainstorm, wiki recall, DAG planning, subagent execution, research material archiving, status/observe, HTML publishing, optimization, Goo-wiki archiving, usage monitor, usage cost analysis, daily reports, and plugin self-improvement. Compatible with Claude Code and Codex."
-version: 0.34.2
+version: 0.35.0
 tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent, wait_agent, request_user_input]
 ---
 
@@ -69,7 +69,7 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 | **L3** | 原始记录 | `.goo/logs/` step log、原始命令输出、未脱敏 transcript、`execution/record.md` | 大而冷 | 只做 trace/audit |
 
 > 历史说明：早期版本的编号方向是反的（L0=原始日志、L3=项目总览），
-> 与 CPU 缓存和命名来源 TencentDB 相反，已于 0.34.2 全量翻转。
+> 与 CPU 缓存和命名来源 TencentDB 相反，已于 0.35.0 全量翻转。
 > 若看到旧笔记里 "L0 原始日志" 的说法，那是旧语义。
 
 规则：
@@ -78,6 +78,10 @@ tools: [Read, Write, Edit, Bash, WebSearch, Agent, AskUserQuestion, spawn_agent,
 3. L3 原始日志只用于 trace/audit，经 recorder 提炼为 L1/L2 后才进入 wiki。
 4. 项目入口 `<project-slug>.md` 显式标注自身为 **L0**，作为 wiki 的最高抽象层（最热）。
 5. Recorder 在归档时必须判断并填写 `memory_layer`，不得留空。
+
+**口径的唯一出处是 Goo-wiki 的 `<vault>/memory/`**：`memory/index.md`（定义与口径历史）·
+`memory/rules.md`（写笔记时的可执行规则）· `memory/policy.json`（机器可读口径，检查器直读）。
+本文件与它冲突时以 `memory/` 为准并回改本文件。
 
 **判定标准见 `references/setup.md` 的「记忆分层（memory_layer）判定标准」**，要点：
 

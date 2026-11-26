@@ -362,3 +362,88 @@ def test_literal_assertions_do_not_rely_on_bre_wildcards() -> None:
         if re.search(rf'grep -q(?!F) "{re.escape(needle)}"', script)
     ]
     assert not offenders, f"这些断言用了 BRE 通配（应改 grep -qF）: {offenders}"
+
+
+def test_wiki_frontmatter_consumes_external_policy(tmp_path: Path):
+    """分层口径的唯一事实源是 Goo-wiki 的 memory/policy.json，脚本不得自带一份。
+
+    实测过的漂移：脚本内置 LAYER_HINTS 与 policy.json 对 51 篇笔记给出不同层级
+    （`*/reports/`、`*/code-graph/` 只在 policy 里有），而检查器自己不会报不一致。
+    这里用一个「只存在于自定义 policy 里」的路径证明它真的被读进来了 ——
+    如果哪天代码改回读内置表，这条立刻变红。
+    """
+    vault = tmp_path / "vault"
+    (vault / "memory").mkdir(parents=True)
+    (vault / "memory" / "policy.json").write_text(
+        json.dumps(
+            {
+                "semantics": "modern",
+                "path_hints": [
+                    {"match": "/widgets/", "layer": "L2"},
+                    {"match": "/lessons/", "layer": "L1"},
+                ],
+                "defaults": {"fallback_layer": "L1", "project_entry_layer": "L0"},
+                "exclude_paths": ["memory/"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    target = vault / "wiki" / "projects" / "demo" / "widgets" / "spec.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("---\ntitle: T\n---\n\n# T\n", encoding="utf-8")
+
+    script = SCRIPTS / "check-wiki-frontmatter.py"
+    r = subprocess.run(
+        ["python3", str(script), "--suggest", str(target)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "L2", f"应读 policy.json 的 /widgets/ → L2，实际 {r.stdout.strip()}"
+
+
+def test_wiki_frontmatter_falls_back_to_embedded_policy(tmp_path: Path):
+    """没有 policy.json 时用内置兜底，且兜底本身必须是现代口径。"""
+    script = SCRIPTS / "check-wiki-frontmatter.py"
+    target = tmp_path / "wiki" / "projects" / "demo" / "lessons" / "a.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("---\ntitle: T\n---\n\n# T\n", encoding="utf-8")
+    r = subprocess.run(
+        ["python3", str(script), "--suggest", str(target)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "L1", f"无 policy 时 lessons 应兜底 L1，实际 {r.stdout.strip()}"
+
+    spec = importlib.util.spec_from_file_location("cwf_policy", script)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    assert mod.DEFAULT_POLICY["layers"]["L0"]["name"] == "项目总览"
+    assert mod.DEFAULT_POLICY["layers"]["L3"]["name"] == "原始记录"
+
+
+def test_wiki_audit_reports_project_entries_per_modern_semantics(tmp_path: Path):
+    """审计里的「项目入口」统计必须是 L0（现代口径），不能是旧的 L3。
+
+    旧代码统计 `projects_without_l3` 并打印「没有 L3 项目总览」——与它自己的
+    LAYER_HINTS（项目入口 = L0）自相矛盾，等于用旧口径给新口径判分。
+    """
+    vault = tmp_path / "vault"
+    (vault / "wiki" / "projects" / "done").mkdir(parents=True)
+    (vault / "wiki" / "projects" / "bad").mkdir(parents=True)
+    (vault / "wiki" / "projects" / "done.md").write_text(
+        "---\ntitle: Done\nmemory_layer: L0\n---\n", encoding="utf-8"
+    )
+    (vault / "wiki" / "projects" / "bad.md").write_text(
+        "---\ntitle: Bad\nmemory_layer: L3\n---\n", encoding="utf-8"
+    )
+    script = SCRIPTS / "check-wiki-frontmatter.py"
+    r = subprocess.run(
+        ["python3", str(script), "--audit", str(vault), "--json"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
+    report = json.loads(r.stdout)
+    assert "projects_without_l3" not in report, "旧口径字段不得残留"
+    assert report["projects_without_l0"] == ["bad"], report["projects_without_l0"]
+    assert report["project_entries"]["done"] == "L0"

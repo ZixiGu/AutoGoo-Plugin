@@ -767,6 +767,12 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py --cached-onl
 归档笔记的 frontmatter 必须含 `memory_layer: L0|L1|L2|L3`。
 本节是**判定标准**，不只是定义 —— Recorder subagent 凭感觉填是这类字段失效的常见原因。
 
+> **口径的唯一出处是 Goo-wiki 的 `<vault>/memory/`**：
+> `memory/index.md`（四层定义与口径历史，为什么这么分）· `memory/rules.md`（写笔记时的可执行规则）·
+> `memory/policy.json`（机器可读口径，`check-wiki-frontmatter.py` 直读）。
+> 本节与 `memory/` 冲突时以 `memory/` 为准并回改本节 —— 这类漂移已经发生过一次：
+> 插件内置的路径表与 `policy.json` 对 51 篇笔记给出不同层级，而检查器自己不会报不一致。
+
 ### 编号方向：数字越大越原始
 
 与 CPU 缓存、TencentDB Agent Memory 一致：
@@ -787,7 +793,7 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py --cached-onl
 | 规则 | 回答 | 位置 | 用在 |
 | --- | --- | --- | --- |
 | 按 **step 类型** | 「这个任务**需要**什么层」 | `constants.ts` `DEFAULT_MEMORY_LAYER_BY_STEP_TYPE` | 召回（读） |
-| 按 **笔记路径** | 「这篇笔记**属于**什么层」 | `check-wiki-frontmatter.py` `LAYER_HINTS` | 归档（写） |
+| 按 **笔记路径** | 「这篇笔记**属于**什么层」 | `<vault>/memory/policy.json` 的 `path_hints`（`check-wiki-frontmatter.py` 直读，脚本内只留同构兜底） | 归档（写） |
 
 ### 核心判据：离开当前任务后的复用价值
 

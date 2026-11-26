@@ -4,8 +4,7 @@
 为什么需要这个脚本
 ------------------
 SKILL.md 写着「归档笔记必须含 memory_layer: L0|L1|L2|L3」，但**没有任何强制
-机制**。实测结果：843 篇笔记里只有 423 篇填了（50%），L3 项目总览仅 11 篇
-（其中 autogoo-plugin 这个项目本身是 0）。
+机制**。实测（首次）：843 篇笔记里只有 423 篇填了（50%）。
 
 配置项/字段「写了但没人执行」是本项目的反复出现的失效模式
 （planning.recall_wiki 曾零引用、execution.heartbeat_seconds 曾零引用）。
@@ -14,24 +13,34 @@ SKILL.md 写着「归档笔记必须含 memory_layer: L0|L1|L2|L3」，但**没�
 用法
 ----
   check-wiki-frontmatter.py --check <file.md>          # 校验单个文件，违规退出 1
-  check-wiki-frontmatter.py --audit <wiki_dir>         # 审计全库，输出缺口报告
-  check-wiki-frontmatter.py --audit <wiki_dir> --json  # 机器可读
+  check-wiki-frontmatter.py --audit <vault_dir>        # 审计全库，输出缺口报告
+  check-wiki-frontmatter.py --audit <vault_dir> --json # 机器可读
   check-wiki-frontmatter.py --suggest <file.md>        # 按路径/类型推断建议层级
+  check-wiki-frontmatter.py ... --policy <policy.json> # 显式指定机器口径（默认自动查找）
 
-层级语义（references/setup.md 记忆分层原则）：
-  L0 原始记录   .goo/logs、raw/、journal/daily —— 不进 Subagent 默认上下文
-  L1 原子事实   execution/、findings/、step 报告
-  L2 场景知识   lessons/、references/、concepts/、tasks/
-  L3 项目总览   项目入口 <slug>.md、operations.md —— 主 Agent 启动时读
+层级语义（**现代口径**，数字越大越原始/越冷；0.27.0 `c7524eb` 起翻转）：
+  L0 项目总览   <slug>.md、operations.md、跨项目元教训 —— 最热，启动必读
+  L1 场景知识   lessons/、references/、concepts/、tasks/、domains/ —— 默认层
+  L2 原子事实   execution/（提炼后）、findings/、reports/、code-graph/
+  L3 原始记录   .goo/logs、raw/、journal/、execution/record.md、evidence-index
+
+**口径不在这份脚本里。** 唯一事实源是 Goo-wiki 仓库的 `<vault>/memory/`：
+  - `memory/index.md` —— 四层定义与口径历史（为什么这么分）
+  - `memory/rules.md` —— 写笔记时的可执行规则
+  - `memory/policy.json` —— 机器可读口径（本脚本的 `--audit` / `--suggest` 直读它）
+本文件只保留**同构内置兜底**（读不到 policy.json 时使用）。改口径改 `policy.json`，
+不要改这里的表 —— 否则会出现「两个检查器对同一篇笔记给出不同层级」的静默漂移。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 VALID_LAYERS = {"L0", "L1", "L2", "L3"}
 
@@ -51,42 +60,106 @@ def is_infra(rel: str) -> bool:
     parts = rel.split("/")
     return len(parts) <= 2 and parts[-1] in INFRA_NAMES
 
-# 路径片段 -> 建议层级（**按顺序匹配，先命中先用，所以更具体的放前面**）
+# ── 机器口径：唯一事实源是 Goo-wiki 的 <vault>/memory/policy.json ────────────
 #
-# 层语义（数字越大越原始，与 CPU 缓存 / TencentDB Agent Memory 一致）：
-#   L0 profile    项目总览   KB 级，启动必读      最热
-#   L1 knowledge  场景知识   MB 级，默认读取
-#   L2 fact       原子事实   GB 级，按需查证
-#   L3 raw        原始记录   大而冷，只做追溯      最冷
-#
-# ⚠ 路径推断是**兜底建议**，不是判定标准。实测冲突率约 9%，
-# 剩余冲突是语义边界（短修复记录 vs 有分析价值的任务页），需人工定。
-LAYER_HINTS: list[tuple[str, str]] = [
-    # ── L3：原始记录，只有追溯价值 ──
-    ("/raw/", "L3"),
-    ("/journal/", "L3"),               # daily + weekly 都是原始记录
-    ("/logs/", "L3"),
-    ("/execution/record.md", "L3"),         # 执行流水原文（未提炼）
-    ("/execution/evidence-index.md", "L3"), # 证据索引，仍是原始材料
-    ("/execution/transcript", "L3"),
-    # ── L2：原子事实，只有查证价值 ──
-    ("/execution/", "L2"),             # 提炼过的执行结论
-    ("/findings/", "L2"),
-    ("/evidence/", "L2"),
-    # ── L1：场景知识，有复用价值（默认层）──
-    ("/lessons/", "L1"),
-    ("/references/", "L1"),
-    ("/concepts/", "L1"),
-    ("/tasks/", "L1"),
-    ("/archive/", "L1"),
-]
+# 为什么脚本里不再自带一份 LAYER_HINTS
+# ------------------------------------
+# 记忆分层口径在 Goo-wiki 的 `memory/` 下维护（index.md 讲为什么、rules.md 讲
+# 怎么写、policy.json 是机器可读的唯一口径）。脚本自带一份的后果实测过：
+# 两边对 51 篇笔记给出不同层级（`*/reports/`、`*/code-graph/` 只在 policy 里有，
+# `/archive/` 只在脚本里有），而检查器自己不会报「我和 policy 不一致」。
+# 所以这里只留**同构内置兜底**（读不到 policy.json 时用），字段名与 policy.json 一致。
 
-# 文件名模式 -> 层级（用于 tasks/task-xxx.md 这类任务页：结论 → L1）
-FILENAME_HINTS: list[tuple[str, str]] = [
-    # 任务页实测 14 篇 L2 / 4 篇 L1 —— 多数含可复用的分析与决策，默认 L2。
-    # 少数纯修复记录会被人工标为 L1，这种语义差异路径推断不了，属正常冲突。
-    ("/operations.md", "L0"),       # 项目运维手册 → 项目总览
-]
+POLICY_REL = Path("memory") / "policy.json"
+
+DEFAULT_POLICY: dict[str, Any] = {
+    "semantics": "modern",
+    "layers": {
+        "L0": {"name": "项目总览"},
+        "L1": {"name": "场景知识"},
+        "L2": {"name": "原子事实"},
+        "L3": {"name": "原始记录"},
+    },
+    "required_fields": ["memory_layer", "title"],
+    "path_hints": [
+        {"match": "/raw/", "layer": "L3"},
+        {"match": "/journal/", "layer": "L3"},
+        {"match": "/logs/", "layer": "L3"},
+        {"match": "/execution/record.md", "layer": "L3"},
+        {"match": "/execution/evidence-index.md", "layer": "L3"},
+        {"match": "/execution/", "layer": "L2"},
+        {"match": "/findings/", "layer": "L2"},
+        {"match": "/evidence/", "layer": "L2"},
+        {"match": "/reports/", "layer": "L2"},
+        {"match": "/code-graph/", "layer": "L2"},
+        {"match": "/memory/audit.md", "layer": "L2"},
+        {"match": "/memory/", "layer": "L0"},
+        {"match": "/operations.md", "layer": "L0"},
+        {"match": "/lessons/", "layer": "L1"},
+        {"match": "/references/", "layer": "L1"},
+        {"match": "/concepts/", "layer": "L1"},
+        {"match": "/tasks/", "layer": "L1"},
+        {"match": "/domains/", "layer": "L1"},
+    ],
+    "defaults": {"fallback_layer": "L1", "project_entry_layer": "L0"},
+    "exclude_paths": ["memory/"],
+}
+
+# 项目入口的两种并存写法（根目录模式 / 子目录模式），语义固定为 L0
+PROJECT_ENTRY_PATTERNS = (
+    re.compile(r"^wiki/projects/([^/]+)\.md$"),
+    re.compile(r"^wiki/projects/([^/]+)/\1\.md$"),
+)
+
+
+def load_policy(wiki_dir: Path | str | None = None, explicit: str | None = None) -> dict[str, Any]:
+    """读 Goo-wiki 的 `memory/policy.json`；读不到就用 ``DEFAULT_POLICY``。
+
+    解析顺序：`--policy` > 环境变量 GOO_MEMORY_POLICY > 从 wiki_dir 向上找
+    `memory/policy.json`（容纳 vault 根与 wiki/ 两种传参）> 内置兜底。
+    """
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    env = os.environ.get("GOO_MEMORY_POLICY")
+    if env:
+        candidates.append(Path(env).expanduser())
+    if wiki_dir is not None:
+        # 从给定目录逐级向上找：传进来的可能是 wiki/、也可能是某个深目录
+        # （`--suggest` 常传笔记自身所在目录），固定「向上两层」会漏掉 vault 根。
+        base = Path(wiki_dir).expanduser().resolve()
+        for up in [base, *list(base.parents)[:7]]:
+            candidates.append(up / POLICY_REL)
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict) and isinstance(data.get("path_hints"), list):
+            merged = dict(DEFAULT_POLICY)
+            merged.update(data)
+            return merged
+    return dict(DEFAULT_POLICY)
+
+
+def is_excluded(rel: str, policy: dict[str, Any] | None = None) -> bool:
+    """policy.exclude_paths 命中的路径不纳入统计（如 `memory/` 规则自身）。"""
+    for prefix in (policy or DEFAULT_POLICY).get("exclude_paths") or []:
+        text = str(prefix or "")
+        if text and (rel == text.rstrip("/") or rel.startswith(text)):
+            return True
+    return False
+
+
+def project_entry_slug(rel: str) -> str | None:
+    """项目入口文件 -> 项目 slug（两种写法都认）。"""
+    for pattern in PROJECT_ENTRY_PATTERNS:
+        match = pattern.match(rel)
+        if match:
+            return match.group(1)
+    return None
 
 
 def read_frontmatter(text: str) -> dict[str, str] | None:
@@ -125,40 +198,50 @@ def rel_from_path(path: Path) -> str:
     return path.name
 
 
-def suggest_layer(rel: str, fm: dict[str, str] | None, text: str) -> str:
-    """按路径推断层级；项目入口文件优先判为 L3。"""
-    fm = fm or {}
-    if fm.get("type") == "project":
-        return "L0"
-    # 项目入口有两种并存的写法，**都必须判 L0**：
-    #   根目录模式：wiki/projects/<slug>.md
-    #   子目录模式：wiki/projects/<slug>/<slug>.md   ← Goo-wiki CLAUDE.md 的新约定
-    # 只认根目录模式时，子目录入口会落到默认 L1（实测 autogoo/autogoo.md 被判 L1，
-    # 但它就是项目总览，本该最热）。
-    if re.match(r"^wiki/projects/[^/]+\.md$", rel):
-        return "L0"
-    if re.match(r"^wiki/projects/([^/]+)/\1\.md$", rel):
-        return "L0"
+def suggest_layer(
+    rel: str,
+    fm: dict[str, str] | None,
+    text: str = "",
+    policy: dict[str, Any] | None = None,
+) -> str:
+    """按 policy.json 的 path_hints 推断层级（只做兜底建议，不是判定标准）。
 
-    # Goo-wiki 新增的目录语义
-    if re.match(r"^wiki/domains/[^/]+\.md$", rel):
-        return "L1"          # 领域页：跨项目的主线问题与关键概念，属场景知识
-    if re.match(r"^wiki/logs/[^/]+\.md$", rel):
-        return "L3"          # 领域日志索引：由脚本生成的活动流水，属原始记录
-    if re.match(r"^wiki/maps/", rel):
-        return "L1"          # 导航地图：帮助定位，属场景知识
-    if rel.endswith("/operations.md"):
-        return "L3"
-    for needle, layer in FILENAME_HINTS:
-        if needle in f"/{rel}":
-            return layer
-    for needle, layer in LAYER_HINTS:
-        if needle in f"/{rel}":
-            return layer
-    return "L1"
+    `text` 保留在签名里是为了兼容既有调用方与将来可能的语义判断；当前不参与推断。
+
+    项目入口（`type: project` 或两种路径写法）优先判为 policy 的
+    `defaults.project_entry_layer`（默认 L0）—— 语义固定，与文件名无关。
+    """
+    active = policy or DEFAULT_POLICY
+    defaults = active.get("defaults") or {}
+    entry_layer = str(defaults.get("project_entry_layer") or "L0")
+    fallback = str(defaults.get("fallback_layer") or "L1")
+
+    meta = fm or {}
+    if project_entry_slug(rel):
+        return entry_layer
+
+    # 顺序有意义：**路径优先于 frontmatter 的 type**。
+    # 实测 6 篇 lessons/tasks 页写着 `type: project`（多半是复制粘贴的错值），
+    # 若让 type 先行，检查器就会把「错值」当成 L0 并盖住真实的路径语义，
+    # 与 Goo-wiki memory/policy.json 的判定也永久对不上。
+    target = f"/{rel}"
+    for hint in active.get("path_hints") or []:
+        needle = str(hint.get("match") or "")
+        if needle and needle in target:
+            layer = str(hint.get("layer") or fallback)
+            return layer if layer in VALID_LAYERS else fallback
+
+    # 路径未命中任何提示时，type: project 是「这是一页项目总览」的语义补充信号
+    if meta.get("type") == "project":
+        return entry_layer
+    return fallback
 
 
-def check_file(path: Path, wiki_root: Path | None = None) -> list[str]:
+def check_file(
+    path: Path,
+    wiki_root: Path | None = None,
+    policy: dict[str, Any] | None = None,
+) -> list[str]:
     """返回问题列表（空表示合规）。"""
     problems: list[str] = []
     try:
@@ -170,11 +253,14 @@ def check_file(path: Path, wiki_root: Path | None = None) -> list[str]:
     if fm is None:
         return [f"{path}: 缺少 frontmatter（归档笔记必须有 --- 块）"]
 
+    if policy is None:
+        policy = load_policy(path.parent)
+
     layer = fm.get("memory_layer")
     if not layer:
-        rel = path.relative_to(wiki_root).as_posix() if wiki_root else path.name
+        rel = path.relative_to(wiki_root).as_posix() if wiki_root else rel_from_path(path)
         problems.append(
-            f"{path}: 缺少 memory_layer（建议 {suggest_layer(rel, fm, text)}）"
+            f"{path}: 缺少 memory_layer（建议 {suggest_layer(rel, fm, text, policy)}）"
         )
     elif layer not in VALID_LAYERS:
         problems.append(f"{path}: memory_layer 非法值 {layer!r}（必须是 L0/L1/L2/L3）")
@@ -185,8 +271,9 @@ def check_file(path: Path, wiki_root: Path | None = None) -> list[str]:
     return problems
 
 
-def audit(wiki_root: Path) -> dict:
+def audit(wiki_root: Path, policy: dict[str, Any] | None = None) -> dict:
     """全库审计。只读，不修改任何文件。"""
+    active = policy or load_policy(wiki_root)
     md_files = [
         p for p in wiki_root.rglob("*.md")
         if ".obsidian" not in p.parts and ".git" not in p.parts
@@ -194,11 +281,17 @@ def audit(wiki_root: Path) -> dict:
     missing: list[dict] = []
     invalid: list[str] = []
     layer_counts: dict[str, int] = {"L0": 0, "L1": 0, "L2": 0, "L3": 0, "(missing)": 0}
-    project_l3: dict[str, int] = {}
+    # 项目入口 -> 实际层（一个 slug 可能有多种入口写法，取最「高」的那个：
+    # 任一处标了 L0 就算这个项目有 L0 总览）
+    entry_layers: dict[str, list[str]] = {}
+    excluded = 0
 
     for p in md_files:
         rel = p.relative_to(wiki_root).as_posix()
         if is_infra(rel):
+            continue
+        if is_excluded(rel, active):
+            excluded += 1
             continue
         try:
             text = p.read_text(encoding="utf-8", errors="ignore")
@@ -210,33 +303,41 @@ def audit(wiki_root: Path) -> dict:
             layer_counts["(missing)"] += 1
             missing.append({
                 "path": rel,
-                "suggested": suggest_layer(rel, fm, text),
+                "suggested": suggest_layer(rel, fm, text, active),
             })
         elif layer not in VALID_LAYERS:
             invalid.append(f"{rel}: {layer}")
         else:
             layer_counts[layer] += 1
 
-        # 统计每个项目的 L3 覆盖
-        m = re.match(r"^wiki/projects/([^/]+)/", rel) or re.match(r"^wiki/projects/([^/]+)\.md$", rel)
-        if m:
-            slug = m.group(1)
-            project_l3.setdefault(slug, 0)
-            if layer == "L3":
-                project_l3[slug] += 1
+        slug = project_entry_slug(rel)
+        if slug:
+            entry_layers.setdefault(slug, []).append(layer or "(missing)")
 
+    def entry_layer(layers: list[str]) -> str:
+        for candidate in ("L0", "L1", "L2", "L3"):
+            if candidate in layers:
+                return candidate
+        return "(missing)"
+
+    entries = {slug: entry_layer(layers) for slug, layers in sorted(entry_layers.items())}
     counted = len(md_files) - sum(
-        1 for p in md_files if is_infra(p.relative_to(wiki_root).as_posix())
+        1
+        for p in md_files
+        if is_infra(p.relative_to(wiki_root).as_posix())
+        or is_excluded(p.relative_to(wiki_root).as_posix(), active)
     )
     return {
         "total": counted,
-        "infra_excluded": len(md_files) - counted,
+        "infra_excluded": len(md_files) - counted - excluded,
+        "excluded_by_policy": excluded,
         "layer_counts": layer_counts,
         "missing_count": len(missing),
         "missing": missing,
         "invalid": invalid,
-        "projects_without_l3": sorted(k for k, v in project_l3.items() if v == 0),
-        "project_l3": dict(sorted(project_l3.items())),
+        # 旧口径（0.27.0 前 L3=项目总览）下这里统计的是 L3；现代口径看 L0。
+        "project_entries": entries,
+        "projects_without_l0": sorted(slug for slug, layer in entries.items() if layer != "L0"),
     }
 
 
@@ -248,11 +349,17 @@ def main() -> int:
     g.add_argument("--suggest", metavar="FILE", help="按路径/类型推断建议层级")
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     ap.add_argument("--strict", action="store_true", help="审计时有缺失即退出 1")
+    ap.add_argument(
+        "--policy",
+        metavar="POLICY_JSON",
+        help="机器口径文件（默认从 <vault>/memory/policy.json 自动查找）",
+    )
     args = ap.parse_args()
+    policy = load_policy(None, args.policy)
 
     if args.check:
         path = Path(args.check).expanduser()
-        problems = check_file(path)
+        problems = check_file(path, policy=load_policy(path.parent, args.policy))
         if problems:
             for msg in problems:
                 print(msg, file=sys.stderr)
@@ -264,14 +371,14 @@ def main() -> int:
         path = Path(args.suggest).expanduser()
         text = path.read_text(encoding="utf-8", errors="ignore")
         fm = read_frontmatter(text)
-        print(suggest_layer(rel_from_path(path), fm, text))
+        print(suggest_layer(rel_from_path(path), fm, text, load_policy(path.parent, args.policy)))
         return 0
 
     wiki_root = Path(args.audit).expanduser()
     if not wiki_root.is_dir():
         print(f"不是目录: {wiki_root}", file=sys.stderr)
         return 2
-    report = audit(wiki_root)
+    report = audit(wiki_root, load_policy(wiki_root, args.policy))
 
     if args.json:
         # missing 可能很长，JSON 模式下默认截断到 50 条，避免爆输出
@@ -291,10 +398,12 @@ def main() -> int:
             print(f"\n缺失 memory_layer（{report['missing_count']}），前 20 条:")
             for item in report["missing"][:20]:
                 print(f"  {item['path']}  → 建议 {item['suggested']}")
-        if report["projects_without_l3"]:
-            print(f"\n没有 L3 项目总览的项目（{len(report['projects_without_l3'])}）:")
-            for slug in report["projects_without_l3"][:20]:
-                print(f"  {slug}")
+        if report["excluded_by_policy"]:
+            print(f"\n按 policy.exclude_paths 排除 {report['excluded_by_policy']} 篇（如 memory/ 规则自身）")
+        if report["projects_without_l0"]:
+            print(f"\n项目入口未标 L0 的项目（{len(report['projects_without_l0'])}）:")
+            for slug in report["projects_without_l0"][:20]:
+                print(f"  {slug}  → 当前 {report['project_entries'][slug]}")
 
     if args.strict and (report["missing_count"] or report["invalid"]):
         return 1

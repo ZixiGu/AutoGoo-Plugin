@@ -93,3 +93,24 @@ describe("DEFAULT_WIKI_PATHS_BY_STEP_TYPE", () => {
     }
   });
 });
+
+describe("MEMORY_LAYERING_RULE", () => {
+  it("注入给 agent 的分层说明必须是现代口径（数字越大越原始）", async () => {
+    // 实测过的失效：SKILL.md 已翻转到现代口径，但这份**注入每个 agent system prompt**
+    // 的常量仍是旧口径（L0 原始记录 … L3 项目总览），两处相反且无人发现。
+    const { MEMORY_LAYERING_RULE } = await import("../constants.js");
+    const l0 = MEMORY_LAYERING_RULE.split("\n").find((l) => l.startsWith("- L0"));
+    const l3 = MEMORY_LAYERING_RULE.split("\n").find((l) => l.startsWith("- L3"));
+    assert.ok(l0, "缺少 L0 行");
+    assert.ok(l3, "缺少 L3 行");
+    assert.match(l0!, /项目总览/, `L0 应描述「项目总览」，实际：${l0}`);
+    assert.match(l3!, /原始记录/, `L3 应描述「原始记录」，实际：${l3}`);
+    assert.doesNotMatch(l0!, /原始记录/, "L0 不能写成旧口径的「原始记录」");
+  });
+
+  it("必须指向 Goo-wiki 的 memory/ 作为口径唯一出处", async () => {
+    const { MEMORY_LAYERING_RULE } = await import("../constants.js");
+    assert.match(MEMORY_LAYERING_RULE, /memory\/index\.md/);
+    assert.match(MEMORY_LAYERING_RULE, /memory\/policy\.json/);
+  });
+});

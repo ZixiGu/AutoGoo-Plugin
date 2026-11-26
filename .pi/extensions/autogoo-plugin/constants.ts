@@ -275,16 +275,25 @@ export const ON_DEMAND_RECALL_RULE = `
 `.trim();
 
 /**
- * 记忆分层原则 — L0/L1/L2/L3 四层;Subagent 默认 L2;frontmatter 必含 memory_layer。
- * 镜像 Claude Code SKILL.md L56-71。
+ * 记忆分层原则 — L0/L1/L2/L3 四层；**数字越大越原始**（0.27.0 `c7524eb` 起翻转）。
+ * 镜像 Claude Code SKILL.md 的「记忆分层原则」；口径的**唯一出处**是 Goo-wiki 的
+ * `memory/index.md`（定义）+ `memory/rules.md`（怎么写）+ `memory/policy.json`（机器口径）。
+ *
+ * 历史：这里曾长期写着旧口径（L0 原始记录 … L3 项目总览），而 SKILL.md 已是现代口径 ——
+ * 结果是**每个 agent 的 system prompt 都在注入反着的分层**，却没任何检查能发现。
  */
 export const MEMORY_LAYERING_RULE = `
 ## 记忆分层原则(Memory Layering)
-- L0 原始记录 (.goo/logs/) — 不进 Subagent 默认上下文
-- L1 原子事实 (step 报告关键决策段)
-- L2 场景知识 (任务页/lessons/references) — Subagent 默认读取
-- L3 项目总览 (项目入口/高频 lessons) — 主 Agent 启动时读取
-- 归档笔记 frontmatter 必含 memory_layer: L0|L1|L2|L3
+
+编号方向：**数字越大越原始、越冷**（对齐 CPU 缓存）。口径以 Goo-wiki 的
+\`memory/index.md\` 为准，机器可读版本是 \`memory/policy.json\`。
+
+- L0 项目总览（项目入口 <slug>.md、operations.md）— 最热，主 Agent 启动必读
+- L1 场景知识（任务页/lessons/references/concepts）— 默认层，Subagent 默认读取
+- L2 原子事实（提炼后的决策/指标/错误码、reports/、code-graph/）— 按需查证
+- L3 原始记录（.goo/logs step log、命令输出、journal/、raw/）— 只做 trace/audit
+- 归档笔记 frontmatter 必含 memory_layer: L0|L1|L2|L3；定层判据只有一句：
+  「三个月后另一个任务会来看它吗？来看它的哪一部分？」
 `.trim();
 
 /**

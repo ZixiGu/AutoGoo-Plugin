@@ -57,7 +57,7 @@ Goo-wiki 是归档笔记的目标 Obsidian vault。插件在运行时通过文�
 请回复 1/2；如果选择自定义路径，请直接写完整路径。
 ```
 
-如果用户确认或输入的 Goo-wiki 路径不存在，初始化脚本必须自动创建该目录，并补齐 `CLAUDE.md`、`log.md`、`wiki/projects/`、`wiki/concepts/`、`wiki/questions/`、`journal/daily/`、`journal/weekly/` 基础结构。路径不存在不是 fallback 条件；只有创建失败、权限不足或后续归档时 wiki 不可写，才使用 `.goo/obsidian/` fallback。
+如果用户确认或输入的 Goo-wiki 路径不存在，初始化脚本必须自动创建该目录，并补齐 `CLAUDE.md`、`log.md`、`wiki/projects/`、`wiki/concepts/`、`wiki/questions/`、`journal/daily/`、`journal/weekly/` 基础结构，**以及记忆系统骨架**（见下节「记忆系统 `memory/`」）。路径不存在不是 fallback 条件；只有创建失败、权限不足或后续归档时 wiki 不可写，才使用 `.goo/obsidian/` fallback。
 
 预检查只能作为交互辅助，不得打断初始化。检查现有 `.goo/config.json`、`.goo/`、git remote、wiki 文件等状态时，每个可能失败的命令都必须独立容错，例如 `ls .goo/config.json 2>/dev/null || true`、`git remote -v 2>/dev/null || true`。如果可选探测失败，只提示"未检测到/暂不可用"，继续询问用户。
 
@@ -761,6 +761,31 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py --cached-onl
 
 交互式下它作为提示默认值；非交互（`--yes` / 无 TTY）下直接采用，不再报错退出。pi 扩展在检测到已配置 `wiki_dir` 时，会把它作为首个 `(Recommended)` 选项。
 - **三条 CLAUDE.md 区分**：`$wiki_dir/CLAUDE.md` 是 Goo-wiki vault 自身说明；`~/.claude/CLAUDE.md` 是用户级 agent 指针；`<项目根>/CLAUDE.md` 是项目级 agent 指针。
+
+## 记忆系统 `memory/`（创库时生成）
+
+`goo-init` 建库时从 `skills/auto-goo/templates/` 复制记忆系统骨架，**只在缺失时创建、绝不覆盖已有文件**
+（已存在的口径文件属于用户资产）：
+
+```
+<vault>/memory/index.md                   四层定义 + 口径历史（唯一口径出处）
+<vault>/memory/rules.md                   写笔记时的可执行规则（定层判据/路径映射/例外/回填流程）
+<vault>/memory/policy.json                机器可读口径（path_hints / defaults / exclude_paths / 必填字段）
+<vault>/scripts/audit-memory-layer.py     覆盖率审计 → 覆盖写 memory/audit.md（只读扫描，不改笔记）
+<vault>/scripts/backfill-memory-layer.py  机械回填（默认只预览，--apply 才写；只碰 frontmatter；幂等）
+```
+
+`memory/` 与 `raw/`、`journal/`、`wiki/` 同级放在 vault 根：它是 **schema 层**而不是内容层，
+且被 `policy.json` 的 `exclude_paths` 排除在统计之外（避免「规则给自己打分」）。
+
+模板源文件在 `skills/auto-goo/templates/memory/` 与 `skills/auto-goo/templates/scripts/`。
+新 vault 建好后可直接跑：
+
+```bash
+python3 <vault>/scripts/audit-memory-layer.py --print
+python3 <vault>/scripts/backfill-memory-layer.py --apply
+python3 <vault>/scripts/audit-memory-layer.py
+```
 
 ## 记忆分层（memory_layer）判定标准
 

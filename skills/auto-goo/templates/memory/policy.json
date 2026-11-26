@@ -1,0 +1,131 @@
+{
+  "semantics": "modern",
+  "semantics_since": "0.27.0 (c7524eb)",
+  "note": "唯一机器可读口径。scripts/audit-memory-layer.py 读本文件；改这里即改检查逻辑，不要在脚本里另抄一份。",
+  "updated": "2026-11-26",
+  "layers": {
+    "L0": {
+      "name": "项目总览",
+      "capacity": "KB",
+      "access": "最热，启动必读"
+    },
+    "L1": {
+      "name": "场景知识",
+      "capacity": "MB",
+      "access": "默认层"
+    },
+    "L2": {
+      "name": "原子事实",
+      "capacity": "GB",
+      "access": "按需查证"
+    },
+    "L3": {
+      "name": "原始记录",
+      "capacity": "大而冷",
+      "access": "只做追溯"
+    }
+  },
+  "required_fields": [
+    "memory_layer",
+    "title"
+  ],
+  "infra_files": [
+    "CLAUDE.md",
+    "AGENTS.md",
+    "README.md",
+    "index.md",
+    "log.md",
+    "home.md",
+    "obsidian-cli.md",
+    "llm-wiki.md",
+    "llm-wiki.zh.md"
+  ],
+  "path_hints": [
+    {
+      "match": "/raw/",
+      "layer": "L3"
+    },
+    {
+      "match": "/journal/",
+      "layer": "L3"
+    },
+    {
+      "match": "/logs/",
+      "layer": "L3"
+    },
+    {
+      "match": "/execution/record.md",
+      "layer": "L3"
+    },
+    {
+      "match": "/execution/evidence-index.md",
+      "layer": "L3"
+    },
+    {
+      "match": "/execution/",
+      "layer": "L2"
+    },
+    {
+      "match": "/findings/",
+      "layer": "L2"
+    },
+    {
+      "match": "/evidence/",
+      "layer": "L2"
+    },
+    {
+      "match": "/reports/",
+      "layer": "L2"
+    },
+    {
+      "match": "/code-graph/",
+      "layer": "L2"
+    },
+    {
+      "match": "/memory/audit.md",
+      "layer": "L2"
+    },
+    {
+      "match": "/memory/",
+      "layer": "L0"
+    },
+    {
+      "match": "/operations.md",
+      "layer": "L0"
+    },
+    {
+      "match": "/lessons/",
+      "layer": "L1"
+    },
+    {
+      "match": "/references/",
+      "layer": "L1"
+    },
+    {
+      "match": "/concepts/",
+      "layer": "L1"
+    },
+    {
+      "match": "/tasks/",
+      "layer": "L1"
+    },
+    {
+      "match": "/domains/",
+      "layer": "L1"
+    }
+  ],
+  "defaults": {
+    "fallback_layer": "L1",
+    "project_entry_layer": "L0"
+  },
+  "exceptions": [
+    "wiki/projects/<slug>.md 与 wiki/projects/<slug>/<slug>.md 一律 L0（即使文件名不含 operations）",
+    "任务页 tasks/ 内容若纯为结论/决策、不再需要做法复现，可人工提升到 L2，并在页内注明理由",
+    "notes/、inbox/ 未整理材料不入统计，不要求 memory_layer"
+  ],
+  "exclude_paths": [
+    "memory/",
+    ".goo/"
+  ],
+  "placement_note": "memory/ 位于仓库根（与 raw/ journal/ wiki/ 同级），是 schema/规则层，不是内容层；不自评，统计时排除。"
+}

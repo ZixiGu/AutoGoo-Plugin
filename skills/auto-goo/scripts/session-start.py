@@ -28,6 +28,7 @@ def main() -> int:
     # thread 维度健康检查（2026-10-08）：区分当前 thread 与历史 thread，
     # 提示可能已中断/状态不一致的 DAG。Claude Code hook 无法交互提问，
     # 只能给出结论与下一步命令；交互式确认由 pi 扩展的 session_start 完成。
+    print_memory_system(wiki_dir)
     print_plan_health(cwd)
     print_thread_doctor(cwd)
 
@@ -48,6 +49,23 @@ def main() -> int:
     # 真正的检查由 goo-update-check.py 在别处（pi 启动时异步）完成并写缓存。
     print_update_notice()
     return 0
+
+
+def print_memory_system(wiki_dir: Path) -> None:
+    """一行指向记忆分层的口径出处（`<vault>/memory/`）。
+
+    为什么必须在启动时打：分层口径页写好了但没人告诉 agent 它在哪，就等于不存在。
+    实测过的失效：插件注入的 MEMORY_LAYERING_RULE 与 wiki 里的口径相反，两处都没人读对方。
+    只打一行 —— 启动上下文预算很小，完整规则在 memory/index.md 里按需读。
+    """
+    memory_dir = wiki_dir / "memory"
+    index = memory_dir / "index.md"
+    if index.is_file():
+        print(f"AutoGoo: memory={memory_dir}（分层口径唯一出处：memory/index.md → rules.md / policy.json）")
+        return
+    if (wiki_dir / "CLAUDE.md").is_file():
+        print("AutoGoo: memory=missing（vault 里还没有 memory/ 口径页）")
+        print("AutoGoo:   补齐：/auto-goo:goo-init --project（会创建 memory/{index,rules,policy.json}）")
 
 
 def print_plan_health(cwd: Path) -> None:

@@ -1,6 +1,7 @@
 import json
 import importlib.util
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -447,3 +448,82 @@ def test_wiki_audit_reports_project_entries_per_modern_semantics(tmp_path: Path)
     assert "projects_without_l3" not in report, "旧口径字段不得残留"
     assert report["projects_without_l0"] == ["bad"], report["projects_without_l0"]
     assert report["project_entries"]["done"] == "L0"
+
+
+def test_session_start_points_to_memory_system(tmp_path: Path):
+    """启动上下文必须告诉 agent「口径页在哪」。
+
+    背景：`memory/index.md` 写好了，但没有任何启动注入指向它；而插件自己的
+    MEMORY_LAYERING_RULE 曾长期是旧口径 —— 两边都没人读对方。一行指针是
+    最低成本的接线（完整规则仍按需读，不占启动预算）。
+    """
+    script = SCRIPTS / "session-start.py"
+    vault = tmp_path / "vault"
+    (vault / "memory").mkdir(parents=True)
+    (vault / "memory" / "index.md").write_text("---\ntitle: M\n---\n", encoding="utf-8")
+    (vault / "CLAUDE.md").write_text("# vault\n", encoding="utf-8")
+    project = tmp_path / "proj"
+    (project / ".goo").mkdir(parents=True)
+    (project / ".goo" / "config.json").write_text(
+        json.dumps({"wiki_dir": str(vault)}), encoding="utf-8"
+    )
+
+    r = subprocess.run(
+        ["python3", str(script)], cwd=str(project),
+        capture_output=True, text=True, timeout=120,
+    )
+    assert r.returncode == 0, r.stderr
+    assert "memory/index.md" in r.stdout, r.stdout
+
+    # 口径页缺失时必须给出可操作提示，而不是静默
+    (vault / "memory" / "index.md").unlink()
+    r = subprocess.run(
+        ["python3", str(script)], cwd=str(project),
+        capture_output=True, text=True, timeout=120,
+    )
+    assert "memory=missing" in r.stdout, r.stdout
+    assert "goo-init" in r.stdout
+
+
+def test_backfill_template_is_idempotent_and_frontmatter_only(tmp_path: Path):
+    """机械回填：幂等、只碰 frontmatter、raw/ 不动。
+
+    这是新 vault 的入口能力（goo-init 复制到 <vault>/scripts/），所以模板本身要有测试。
+    """
+    tpl = ROOT / "skills/auto-goo/templates"
+    vault = tmp_path / "vault"
+    (vault / "memory").mkdir(parents=True)
+    (vault / "scripts").mkdir(parents=True)
+    shutil.copy(tpl / "memory" / "policy.json", vault / "memory" / "policy.json")
+    shutil.copy(tpl / "scripts" / "audit-memory-layer.py", vault / "scripts" / "audit-memory-layer.py")
+    shutil.copy(tpl / "scripts" / "backfill-memory-layer.py", vault / "scripts" / "backfill-memory-layer.py")
+
+    lesson = vault / "wiki/projects/demo/lessons/a.md"
+    lesson.parent.mkdir(parents=True)
+    body = "# 标题\n\n正文第一行\n第二行\n"
+    lesson.write_text("---\ntitle: A\n---\n\n" + body, encoding="utf-8")
+    entry = vault / "wiki/projects/demo.md"
+    entry.write_text("---\ntitle: Demo\nmemory_layer: L3\n---\n", encoding="utf-8")
+    raw = vault / "raw/notes/x.md"
+    raw.parent.mkdir(parents=True)
+    raw.write_text("纯原文\n", encoding="utf-8")
+
+    def run(*args: str):
+        return subprocess.run(
+            ["python3", "scripts/backfill-memory-layer.py", *args],
+            cwd=str(vault), capture_output=True, text=True, timeout=120,
+        )
+
+    r = run("--apply")
+    assert r.returncode == 0, r.stderr
+    text = lesson.read_text(encoding="utf-8")
+    assert "memory_layer: L1" in text
+    assert text.endswith(body), "正文必须逐字保留"
+    assert "memory_layer: L0" in entry.read_text(encoding="utf-8"), "项目入口必须纠到 L0"
+    assert raw.read_text(encoding="utf-8") == "纯原文\n", "raw/ 是不可变来源，不得新增 frontmatter"
+
+    before = {p: p.read_text(encoding="utf-8") for p in (lesson, entry, raw)}
+    r = run("--apply", "--json")
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["changed"] == 0, "二次运行必须零改动（幂等）"
+    assert {p: p.read_text(encoding="utf-8") for p in (lesson, entry, raw)} == before

@@ -3393,6 +3393,69 @@ else
   fail "召回不支持 --layer —— memory_layer 填了也不会被使用"
 fi
 
+# ── 记忆系统 memory/（0.35.0 起）：口径必须被"读得到"，不只是"写好了" ──
+echo ""
+echo "── 36b. 记忆系统 memory/ 接线 ──"
+
+TPLM="$ROOT/skills/auto-goo/templates/memory"
+for _f in "$TPLM/index.md" "$TPLM/rules.md" "$TPLM/policy.json" \
+          "$ROOT/skills/auto-goo/templates/scripts/audit-memory-layer.py" \
+          "$ROOT/skills/auto-goo/templates/scripts/backfill-memory-layer.py"; do
+  if [[ ! -f "$_f" ]]; then
+    fail "缺少记忆系统模板: ${_f#$ROOT/}（新 vault 会建出没有口径的空壳）"
+  fi
+done
+if [[ -f "$TPLM/policy.json" ]] && python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get('path_hints') else 1)" "$TPLM/policy.json"; then
+  pass "记忆系统模板齐全且 policy.json 可解析"
+else
+  fail "templates/memory/policy.json 不可解析或缺 path_hints"
+fi
+
+# 创库必须真的产出 memory/（端到端，不看代码看结果）
+_vault="$(mktemp -d)"
+_home="$(mktemp -d)"
+( cd "$_vault" && HOME="$_home" bash "$ROOT/skills/auto-goo/scripts/goo-init.sh" --user --yes --wiki-dir "$_vault/vault" >/dev/null 2>&1 ) || true
+_missing=""
+for _f in memory/index.md memory/rules.md memory/policy.json scripts/audit-memory-layer.py scripts/backfill-memory-layer.py; do
+  [[ -f "$_vault/vault/$_f" ]] || _missing="$_missing $_f"
+done
+if [[ -z "$_missing" ]]; then
+  pass "goo-init 建库即生成 memory/ 骨架（口径页 + policy.json + 审计/回填脚本）"
+else
+  fail "goo-init 建库缺少记忆系统文件:$_missing"
+fi
+# 幂等：已有口径文件不得被覆盖
+printf '\nCUSTOM-MARK\n' >> "$_vault/vault/memory/policy.json" 2>/dev/null || true
+( cd "$_vault" && HOME="$_home" bash "$ROOT/skills/auto-goo/scripts/goo-init.sh" --user --yes --wiki-dir "$_vault/vault" >/dev/null 2>&1 ) || true
+if grep -q "CUSTOM-MARK" "$_vault/vault/memory/policy.json" 2>/dev/null; then
+  pass "goo-init 不覆盖已存在的口径文件（幂等）"
+else
+  fail "goo-init 覆盖了已存在的 memory/policy.json —— 用户口径被重置"
+fi
+rm -rf "$_vault" "$_home"
+
+# 召回必须扫 memory/，否则"唯一口径出处"永远进不了 packet
+if python3 -c "
+import sys; sys.path.insert(0, sys.argv[1])
+import wiki_graph; sys.exit(0 if 'memory' in wiki_graph.DEFAULT_SEARCH_PATHS else 1)
+" "$ROOT/skills/auto-goo/scripts"; then
+  pass "wiki 图索引扫描范围包含 memory/（口径页可被召回）"
+else
+  fail "DEFAULT_SEARCH_PATHS 不含 memory/ —— 口径页进不了召回"
+fi
+
+if grep -qF -- '["--search-path", "memory"]' "$ROOT/.pi/extensions/autogoo-plugin/utils/dispatch.ts"; then
+  pass "派发 packet 显式带上 memory/ 搜索路径"
+else
+  fail "派发未传 memory 搜索路径 —— 口径页不会进 Subagent 上下文"
+fi
+
+if grep -q "memory/index.md" "$ROOT/skills/auto-goo/scripts/session-start.py"; then
+  pass "会话启动打印记忆口径指针（memory/index.md）"
+else
+  fail "启动上下文没有指向 memory/ —— agent 不知道口径页在哪"
+fi
+
 # ── 37. wiki 治理脚本必须只读 ──
 # wiki 已达 800+ 篇，需要去重/过期机制，但"自动整理"的风险远大于收益：
 # 删错、合并错都是不可逆的。所以治理脚本只允许**只读扫描 + 打印建议**。

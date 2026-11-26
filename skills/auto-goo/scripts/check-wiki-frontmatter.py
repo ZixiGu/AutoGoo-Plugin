@@ -102,7 +102,7 @@ DEFAULT_POLICY: dict[str, Any] = {
         {"match": "/domains/", "layer": "L1"},
     ],
     "defaults": {"fallback_layer": "L1", "project_entry_layer": "L0"},
-    "exclude_paths": ["memory/"],
+    "exclude_paths": ["memory/", ".goo/"],
 }
 
 # 项目入口的两种并存写法（根目录模式 / 子目录模式），语义固定为 L0

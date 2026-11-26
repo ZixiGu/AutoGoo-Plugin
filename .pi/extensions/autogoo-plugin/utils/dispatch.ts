@@ -176,6 +176,10 @@ export async function generateWikiPacket(
   try {
     const wikiDir = await resolveWikiDir(cwd);
     const searchPathArgs = packet.wiki_paths.flatMap((p: string) => ["--search-path", p]);
+    // 记忆口径页（`<vault>/memory/`）总是入候选：它是 L0 的「怎么分层」权威，
+    // 与 step 类型无关。曾经它不在任何搜索路径里 —— 口径文档写好了却永远不会
+    // 进 packet，agent 只能凭记忆猜分层。
+    const memorySearchArgs = ["--search-path", "memory"];
     const r = execPython(
       WIKI_GRAPH_ASSIST_PY,
       [
@@ -184,6 +188,7 @@ export async function generateWikiPacket(
         "--query", query,
         "--title", `step-${step.id}-dispatch`,
         ...searchPathArgs,
+        ...memorySearchArgs,
         // 按 step 声明的 memory_layer 过滤（声明的层是下限，向抽象层展开）。
         // 曾经这里完全没传 --layer —— memory_layer 算出来了却无人消费，
         // audit 与 review 类 step 拿到的 packet 内容一模一样。

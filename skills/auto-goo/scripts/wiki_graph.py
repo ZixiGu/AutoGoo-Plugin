@@ -65,7 +65,16 @@ from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
 INDEX_VERSION = 1
-DEFAULT_SEARCH_PATHS = ("wiki/projects", "wiki/concepts", "wiki/questions", "journal/weekly", "log.md")
+# 记忆口径页（`<vault>/memory/`）必须在扫描范围内，否则「唯一口径出处」不会被
+# 图索引、也不会进 dispatch packet —— 有文件没人读，等于不存在（实测过的失效模式）。
+DEFAULT_SEARCH_PATHS = (
+    "wiki/projects",
+    "wiki/concepts",
+    "wiki/questions",
+    "journal/weekly",
+    "memory",
+    "log.md",
+)
 LINK_RE = re.compile(r"\[\[([^\]|#]*)(?:[#|][^\]]*)?\]\]")
 FENCE_RE = re.compile(r"^```.*?^```", re.S | re.M)
 

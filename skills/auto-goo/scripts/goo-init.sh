@@ -27,6 +27,11 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 2
 fi
 
+# 3) 模板根目录：创库时要从 templates/ 复制记忆系统骨架（memory/ + scripts/）。
+#    不复制的话新仓库只会有 wiki/ 目录，记忆分层口径又只存在于文档里。
+AUTO_GOO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TEMPLATES_DIR="$AUTO_GOO_ROOT/templates"
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -388,7 +393,31 @@ ensure_wiki_vault() {
     "$wiki_dir/wiki/concepts" \
     "$wiki_dir/wiki/questions" \
     "$wiki_dir/journal/daily" \
-    "$wiki_dir/journal/weekly"
+    "$wiki_dir/journal/weekly" \
+    "$wiki_dir/memory" \
+    "$wiki_dir/scripts"
+
+  # 记忆系统骨架：口径页（index/rules）、机器口径（policy.json）、审计与回填脚本。
+  # **只在缺失时创建**：已存在的口径文件属于用户资产，初始化不得覆盖。
+  local mem_file
+  for mem_file in \
+    memory/index.md \
+    memory/rules.md \
+    memory/policy.json \
+    scripts/audit-memory-layer.py \
+    scripts/backfill-memory-layer.py
+  do
+    if [[ ! -f "$wiki_dir/$mem_file" && -f "$TEMPLATES_DIR/$mem_file" ]]; then
+      cp "$TEMPLATES_DIR/$mem_file" "$wiki_dir/$mem_file"
+      WIKI_CREATED=1
+    fi
+  done
+  if [[ -f "$wiki_dir/scripts/audit-memory-layer.py" ]]; then
+    chmod +x "$wiki_dir/scripts/audit-memory-layer.py" 2>/dev/null || true
+  fi
+  if [[ -f "$wiki_dir/scripts/backfill-memory-layer.py" ]]; then
+    chmod +x "$wiki_dir/scripts/backfill-memory-layer.py" 2>/dev/null || true
+  fi
 
   if [[ ! -f "$wiki_dir/CLAUDE.md" ]]; then
     cat > "$wiki_dir/CLAUDE.md" <<'EOF'

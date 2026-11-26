@@ -429,6 +429,23 @@ This vault stores reusable project memory for AutoGoo-Plugin workflows.
 - Put reusable concepts under `wiki/concepts/`.
 - Put daily and weekly work logs under `journal/daily/` and `journal/weekly/`.
 - Keep `log.md` as a compact activity index.
+
+## 记忆系统（memory_layer）— 口径唯一出处
+
+记忆分层口径**不在本文件里**，唯一出处是仓库根的 `memory/`：
+
+- `memory/index.md` — 四层定义（L0 项目总览 / L1 场景知识 / L2 原子事实 / L3 原始记录，数字越大越原始）与口径历史
+- `memory/rules.md` — 写笔记时的可执行规则：必填字段、定层判据、路径→层映射、例外、回填流程
+- `memory/policy.json` — 机器可读口径（`scripts/audit-memory-layer.py`、`scripts/backfill-memory-layer.py`
+  与 AutoGoo-Plugin 的 `check-wiki-frontmatter.py` 直读；改检查逻辑只改这份）
+
+归档笔记 frontmatter 必须含 `memory_layer`；不确定时先查 `memory/rules.md` 的判据：
+「三个月后另一个任务会来看它吗？来看它的哪一部分？」
+
+```bash
+python3 scripts/audit-memory-layer.py --print     # 覆盖率/缺失/与路径提示不符
+python3 scripts/backfill-memory-layer.py          # 预览机械回填（--apply 才写，幂等）
+```
 EOF
     WIKI_CREATED=1
   fi

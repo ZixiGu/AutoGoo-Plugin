@@ -3424,6 +3424,12 @@ if [[ -z "$_missing" ]]; then
 else
   fail "goo-init 建库缺少记忆系统文件:$_missing"
 fi
+# 新建 vault 的 CLAUDE.md 必须指路到 memory/，否则新 vault 里没人知道口径在哪
+if grep -q "memory/index.md" "$_vault/vault/CLAUDE.md" 2>/dev/null; then
+  pass "新 vault 的 CLAUDE.md 指向 memory/（口径唯一出处）"
+else
+  fail "新 vault 的 CLAUDE.md 没有指向 memory/ —— 建出来的 wiki 不知道分层口径在哪"
+fi
 # 幂等：已有口径文件不得被覆盖
 printf '\nCUSTOM-MARK\n' >> "$_vault/vault/memory/policy.json" 2>/dev/null || true
 ( cd "$_vault" && HOME="$_home" bash "$ROOT/skills/auto-goo/scripts/goo-init.sh" --user --yes --wiki-dir "$_vault/vault" >/dev/null 2>&1 ) || true

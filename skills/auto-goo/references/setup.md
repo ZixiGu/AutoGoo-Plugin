@@ -779,6 +779,7 @@ python3 <auto_goo_root>/skills/auto-goo/scripts/goo-update-check.py --cached-onl
 且被 `policy.json` 的 `exclude_paths` 排除在统计之外（避免「规则给自己打分」）。
 
 模板源文件在 `skills/auto-goo/templates/memory/` 与 `skills/auto-goo/templates/scripts/`。
+新建 vault 的 `CLAUDE.md` 由 `goo-init` 一并写出，内含指向 `memory/` 的「口径唯一出处」小节（三条命令可直接跑）。
 新 vault 建好后可直接跑：
 
 ```bash

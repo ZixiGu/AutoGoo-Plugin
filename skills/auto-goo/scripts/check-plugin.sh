@@ -3954,7 +3954,7 @@ else
   fail "init-plan.sh 不写 schema_version —— 新 plan 出生就没有版本，继续累积无版本历史"
 fi
 
-if grep -q "plan_schema.load_plan" "$US" 2>/dev/null; then
+if grep -qF "plan_schema.load_plan" "$US" 2>/dev/null; then
   pass "update-step.py 通过 schema 感知加载（不静默按新语义解释）"
 else
   fail "update-step.py 未走 plan_schema.load_plan —— 旧 plan 仍会被静默错义"
@@ -3975,7 +3975,7 @@ fi
 DISPATCH="$ROOT/.pi/extensions/autogoo-plugin/utils/dispatch.ts"
 WORKTREE_EXEC="$ROOT/.pi/extensions/autogoo-plugin/tools/execute.ts"
 if grep -q "formatCheckpointSection" "$DISPATCH" 2>/dev/null \
-  && grep -q "resumeState: (step as any).resume_state" "$WORKTREE_EXEC" 2>/dev/null; then
+  && grep -qF "resumeState: (step as any).resume_state" "$WORKTREE_EXEC" 2>/dev/null; then
   pass "checkpoint 台账在派发路径上有消费点（写进 Subagent prompt）"
 else
   fail "checkpoint 只写不读 —— Subagent 仍不知道哪些副作用不能重做"
@@ -4095,14 +4095,14 @@ fi
 
 # 「有函数」不等于「派发路径会调用」—— 这正是上一轮的失效模式
 if grep -q "setupWorktreeIsolation(cwd, toDispatch, writeConflicts" "$EXEC" \
-  && grep -q "mergeAllStepWorktrees(cwd, isolatedIds, plan.steps)" "$EXEC"; then
+  && grep -qF "mergeAllStepWorktrees(cwd, isolatedIds, plan.steps)" "$EXEC"; then
   pass "派发路径已接入隔离创建与按依赖顺序合并（execute.ts）"
 else
   fail "worktree 隔离未接入派发路径 —— 能力闲置（工具存在但没人调用）"
 fi
 
-if grep -q "const stepCwd = wtState?.worktreeDir ?? cwd;" "$EXEC" \
-  && grep -q "cwd: stepCwd," "$EXEC"; then
+if grep -qF "const stepCwd = wtState?.worktreeDir ?? cwd;" "$EXEC" \
+  && grep -qF "cwd: stepCwd," "$EXEC"; then
   pass "隔离步骤的 Subagent 真的在 worktree 目录执行（不是只建不用）"
 else
   fail "Subagent 未在 worktree 中执行 —— 隔离形同虚设"
@@ -4240,7 +4240,7 @@ else
   fail "缺少 exec_observe.py（或轮转阈值与 recall.jsonl 不一致）"
 fi
 
-if grep -q "exec_observe.record_transition" "$US" 2>/dev/null; then
+if grep -qF "exec_observe.record_transition" "$US" 2>/dev/null; then
   pass "update-step.py 是事件流的唯一写入口（状态跃迁即落事件）"
 else
   fail "update-step.py 未登记 exec 事件 —— 指标又变成零"

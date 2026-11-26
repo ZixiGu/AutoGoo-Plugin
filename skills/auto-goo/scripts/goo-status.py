@@ -11,6 +11,7 @@ from _paths import (
     load_json,
     logs_dir_from_plan,
     project_root_from_config_dir,
+    project_root_from_plan,
     resolve_plan_path,
     workspace_paths,
 )
@@ -104,16 +105,77 @@ def status_of(step: dict[str, Any]) -> str:
     return str(step.get("status", "pending") or "pending")
 
 
-def collect_step_logs(logs_dir: Path) -> dict[str, list[Path]]:
+def collect_step_logs(logs_dir: Path, since: datetime | None = None) -> dict[str, list[Path]]:
+    """把 logs 目录里的文件按 step id 归组。
+
+    必须同时认两种落盘命名，否则面板会和事实脱节：
+    - `step-<id>.log`：派发路径（`execute.ts`）实际写的状态流；
+    - `<ts>_step-<id>_<name>.md`：`update-step.py` 预创建 / 写入的旧命名。
+    只认后者时，新 thread 会报「没有 step log」（假红），而 `.goo/logs` 里
+    **别的 plan 的同号日志**会被当成当前 plan 的证据（假绿，更危险）。
+
+    `since` 用于再兜一层：早于本 plan 创建时间的日志一定不是本 plan 的。
+    """
     if not logs_dir.exists() or not logs_dir.is_dir():
         return {}
     by_step: dict[str, list[Path]] = {}
-    for path in logs_dir.glob("*.md"):
-        match = re.search(r"_step-([^_]+)_", path.name)
+    for path in sorted(logs_dir.iterdir()):
+        if not path.is_file():
+            continue
+        match = _match_step_file(path.name)
         if not match:
             continue
-        by_step.setdefault(match.group(1), []).append(path)
+        if since is not None and _log_is_stale(path, since):
+            continue
+        by_step.setdefault(match, []).append(path)
     return by_step
+
+
+# (正则, 是否锚定行首)；新命名 `step-N.log` 从行首开始，旧命名嵌在中间
+_STEP_FILE_PATTERNS: tuple[tuple[re.Pattern[str], bool], ...] = (
+    (re.compile(r"^step-([^_.]+)\.log$"), True),
+    (re.compile(r"_step-([^_]+)_"), False),
+)
+
+
+def _match_step_file(name: str) -> str | None:
+    """返回文件名里的 step id（新旧两种命名都认）。"""
+    for pattern, anchored in _STEP_FILE_PATTERNS:
+        match = pattern.match(name) if anchored else pattern.search(name)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _log_is_stale(path: Path, since: datetime) -> bool:
+    """日志文件的「自己声称的时间」早于 plan 创建时间 -> 不可能是本 plan 的。"""
+    stamp = parse_time(path.name.split("_")[0]) if "_" in path.name else None
+    if stamp is None:
+        try:
+            stamp = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            return False
+    return stamp < since
+
+
+def merge_declared_logs(
+    logs_by_step: dict[str, list[Path]],
+    steps: list[dict[str, Any]],
+    project_root: Path,
+) -> None:
+    """plan 里 step.log_path 是派发路径的权威落点，优先于目录名猜测。"""
+    for step in steps:
+        declared = step.get("log_path")
+        if not declared:
+            continue
+        path = Path(str(declared)).expanduser()
+        if not path.is_absolute():
+            path = project_root / path
+        if not path.is_file():
+            continue
+        bucket = logs_by_step.setdefault(id_key(step.get("id")), [])
+        if path not in bucket:
+            bucket.insert(0, path)
 
 
 def sync_thread_status(plan_path: Path) -> None:
@@ -195,8 +257,10 @@ def main() -> int:
         )
     steps = data.get("steps", [])
     steps_by_id = {id_key(step.get("id")): step for step in steps if step.get("id") is not None}
-    logs_dir = logs_dir_from_plan(plan_path)
-    logs_by_step = collect_step_logs(logs_dir)
+    logs_dir = logs_dir_from_plan(plan_path, data)
+    plan_created = parse_time(data.get("created_at")) or parse_time(data.get("started_at"))
+    logs_by_step = collect_step_logs(logs_dir, since=plan_created)
+    merge_declared_logs(logs_by_step, steps, project_root_from_plan(plan_path))
     now = datetime.now(timezone.utc)
 
     # Auto-update plan status if requested

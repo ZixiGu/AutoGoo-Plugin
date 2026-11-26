@@ -199,8 +199,14 @@ def project_root_from_plan(plan_path: Path) -> Path:
     return project_root_from_config_dir(config_dir, fallback)
 
 
-def logs_dir_from_plan(plan_path: Path) -> Path:
-    """Locate the logs directory for a given plan path."""
+def logs_dir_from_plan(plan_path: Path, plan_data: dict[str, Any] | None = None) -> Path:
+    """Locate the logs directory for a given plan path.
+
+    `plan_data` 有值时，plan 自带的 `thread.logs_dir` 优先于 workspace 默认 `logs_dir`：
+    plan 被镜像到 `.goo/plan.json` 后，`plan_path.parent` 已不再是 thread 目录，
+    只看路径会退回全局 `.goo/logs`，把**别的 plan 的同号日志**当成自己的证据。
+    thread 目录内的 plan 仍然以 `parent/logs` 为准（最贴近事实）。
+    """
     parent = plan_path.parent
     config_dir = find_config_dir(plan_path)
     project_root = project_root_from_plan(plan_path)
@@ -213,10 +219,36 @@ def logs_dir_from_plan(plan_path: Path) -> Path:
         return parent / "logs"
     except ValueError:
         pass
+    declared = _declared_thread_logs_dir(plan_data, project_root)
+    if declared is not None:
+        return declared
     logs_dir = Path(paths["logs_dir"])
     if logs_dir.is_absolute():
         return logs_dir
     return project_root / logs_dir
+
+
+def _declared_thread_logs_dir(
+    plan_data: dict[str, Any] | None,
+    project_root: Path,
+) -> Path | None:
+    """Resolve `plan.thread.logs_dir` when the plan is not itself inside a thread dir.
+
+    只在目录真实存在时才返回：镜像 plan 可能带着已经失效的 thread 路径，
+    此时宁可退回 workspace 默认 logs_dir 也别指向一个不存在的目录。
+    """
+    if not isinstance(plan_data, dict):
+        return None
+    thread = plan_data.get("thread")
+    if not isinstance(thread, dict):
+        return None
+    raw = thread.get("logs_dir")
+    if not raw:
+        return None
+    candidate = Path(str(raw)).expanduser()
+    if not candidate.is_absolute():
+        candidate = project_root / candidate
+    return candidate if candidate.is_dir() else None
 
 
 # ── goo.md resolution ────────────────────────────────────────────────────────

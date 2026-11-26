@@ -165,6 +165,18 @@ def test_classify_error_buckets(ex) -> None:
     assert ex.classify_error("") is None
 
 
+def test_timed_out_flag_alone_is_timeout(ex) -> None:
+    """timed_out=True 必须自己归到 timeout：不能靠 error 文本里恰好出现 timeout。
+
+    旧用例全部走文本匹配（"Heartbeat timeout > 900s"），把 `if timed_out: return
+    "timeout"` 这分支删掉 27 个用例仍然全绿 —— 这是实测到的假绿。
+    wrapper 超时中断时 error 文本往往是「wrapper 中断（exit 143）」，不含 timeout 字样。
+    """
+    assert ex.classify_error(None, timed_out=True) == "timeout"
+    assert ex.classify_error("wrapper 中断（exit 143）", exit_code=143, timed_out=True) == "timeout"
+    assert ex.classify_error("", timed_out=True) == "timeout"
+
+
 # ── 3. 耗时口径 ─────────────────────────────────────────────────────────────
 
 

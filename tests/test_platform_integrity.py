@@ -340,3 +340,25 @@ def test_goo_init_subagent_model_entry(tmp_path):
     )
     assert r.returncode == 2, f"只传 provider 应 exit 2，实际 {r.returncode}: {r.stderr[:200]}"
     assert "必须同时提供" in (r.stdout + r.stderr)
+
+
+def test_literal_assertions_do_not_rely_on_bre_wildcards() -> None:
+    """check-plugin 里的字面量断言必须用 `grep -qF`。
+
+    背景（实测假绿）：`grep -q "plan_schema.load_plan"` 在 BRE 下 `.` 是通配符，
+    即使源码里写成 `plan_schema_load_plan` 仍会通过 —— 断言看着在守着，其实谁都能过。
+    这里只锁「模块限定名 + 逗号实参」这类确定是字面量的断言，避免替有意的正则背锅。
+    """
+    script = (SCRIPTS / "check-plugin.sh").read_text(encoding="utf-8")
+    literal_needles = [
+        "plan_schema.load_plan",
+        "exec_observe.record_transition",
+        "mergeAllStepWorktrees(cwd, isolatedIds, plan.steps)",
+        "resumeState: (step as any).resume_state",
+    ]
+    offenders = [
+        needle
+        for needle in literal_needles
+        if re.search(rf'grep -q(?!F) "{re.escape(needle)}"', script)
+    ]
+    assert not offenders, f"这些断言用了 BRE 通配（应改 grep -qF）: {offenders}"

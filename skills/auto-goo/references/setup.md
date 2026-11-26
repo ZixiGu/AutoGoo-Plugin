@@ -1246,8 +1246,15 @@ utils/exec-observe.ts:366 staleHeartbeatSeconds: 900,
 
 | 文件 | 内容 | 写入方 | 用途 |
 | --- | --- | --- | --- |
-| `logs/step-N.log` | **状态事件流**：`start` / `heartbeat` / `update` / `complete` / `fail`，含 status、progress、detail | `update-step.py` | 回答「这个 step 处于什么状态」 |
+| `logs/step-N.log` | **状态事件流**：`start` / `heartbeat` / `update` / `complete` / `fail`，含 status、progress、detail | 派发路径（`execute.ts` / `runSubagent`），落点由 `plan.steps[].log_path` 指定 | 回答「这个 step 处于什么状态」 |
+| `logs/<ts>_step-N_<name>.md` | 同上的旧命名（派发骨架 + 心跳追加） | `update-step.py --precreate` / 心跳回写 | 与上面等价，向后兼容 |
 | `logs/step-N.exec.jsonl` | **工具执行轨迹**：每次 toolCall 的 name + args，每次 toolResult 的字节数与预览 | `runSubagent` | 回答「它实际跑了什么命令、改了哪些文件」 |
+
+**读日志时的铁律**：`plan.steps[].log_path` 是权威落点，先读它；需要按目录兜底时，
+`step-N.log` 和 `<ts>_step-N_<name>.md` **两种命名都要认**，并且要按 plan 的
+`created_at` 过滤掉更早的文件 —— 否则 `.goo/logs` 里**别的 plan 的同号日志**会被当作
+当前 step 的证据（实测：2026-05 的旧日志给 2026-11 的 plan 作证）。
+`goo-status.py` 与 `goo-observe.py` 必须保持同一口径。
 
 **为什么必须分开**：`step-N.log` 里**没有**执行细节 —— 实测一条 20 行的 log
 全是 `heartbeat status=running progress=80 detail=Subagent running (agent-…)`。

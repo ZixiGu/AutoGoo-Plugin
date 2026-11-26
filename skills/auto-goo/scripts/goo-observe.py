@@ -117,6 +117,12 @@ def step_log_path(root: Path, logs_dir: Path, step: dict[str, Any]) -> Path | No
     step_id = str(step.get("id") or "")
     if not step_id or not logs_dir.exists():
         return None
+    # 口径必须和 goo-status 一致：派发路径写 `step-<id>.log`，
+    # `update-step.py` 预创建写 `<ts>_step-<id>_<name>.md`。只认后者会让面板
+    # 在新 thread 上「看不到日志」，这不是渲染问题，是归组口径问题。
+    direct = logs_dir / f"step-{step_id}.log"
+    if direct.is_file():
+        return direct
     matches = sorted(logs_dir.glob(f"*_step-{step_id}_*.md"), key=lambda p: p.stat().st_mtime)
     return matches[-1] if matches else None
 
